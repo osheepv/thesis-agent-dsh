@@ -182,6 +182,11 @@ class _TaskStore:
         with self._lock:
             return self._tasks.get(task_id)
 
+    def all(self) -> List[TaskRecord]:
+        """全部任务（会话列表）。"""
+        with self._lock:
+            return list(self._tasks.values())
+
 
 # =====================================================================
 # 主编排用例
@@ -208,6 +213,30 @@ class MainOrchestration:
     # ------------------------------------------------------------------
     # 步骤 1：创建论文任务（UC-01）
     # ------------------------------------------------------------------
+    def list_tasks(self, session_id: str = "") -> Result[List[Dict[str, Any]]]:
+        """会话列表（含当前进度/学位/当前环），供前端左侧栏渲染。"""
+        recs = self._store.all()
+        if session_id:
+            recs = [r for r in recs if r.session_id == session_id]
+        items = []
+        for rec in recs:
+            try:
+                prog = self._fsm.get_progress(rec.task_id)
+                current_ring = prog.get("current_ring_no", 1)
+                percent = prog.get("complete_percent", 0)
+            except Exception:  # noqa: BLE001 - 状态异常仍返回
+                current_ring, percent = 1, 0
+            items.append({
+                "task_id": rec.task_id,
+                "title": rec.title,
+                "degree": rec.degree,
+                "current_ring_no": current_ring,
+                "complete_percent": percent,
+                "session_id": rec.session_id,
+                "created_at": "",
+            })
+        return Result.ok(data=items, msg="会话列表")
+
     def create_task(self, title: str, degree: Degree, subject_field: str,
                     template_id: Optional[str] = None, session_id: str = "",
                     tenant_id: str = "default") -> Result[Dict[str, Any]]:

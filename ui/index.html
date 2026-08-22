@@ -2534,63 +2534,8 @@ a:hover { text-decoration: underline; }
 
       <div class="session-list" id="session-list">
         <!-- Today 分组 -->
-        <div class="session-group">
-          <div class="session-group-title">Today</div>
-
-          <div class="session-item active" data-session="1">
-            <div class="session-row">
-              <span class="session-title">大模型对学术写作的影响研究</span>
-              <button class="session-delete" title="删除对话">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
-            <div class="session-meta">
-              <span class="session-degree">硕士</span>
-              <span class="session-progress-text">阶段 6/10 · 60%</span>
-            </div>
-            <div class="session-progress-bar"><div class="session-progress-fill" style="width:60%"></div></div>
-          </div>
-
-          <div class="session-item" data-session="2">
-            <div class="session-row">
-              <span class="session-title">乡村教师流动机制综述</span>
-              <button class="session-delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-            </div>
-            <div class="session-meta">
-              <span class="session-degree">博士</span>
-              <span class="session-progress-text">阶段 3/10 · 30%</span>
-            </div>
-            <div class="session-progress-bar"><div class="session-progress-fill" style="width:30%"></div></div>
-          </div>
-        </div>
-
-        <div class="session-group">
-          <div class="session-group-title">Previous 7 Days</div>
-
-          <div class="session-item" data-session="3">
-            <div class="session-row">
-              <span class="session-title">地方政府债务风险评价模型</span>
-              <button class="session-delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-            </div>
-            <div class="session-meta">
-              <span class="session-degree">硕士</span>
-              <span class="session-progress-text">已完成 · 100%</span>
-            </div>
-            <div class="session-progress-bar"><div class="session-progress-fill" style="width:100%; background: var(--success)"></div></div>
-          </div>
-
-          <div class="session-item" data-session="4">
-            <div class="session-row">
-              <span class="session-title">Transformer 在病理切片的应用</span>
-              <button class="session-delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
-            </div>
-            <div class="session-meta">
-              <span class="session-degree">博士</span>
-              <span class="session-progress-text">阶段 8/10 · 80%</span>
-            </div>
-            <div class="session-progress-bar"><div class="session-progress-fill" style="width:80%"></div></div>
-          </div>
-        </div>
+        <!-- 会话列表（JS 渲染，对接后端） -->
+        <div id="session-items"></div>
       </div>
 
       <div class="sidebar-foot">
@@ -4319,7 +4264,220 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+/* ============================================================
+   会话列表（对接后端 /api/v1/console/tasks）
+   ============================================================ */
+let currentSession = null;
+
+function sessionItemHtml(s) {
+  const degree = DEGREE_LABEL[s.degree] || s.degree || '';
+  const pct = s.complete_percent || 0;
+  const ring = s.current_ring_no || 1;
+  const doneText = pct >= 100 ? '已完成 · 100%' : `阶段 ${ring}/10 · ${pct}%`;
+  return `
+    <div class="session-item" data-task="${s.task_id}">
+      <div class="session-row">
+        <span class="session-title">${escapeHtml(s.title || '未命名')}</span>
+        <button class="session-delete" title="删除对话">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="session-meta">
+        <span class="session-degree">${degree}</span>
+        <span class="session-progress-text">${doneText}</span>
+      </div>
+      <div class="session-progress-bar"><div class="session-progress-fill" style="width:${pct}%${pct >= 100 ? '; background: var(--success)' : ''}"></div></div>
+    </div>`;
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function loadSessions() {
+  const items = await apiListSessions();
+  const box = document.getElementById('session-items');
+  if (!box) return;
+  box.innerHTML = items.map(sessionItemHtml).join('') || '<div class="no-sessions" style="padding:16px;color:var(--text-subtle);font-size:12px;">暂无会话</div>';
+  // 绑定点击切换 + 删除
+  box.querySelectorAll('.session-item').forEach(item => {
+    item.addEventListener('click', (e) => {
+      if (e.target.closest('.session-delete')) return;
+      box.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
+      item.classList.add('active');
+      currentSession = item.dataset.task;
+      loadSessionDetail(currentSession);
+    });
+    const del = item.querySelector('.session-delete');
+    if (del) del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      pendingDelete = item;
+      const dm = document.getElementById('del-modal');
+      if (dm) dm.classList.add('show');
+    });
+  });
+  // 默认选第一个
+  if (items.length && !currentSession) {
+    box.querySelector('.session-item')?.classList.add('active');
+    currentSession = items[0].task_id;
+    loadSessionDetail(currentSession);
+  }
+}
+
+async function loadSessionDetail(taskId) {
+  const prog = await apiSessionProgress(taskId);
+  if (prog) renderStagesFromProgress(prog);
+}
+
+// —— 进度 → 阶段条（10 环状态）——
+function renderStagesFromProgress(prog) {
+  const rings = (prog && prog.rings) || [];
+  if (!rings.length) return;
+  const STAGE_MAP = {
+    1:'选题',2:'开题',3:'文献',4:'综述',5:'大纲',6:'撰写',7:'润色',8:'引用',9:'排版',10:'定稿'
+  };
+  const states = [];
+  rings.forEach(r => {
+    let st = 'todo';
+    if (r.state === 'PASSED') st = 'done';
+    else if (r.state === 'IN_PROGRESS' || (r.state === 'NOT_STARTED' && r.ring_no && r.ring_no === prog.current_ring_no && prog.complete_percent < 100)) st = 'current';
+    // gate 环 2/4/8/10 标注
+    if ([2,4,8,10].includes(r.ring_no) && st !== 'done') st = 'gate';
+    states.push({ no: r.ring_no, name: STAGE_MAP[r.ring_no] || ('环'+r.ring_no), state: st });
+  });
+  // 渲染 stage-bar
+  const bar = document.getElementById('stage-bar');
+  if (bar) {
+    bar.innerHTML = '';
+    states.forEach((s, i) => {
+      const node = document.createElement('div');
+      node.className = 'stage-node ' + s.state;
+      node.innerHTML = `<div class="stage-dot">${s.state === 'done' ? '✓' : ''}</div><div class="stage-label">${i+1}. ${s.name}</div>`;
+      node.title = `${i+1}. ${s.name}`;
+      bar.appendChild(node);
+      if (i < states.length - 1) {
+        const line = document.createElement('div');
+        line.className = 'stage-line' + (s.state === 'done' ? ' done' : '');
+        bar.appendChild(line);
+      }
+    });
+  }
+}
+
+// —— 确认进入下一环（闸门按钮）——
+async function confirmNextRing() {
+  if (!currentSession) return;
+  const r = await apiPost(`/api/v1/tasks/${currentSession}/hitl/confirm`, { confirmed: true });
+  if (r.code === 0) { toast('已确认，进入下一环'); loadSessionDetail(currentSession); loadSessions(); }
+  else toast('确认失败: ' + (r.msg || ''));
+}
+// —— 执行当前环节 ——
+async function runCurrentRing() {
+  if (!currentSession) return;
+  const prog = await apiSessionProgress(currentSession);
+  const no = prog ? prog.current_ring_no : 1;
+  const pathMap = { 1:'/rings/1/execute', 2:'/rings/2/review', 3:'/rings/3/execute', 4:'/rings/4/review', 5:'/rings/5/outline', 6:'/rings/6/chapter', 7:'/rings/7/polish', 8:'/rings/8/validate' };
+  const path = pathMap[no];
+  if (!path) { toast(`环${no} 暂不支持自动执行`); return; }
+  toast(`正在执行环 ${no} ...`);
+  const r = await apiRunRing(currentSession, path + '?session_id=default');
+  if (r.code === 0) { toast(r.msg || `环 ${no} 完成`); loadSessionDetail(currentSession); loadSessions(); }
+  else toast('执行失败: ' + (r.msg || ''));
+}
+
+// —— 新建对话（“新建对话”按钮触发）——
+async function handleNewSession() {
+  const title = prompt('请输入论文题目：', '基于大模型的学术写作影响研究');
+  if (!title) return;
+  const degree = prompt('学位（本科/硕士/博士，默认硕士）：') || '硕士';
+  const degMap = { '本科': 'BACHELOR', '硕士': 'MASTER', '博士': 'PHD' };
+  const subject = prompt('学科方向（如 计算机视觉）：') || '自然语言处理';
+  const r = await apiCreateSession({
+    title, degree: degMap[degree] || 'MASTER',
+    subject_field: subject,
+    session_id: currentSessionId || 'default',
+  });
+  if (r.code === 0) {
+    toast('会话已创建');
+    await loadSessions();
+  } else {
+    toast('创建失败: ' + (r.msg || ''));
+  }
+}
+
+/* ============================================================
+   API 基座（对接后端 http://127.0.0.1:8000）
+   ============================================================ */
+const API_BASE = window.API_BASE || 'http://127.0.0.1:8000';
+
+async function apiGet(path, params) {
+  const url = new URL(API_BASE + path);
+  if (params) Object.entries(params).forEach(([k, v]) => v != null && url.searchParams.set(k, v));
+  const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  return resp.json();
+}
+
+async function apiPost(path, body) {
+  const resp = await fetch(API_BASE + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+  return resp.json();
+}
+
+// ---- 会话（console）----
+async function apiListSessions() {
+  const r = await apiGet('/api/v1/console/tasks');
+  return r.code === 0 ? (r.data || []) : [];
+}
+async function apiCreateSession(payload) {
+  return apiPost('/api/v1/console/tasks', payload);
+}
+async function apiSessionProgress(taskId) {
+  const r = await apiGet(`/api/v1/console/tasks/${taskId}/progress`);
+  return r.code === 0 ? (r.data || null) : null;
+}
+async function apiRunRing(taskId, ringPath) {
+  return apiPost(`/api/v1/console/tasks/${taskId}${ringPath}`);
+}
+async function apiGenerateDocx(taskId) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/docx/generate`);
+}
+
+// ---- 知识库 ----
+async function apiKbList(sessionId) {
+  const r = await apiGet(`/api/v1/kb/${encodeURIComponent(sessionId)}/files`);
+  return r.code === 0 ? (r.data?.items || []) : [];
+}
+async function apiKbUpload(sessionId, file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('title', file.name.replace(/\.\w+$/, ''));
+  const resp = await fetch(`${API_BASE}/api/v1/kb/${encodeURIComponent(sessionId)}/files`, { method: 'POST', body: fd });
+  return resp.json();
+}
+
+// ---- 工具 ----
+const DEGREE_LABEL = { BACHELOR: '本科', MASTER: '硕士', PHD: '博士' };
+
 applyI18n();
+
+// —— 启动初始化：加载会话列表 + 绑定新建按钮 ——
+async function initApp() {
+  await loadSessions();
+  // 新建对话按钮（.new-chat-btn 或 sidebar 新建）
+  const newBtn = document.querySelector('.new-chat-btn') || document.querySelector('.sidebar-top button.btn-primary, #new-chat');
+  if (newBtn && !newBtn.dataset.bound) {
+    newBtn.dataset.bound = '1';
+    newBtn.addEventListener('click', handleNewSession);
+  }
+  // 执行当前环节/确认闸门按钮绑定（消息流中的 [data-gate] / 运行按钮）
+  document.querySelectorAll('[data-gate]').forEach(b => {
+    if (!b.dataset.bound) { b.dataset.bound = '1'; b.addEventListener('click', confirmNextRing); }
+  });
+}
+initApp();
 
 </script>
 </body>

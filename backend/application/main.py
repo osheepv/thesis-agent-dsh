@@ -79,6 +79,17 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
         version="0.1.0",
     )
 
+    # CORS（本地 UI 预览：http://localhost:8787 等前端端口）
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],  # 本地开发放开；生产按域名收紧
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
     # 主编排聚合路由（/api/v1/console）
     app.include_router(writer_console_router)
 

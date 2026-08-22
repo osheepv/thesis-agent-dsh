@@ -52,6 +52,16 @@ async def create_task(req: Dict[str, Any],
     )
 
 
+@router.get("/tasks", response_model=None)
+async def list_tasks(session_id: str = "",
+                     orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    """会话列表（含当前进度）；可按 session 过滤。"""
+    try:
+        return orchestration.list_tasks(session_id=session_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 # ---------------------------------------------------------------------
 # 上传 / 解析模板（可选步骤）
 # ---------------------------------------------------------------------

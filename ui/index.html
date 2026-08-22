@@ -800,36 +800,57 @@ a:hover { text-decoration: underline; }
 }
 .input-inner { max-width: 820px; margin: 0 auto; }
 
-/* 上下文窗口行（Composer 上方居中） */
+/* —— 上下文用量指示器（照抄官方 ContextUsageIndicator：紧凑 conic 环 pill）—— */
 .ctx-row {
-  display: flex; justify-content: center;
-  margin-bottom: 8px;
+  display: contents; /* 不再独立成行，pill 放 composer-tools-right 内 */
 }
 .context-card {
-  display: inline-flex; align-items: center; gap: 10px;
-  padding: 6px 12px;
+  display: inline-flex; align-items: center; gap: 7px;
+  height: 28px;
+  padding: 0 10px;
   border: 1px solid var(--border-divider);
   border-radius: 999px;
-  background: var(--bg-card);
-  cursor: pointer;
-  font-size: var(--fs-small);
+  background: transparent;
   color: var(--text-subtle);
-  transition: background 0.15s ease;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
-.context-card:hover { background: var(--bg-hover); }
-.context-card .cc-left { display: flex; align-items: center; gap: 8px; }
-.context-card .cc-meta-stack { display: flex; flex-direction: column; line-height: 1.25; }
-.context-card .cc-label { font-weight: 600; color: var(--text-primary); }
-.context-card .cc-sub { font-family: var(--font-mono); font-size: 10px; }
-.context-card .cc-right { display: flex; align-items: center; }
-.cc-ring { width: 28px; height: 28px; position: relative; }
-.cc-ring svg { width: 28px; height: 28px; transform: rotate(-90deg); }
-.cc-ring .ring-bg { fill: none; stroke: var(--border-divider); stroke-width: 3.5; }
-.cc-ring .ring-fg { fill: none; stroke: var(--permission); stroke-width: 3.5; stroke-linecap: round; }
-.cc-ring .ring-text {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-  font-size: 8px; font-weight: 700; color: var(--text-primary);
+.context-card:hover {
+  background: var(--bg-hover);
+  border-color: var(--border-prompt);
+  color: var(--text-primary);
 }
+.context-card[data-open="true"] {
+  background: var(--bg-hover);
+  border-color: var(--border-prompt);
+  color: var(--text-primary);
+}
+.context-card .cc-left { display: flex; align-items: center; gap: 6px; }
+.context-card .cc-ring {
+  position: relative;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  display: grid; place-items: center;
+  background: conic-gradient(var(--permission) calc(var(--ctx-pct, 54) * 3.6deg), var(--bg-hover) 0deg);
+}
+.context-card .cc-ring::after {
+  content: '';
+  position: absolute; inset: 3px;
+  border-radius: 50%;
+  background: var(--bg-card);
+}
+.context-card .cc-ring-dot {
+  position: relative;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: var(--permission);
+  z-index: 1;
+}
+.context-card .cc-meta-stack { display: none; } /* 官方 pill 只显示环+百分比，详情进弹窗 */
+.context-card .cc-right { display: none; }
 
 /* 浮动磨砂卡片 */
 .composer {
@@ -2402,29 +2423,8 @@ a:hover { text-decoration: underline; }
       <div class="input-area">
         <div class="input-inner">
 
-          <!-- 上下文窗口进度行（浮动卡片上方） -->
-          <div class="ctx-row" id="ctx-row">
-            <div class="context-card" id="context-card" role="button" tabindex="0" aria-label="上下文窗口使用情况">
-              <div class="cc-left">
-                <div class="cc-ring" aria-hidden="true">
-                  <svg viewBox="0 0 36 36">
-                    <circle class="ring-bg" cx="18" cy="18" r="15" />
-                    <circle class="ring-fg" cx="18" cy="18" r="15"
-                      stroke-dasharray="50.93 94.25"
-                      stroke-dashoffset="0" />
-                  </svg>
-                  <span class="ring-text">54%</span>
-                </div>
-                <div class="cc-meta-stack">
-                  <span class="cc-label" data-i18n="ctx.label">上下文窗口</span>
-                  <span class="cc-sub">539.2k / 1.0M</span>
-                </div>
-              </div>
-              <span class="cc-right">
-                <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-              </span>
-            </div>
-          </div>
+          <!-- 上下文用量（紧凑 pill，点击弹气泡明细） -->
+          <div class="ctx-row" id="ctx-row" style="display:none;"></div>
 
           <!-- Chat Composer（浮动磨砂卡片，照抄官方） -->
           <div class="composer">
@@ -2446,6 +2446,12 @@ a:hover { text-decoration: underline; }
                 </button>
               </div>
               <div class="composer-tools-right">
+                <button class="context-card" id="context-card" role="button" tabindex="0" aria-label="上下文窗口使用情况">
+                  <span class="cc-left">
+                    <span class="cc-ring" aria-hidden="true"><span class="cc-ring-dot"></span></span>
+                    <span class="cc-pct" id="ctx-pct">54%</span>
+                  </span>
+                </button>
                 <button class="model-chip" id="model-select" aria-haspopup="menu" aria-expanded="false">
                   <span class="model-name" id="model-name">deepseek-v4-flash-vision-exp</span>
                   <span class="model-cap" id="model-cap">1M</span>

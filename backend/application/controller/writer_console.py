@@ -149,6 +149,19 @@ async def ring7_polish(task_id: str, session_id: str = "",
 
 
 # ---------------------------------------------------------------------
+# 环9 排版检查
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/rings/9/layout", response_model=None)
+async def ring9_layout(task_id: str, session_id: str = "",
+                       orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.run_ring9(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
 # 生成 docx
 # ---------------------------------------------------------------------
 @router.post("/tasks/{task_id}/docx/generate", response_model=None)

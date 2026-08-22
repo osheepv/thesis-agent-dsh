@@ -135,7 +135,8 @@ class TaskRecord:
     __slots__ = (
         "task_id", "title", "degree", "subject_field", "template_id",
         "session_id", "tenant_id",
-        "ring1", "ring2", "ring3", "ring4", "ring5", "ring6", "ring7", "docx",
+        "ring1", "ring2", "ring3", "ring4", "ring5", "ring6", "ring7", "ring8", "ring9",
+        "docx",
     )
 
     def __init__(self, task_id: str, title: str, degree: str, subject_field: str,
@@ -155,6 +156,8 @@ class TaskRecord:
         self.ring5: Optional[Dict[str, Any]] = None
         self.ring6: Optional[Dict[str, Any]] = None
         self.ring7: Optional[Dict[str, Any]] = None
+        self.ring8: Optional[Dict[str, Any]] = None
+        self.ring9: Optional[Dict[str, Any]] = None
         self.docx: Optional[Dict[str, Any]] = None
 
 
@@ -461,7 +464,59 @@ class MainOrchestration:
         }, msg="环7润色完成（只改表达不改事实）")
 
     # ------------------------------------------------------------------
-    # 步骤 7：生成 docx（UC-04）
+    # 步骤 7：环9 排版检查（UC-04 延续）
+    # ------------------------------------------------------------------
+    def run_ring9(self, task_id: str) -> Result[Dict[str, Any]]:
+        """执行环9排版合规检查：对 docx 产物做版式检查（只查不改）。"""
+        rec = self._require(task_id)
+        docx = rec.docx or {}
+        docx_path = ""
+        # rec.docx 存的是 file_id/下载信息；实际文件路径需从生成链路拿。
+        # 兜底：扫描最近生成产物（按 session/文件名）或要求先 generate_docx。
+        if not docx:
+            raise BizException(ErrorCode.DOCX_GENERATE_FAILED,
+                              msg="请先运行 docx 生成（generate_docx），再执行排版检查",
+                              detail={"task_id": task_id})
+        # 从 docx 记录中找落盘路径（generate 时 RealDocxRenderer 存了 filename）
+        import glob as _glob
+        import os as _os
+        fn = docx.get("filename", "")
+        outputs_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
+            _os.path.abspath(__file__)))), "thesis_docx", "storage", "outputs")
+        if fn:
+            p = _os.path.join(outputs_dir, fn)
+            if _os.path.exists(p):
+                docx_path = p
+        if not docx_path:
+            cands = sorted(_glob.glob(_os.path.join(outputs_dir, "*_thesis_render.docx")),
+                           key=_os.path.getmtime, reverse=True)
+            docx_path = cands[0] if cands else ""
+
+        ctx = ExecContext(
+            subject_field=rec.subject_field,
+            degree=Degree(rec.degree),
+            theme=rec.title,
+            session_id=rec.session_id,
+            tenant_id=rec.tenant_id,
+        )
+        ctx.docx_path = docx_path  # extra 字段（ExecContext extra=allow）
+        ctx.template_path = str(rec.template_id or "")
+
+        res = get_executor(9).execute(ctx)
+        data = json.loads(res.output)
+        rec.ring9 = data
+        if res.accept:
+            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R9", accept=True,
+                              artifact_uri=res.output)
+            self._advance_to(task_id, f"{task_id}-R9", target_ring_no=10)
+        return Result.ok(data={
+            "compliant": data.get("compliant", False),
+            "issue_count": len(data.get("issues", [])),
+            "summary": data.get("summary", ""),
+        }, msg="环9排版检查完成" if res.accept else f"环9排版检查未通过：{data.get('summary', '')}")
+
+    # ------------------------------------------------------------------
+    # 步骤 8：生成 docx（UC-04）
     # ------------------------------------------------------------------
     def generate_docx(self, task_id: str, template_id: Optional[str] = None) -> Result[Dict[str, Any]]:
         """按用户模板 + 初稿内容生成 docx，返回下载链接。

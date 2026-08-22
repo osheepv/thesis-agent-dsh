@@ -149,6 +149,19 @@ async def ring7_polish(task_id: str, session_id: str = "",
 
 
 # ---------------------------------------------------------------------
+# 环8 引用校验
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/rings/8/validate", response_model=None)
+async def ring8_validate(task_id: str, session_id: str = "",
+                         orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.run_ring8(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
 # 环9 排版检查
 # ---------------------------------------------------------------------
 @router.post("/tasks/{task_id}/rings/9/layout", response_model=None)
@@ -157,6 +170,19 @@ async def ring9_layout(task_id: str, session_id: str = "",
     try:
         orchestration.assert_session(task_id, session_id)
         return orchestration.run_ring9(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
+# 环10 定稿汇总
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/rings/10/final", response_model=None)
+async def ring10_final(task_id: str, session_id: str = "",
+                       orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.run_ring10(task_id)
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 

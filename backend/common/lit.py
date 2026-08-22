@@ -267,8 +267,19 @@ class LiteratureService:
             # 中文语言字段常误标，故不用 language 过滤
             "mailto": self._mailto,
         }
-        resp = self._client.get(url, params=params)
-        resp.raise_for_status()
+        # OpenAlex 免费 key 有每时预算，429 时退避重试 1 次（间隔 3s）
+        import time as _t
+
+        for attempt in range(2):
+            try:
+                resp = self._client.get(url, params=params)
+                resp.raise_for_status()
+                break
+            except Exception as exc:  # noqa: BLE001
+                if attempt == 0 and "429" in str(exc):
+                    _t.sleep(3)
+                    continue
+                raise
         items = resp.json().get("results", [])
         return [self._openalex_to_item(it, reliability="matched") for it in items if it.get("display_name")]
 

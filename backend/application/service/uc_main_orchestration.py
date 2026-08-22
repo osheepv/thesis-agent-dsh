@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import uuid
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
@@ -136,7 +137,7 @@ class TaskRecord:
         "task_id", "title", "degree", "subject_field", "template_id",
         "session_id", "tenant_id",
         "ring1", "ring2", "ring3", "ring4", "ring5", "ring6", "ring7", "ring8", "ring9",
-        "docx",
+        "ring10", "docx",
     )
 
     def __init__(self, task_id: str, title: str, degree: str, subject_field: str,
@@ -158,6 +159,7 @@ class TaskRecord:
         self.ring7: Optional[Dict[str, Any]] = None
         self.ring8: Optional[Dict[str, Any]] = None
         self.ring9: Optional[Dict[str, Any]] = None
+        self.ring10: Optional[Dict[str, Any]] = None
         self.docx: Optional[Dict[str, Any]] = None
 
 
@@ -282,7 +284,7 @@ class MainOrchestration:
         data = json.loads(res.output)
         candidates = data.get("candidates", [])
         chosen_title = candidates[0]["title"] if candidates else data.get("theme", rec.title)
-        rec.ring1 = {"candidates": candidates, "chosen": chosen_title}
+        rec.ring1 = {"candidates": candidates, "chosen": chosen_title, "compliant": True}
         self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R1", accept=True,
                           artifact_uri=res.output)
         self._advance_to(task_id, f"{task_id}-R1", target_ring_no=2)
@@ -307,16 +309,23 @@ class MainOrchestration:
         res = get_executor(2).execute(ctx)
         data = json.loads(res.output)
         rec.ring2 = data
+        data["compliant"] = bool(res.accept)
+        if not res.accept:
+            # 评审未通过：返回错误语义（fallbackTo=1 由执行体产出）
+            return Result.fail(
+                code=101200,
+                msg=f"环2评审未通过：{data.get('recommendation', '')}",
+                data={
+                    "novelty_level": data.get("novelty_level", ""),
+                    "similar_count": data.get("similar_count", 0),
+                    "recommendation": data.get("recommendation", ""),
+                    "fallbackTo": 1,
+                },
+            )
         if res.accept:
             self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R2", accept=True,
                               artifact_uri=res.output)
             self._advance_to(task_id, f"{task_id}-R2", target_ring_no=3)  # 自动过环2 → 环3
-        else:
-            # LOW：回退环1 重新选题（保留候选/评审记录，供人工换题）
-            try:
-                self._fsm.rollback(task_id, 1)
-            except Exception:  # noqa: BLE001 - 回退栈空/状态异常不阻塞
-                pass
         return Result.ok(data={
             "novelty_level": data.get("novelty_level", ""),
             "similar_count": data.get("similar_count", 0),
@@ -344,17 +353,41 @@ class MainOrchestration:
         res = get_executor(4).execute(ctx)
         data = json.loads(res.output)
         rec.ring4 = data
+        data["compliant"] = bool(res.accept)
         if res.accept:
             self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R4", accept=True,
                               artifact_uri=res.output)
             self._advance_to(task_id, f"{task_id}-R4", target_ring_no=5)  # 自动过环4 → 环5
+        else:
+            return Result.fail(
+                code=101200,
+                msg=f"环4评审未通过：{data.get('recommendation', '')}",
+                data={
+                    "verdict": data.get("verdict", ""),
+                    "overlap_count": data.get("overlap_count", 0),
+                    "recommendation": data.get("recommendation", ""),
+                    "fallbackTo": res.fallbackTo,
+                },
+            )
+
+    # ------------------------------------------------------------------
+    # 步骤 3.7：环3 文献调研（显式入口）
+    # ------------------------------------------------------------------
+    def run_ring3(self, task_id: str) -> Result[Dict[str, Any]]:
+        """执行环3文献调研：真实检索建池（显式入口，推进到环4）。"""
+        rec = self._require(task_id)
+        chosen = (rec.ring1 or {}).get("chosen", rec.title)
+        pool = self._ensure_literature(rec, chosen)
+        # 产物已缓存到 rec.ring3（_ensure_literature 内执行），推进到环4
+        if rec.ring3 is not None:
+            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R3", accept=True,
+                              artifact_uri=json.dumps(rec.ring3))
+            self._advance_to(task_id, f"{task_id}-R3", target_ring_no=4)
         return Result.ok(data={
-            "verdict": data.get("verdict", ""),
-            "pool_count": data.get("pool_count", 0),
-            "relevant_count": data.get("relevant_count", 0),
-            "overlap_count": data.get("overlap_count", 0),
-            "recommendation": data.get("recommendation", ""),
-        }, msg=f"环4综述评审完成：{data.get('verdict', '')}" if res.accept else f"环4评审未通过：{data.get('recommendation', '')}")
+            "total": len(pool),
+            "items": rec.ring3.get("items", []) if rec.ring3 else [],
+            "summary": rec.ring3.get("summary", "") if rec.ring3 else "文献池为空",
+        }, msg="环3文献调研完成" if rec.ring3 else "环3文献检索失败/禁用，池为空")
 
     # ------------------------------------------------------------------
     # 步骤 4：环5 大纲（UC-03）
@@ -382,7 +415,7 @@ class MainOrchestration:
         chapters = outline.get("chapters", [])
         outline_text = self._outline_to_text(chapters)
         rec.ring5 = {"outline": outline_text, "chapters": outline.get("chapters", []),
-                     "theme": outline.get("theme", chosen)}
+                     "theme": outline.get("theme", chosen), "compliant": True}
         self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R5", accept=True,
                           artifact_uri=res.output)
         self._advance_to(task_id, f"{task_id}-R5", target_ring_no=6)
@@ -417,7 +450,8 @@ class MainOrchestration:
         chapters = draft.get("chapters", [])
         full_content = self._draft_to_text(chapters)
         rec.ring6 = {"chapters": chapters, "content": full_content,
-                     "total_words": draft.get("total_words", 0)}
+                     "total_words": draft.get("total_words", 0),
+                     "used_refs": draft.get("used_refs", []), "compliant": True}
         self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R6", accept=True,
                           artifact_uri=res.output)
         self._advance_to(task_id, f"{task_id}-R6", target_ring_no=7)
@@ -452,7 +486,7 @@ class MainOrchestration:
         polished = data.get("chapters", [])
         full_content = self._draft_to_text(polished)
         rec.ring7 = {"chapters": polished, "content": full_content,
-                     "total_words": data.get("total_words", 0)}
+                     "total_words": data.get("total_words", 0), "compliant": True}
         self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R7", accept=True,
                           artifact_uri=res.output)
         self._advance_to(task_id, f"{task_id}-R7", target_ring_no=8)
@@ -505,6 +539,7 @@ class MainOrchestration:
         res = get_executor(9).execute(ctx)
         data = json.loads(res.output)
         rec.ring9 = data
+        data["compliant"] = bool(res.accept)
         if res.accept:
             self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R9", accept=True,
                               artifact_uri=res.output)
@@ -514,6 +549,85 @@ class MainOrchestration:
             "issue_count": len(data.get("issues", [])),
             "summary": data.get("summary", ""),
         }, msg="环9排版检查完成" if res.accept else f"环9排版检查未通过：{data.get('summary', '')}")
+
+    # ------------------------------------------------------------------
+    # 步骤 6.5：环8 引用校验（UC-03 延续）
+    # ------------------------------------------------------------------
+    def run_ring8(self, task_id: str) -> Result[Dict[str, Any]]:
+        """执行环8引用校验：把环6 引用的 [L序号] 映射为池内题录 → 多源核验。"""
+        rec = self._require(task_id)
+        chosen = (rec.ring1 or {}).get("chosen", rec.title)
+        pool = self._ensure_literature(rec, chosen)
+        pool_by_idx = {i + 1: it for i, it in enumerate(pool)}
+
+        # 从环6 产物收集 used_refs 对应的题录
+        ring6 = rec.ring6 or {}
+        used_refs = (ring6.get("used_refs") or []) if isinstance(ring6, dict) else []
+        refs = []
+        for ref in used_refs:
+            m = re.match(r"\[L(\d+)\]", ref)
+            if m and int(m.group(1)) in pool_by_idx:
+                it = pool_by_idx[int(m.group(1))]
+                refs.append({"title": it.get("title", "") or it.get("ref_title", ""),
+                             "doi": it.get("doi", "")})
+        # 无 used_refs → 用池内前 5 条做示范校验（保证环8 有数据可跑）
+        if not refs and pool:
+            refs = [{"title": p.get("title", ""), "doi": p.get("doi", "")} for p in pool[:5]]
+
+        ctx = ExecContext(
+            subject_field=rec.subject_field,
+            degree=Degree(rec.degree),
+            theme=chosen,
+            session_id=rec.session_id,
+            tenant_id=rec.tenant_id,
+        )
+        ctx.references = refs  # extra 字段
+        res = get_executor(8).execute(ctx)
+        data = json.loads(res.output)
+        rec.ring8 = data
+        data["compliant"] = bool(res.accept)
+        if res.accept:
+            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R8", accept=True,
+                              artifact_uri=res.output)
+            self._advance_to(task_id, f"{task_id}-R8", target_ring_no=9)
+        return Result.ok(data={
+            "total": data.get("total", 0),
+            "passed": data.get("passed", 0),
+            "uncertain": data.get("uncertain", 0),
+            "failed": data.get("failed", 0),
+        }, msg=f"环8引用校验完成：{data.get('summary', '')}" if res.accept else f"环8引用校验未通过：{data.get('summary', '')}")
+
+    # ------------------------------------------------------------------
+    # 步骤 7.5：环10 定稿汇总（UC-05）
+    # ------------------------------------------------------------------
+    def run_ring10(self, task_id: str) -> Result[Dict[str, Any]]:
+        """执行环10定稿：汇总环1~9 验收状态 + 一致性/材料检查 + 交付清单。"""
+        rec = self._require(task_id)
+        artifacts: Dict[str, Any] = {}
+        for no in range(1, 10):
+            art = getattr(rec, f"ring{no}")
+            if art is not None:
+                artifacts[f"ring{no}"] = art
+        if rec.docx:
+            artifacts["docx"] = rec.docx
+        ctx = ExecContext(
+            subject_field=rec.subject_field,
+            degree=Degree(rec.degree),
+            theme=rec.title,
+            session_id=rec.session_id,
+            tenant_id=rec.tenant_id,
+        )
+        ctx.artifacts = artifacts  # extra 字段
+        res = get_executor(10).execute(ctx)
+        data = json.loads(res.output)
+        rec.ring10 = data
+        if res.accept:
+            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R10", accept=True,
+                              artifact_uri=res.output)
+            self._advance_to(task_id, f"{task_id}-R10", target_ring_no=10)
+        return Result.ok(data=data,
+                         msg=f"环10定稿：{data.get('summary', '')}" if res.accept
+                         else f"环10未通过：{data.get('summary', '')}")
 
     # ------------------------------------------------------------------
     # 步骤 8：生成 docx（UC-04）

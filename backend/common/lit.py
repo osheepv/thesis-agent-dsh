@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from common.sources import get_enabled_sources, get_source, registry_summary, resolve_scope
+
 logger = logging.getLogger("thesis.lit")
 
 #: 各源 HTTP 超时（秒）
@@ -104,13 +106,18 @@ class LitItem:
 
 
 class LiteratureService:
-    """多源文献检索服务（统一入口）。
+    """多源文献检索服务（统一入口，按源注册表路由）。
+
+    两层检索通道（对齐 SourceRegistry 标准通道）：
+        - API 层：crossref/openalex/semanticscholar（代码直接检索，免费）。
+        - 引导层：ncpssd/chinaxiv/metaso（无开放 API / 需用户账号，返回跳转指引）。
 
     Usage::
 
         svc = LiteratureService()
-        items = svc.search("transformer 注意力机制", max_results=10)
-        items = svc.lookup_doi("10.1109/XXX")   # DOI 反查（引文校验用）
+        items = svc.search("transformer 注意力机制", max_results=10)   # 默认 all
+        items = svc.search("图像识别", scope="english")                 # 只英文 API 层
+        guides = svc.search("图像识别", scope="chinese")                # 中文 → 跳转指引
     """
 
     def __init__(self, timeout: float = _TIMEOUT, mailto: str = MAILTO) -> None:
@@ -121,27 +128,51 @@ class LiteratureService:
     # ------------------------------------------------------------------
     # 对外
     # ------------------------------------------------------------------
-    def search(self, query: str, max_results: int = 10) -> List[LitItem]:
-        """按关键词多源检索，合并去重（按 DOI/标题）。
+    def search(self, query: str, max_results: int = 10,
+               scope: Optional[str] = None, source_ids: Optional[List[str]] = None) -> List[LitItem]:
+        """按关键词多源检索（按注册表路由），合并去重。
 
-        中文查询会并行走 Crossref（query.bibliographic）+ OpenAlex（search 全文）。
+        Args:
+            query: 检索词。
+            max_results: 返回上限。
+            scope: english/chinese/all（预定义范围）；None 用 source_ids。
+            source_ids: 显式源 ID 列表（如 ["crossref","openalex"]）。
+        Returns:
+            LitItem 列表（API 层命中）；引导层源返回带 guide 字段的条目。若请求的
+            源全部禁用（如只请求 metaso），返回空列表并记录提示。
+        Raises:
+            ValueError: 请求了未登记/未知的源 ID。
         """
+        source_ids = resolve_scope(scope, source_ids)
+        if not source_ids:
+            logger.info("检索源全部被禁用（请求: %s）", source_ids or scope)
+            return []
+
         results: List[LitItem] = []
+        for sid in source_ids:
+            src = get_source(sid)
+            if src is None or not src.enabled:
+                # 引导层源（oa_public/preprint/aggregator）即使 enabled=False 也提供
+                if src is not None and src.category in ("oa_public", "preprint", "aggregator"):
+                    results.append(self._guide_item(query, src))
+                continue
+            try:
+                if sid == "crossref":
+                    results.extend(self._crossref_search(query, max_results))
+                elif sid == "openalex":
+                    results.extend(self._openalex_search(query, max_results))
+                elif sid == "semanticscholar":
+                    results.extend(self._semanticscholar_search(query, max_results))
+                else:
+                    # 引导层源（ncpssd/chinaxiv/metaso 等）：返回跳转指引条目
+                    results.append(self._guide_item(query, src))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("检索源 %s 失败: %s", sid, exc)
 
-        # 1. Crossref
-        try:
-            results.extend(self._crossref_search(query, max_results))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Crossref 检索失败: %s", exc)
-
-        # 2. OpenAlex
-        try:
-            results.extend(self._openalex_search(query, max_results))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("OpenAlex 检索失败: %s", exc)
-
-        # 3. 合并去重（DOI 优先，其次 标题+年）
-        return self._dedupe(results)[:max_results]
+        # 合并去重（DOI 优先，其次 标题+年）；引导层条目不参与去重（保留）
+        real = [it for it in results if it.item_type != "guide"]
+        guides = [it for it in results if it.item_type == "guide"]
+        return (self._dedupe(real) + guides)[:max_results]
 
     def lookup_doi(self, doi: str) -> Optional[LitItem]:
         """按 DOI 精确反查（Crossref 权威，OpenAlex 补充）。"""
@@ -200,6 +231,80 @@ class LiteratureService:
                          "checked_sources": ["crossref", "openalex"]},
             "item": None,
         }
+
+    # ------------------------------------------------------------------
+    # 引导层（无 API 平台 → 跳转指引）
+    # ------------------------------------------------------------------
+    def _guide_item(self, query: str, src) -> LitItem:
+        """引导层条目：无 API 的平台生成"跳转指引"（用户自行下载到知识库）。"""
+        search_url = ""
+        if src.source_id == "ncpssd":
+            search_url = "https://www.ncpssd.cn/literature/list?type=journalArticle&query={query}".format(query=query)
+        elif src.source_id == "chinaxiv":
+            search_url = "https://www.chinaxiv.org/home#/search?q={query}".format(query=query)
+        elif src.source_id == "metaso":
+            search_url = "https://metaso.cn/?q={query}".format(query=query)
+        else:
+            search_url = src.endpoint
+        return LitItem(
+            title=f"【{src.name}】检索指引：{query}",
+            authors=[],
+            year=None,
+            venue=src.name,
+            doi="",
+            abstract=(
+                f"标准检索通道登记平台「{src.name}」（{src.category}，{src.language}）。"
+                f"该平台无开放检索 API，请用户自行前往检索，下载文献保存到会话"
+                f"知识库文件夹（storage/kb/{{session_id}}/），供引用与综述使用。"
+                f"合规说明：{src.notes}"
+            ),
+            citation_count=None,
+            urls=[search_url] if search_url else [],
+            item_type="guide",
+            language=src.language,
+            reliability="discovery",
+            sources=[src.source_id],
+            raw={"guide": True, "search_url": search_url, "source_name": src.name},
+        )
+
+    # ------------------------------------------------------------------
+    # Semantic Scholar
+    # ------------------------------------------------------------------
+    def _semanticscholar_search(self, query: str, limit: int) -> List[LitItem]:
+        """Semantic Scholar 搜索（免 key 限流共享池 ~1rps）。"""
+        url = "https://api.semanticscholar.org/graph/v1/paper/search"
+        params = {"query": query, "limit": limit,
+                  "fields": "title,year,authors,venue,externalIds,abstract"}
+        resp = self._client.get(url, params=params)
+        if resp.status_code == 429:
+            # 无条件限流：返回空（不阻塞其他源）
+            logger.info("Semantic Scholar 限流，跳过")
+            return []
+        resp.raise_for_status()
+        items = resp.json().get("data", [])
+        return [self._s2_to_item(it) for it in items if it.get("title")]
+
+    @staticmethod
+    def _s2_to_item(raw: Dict[str, Any]) -> LitItem:
+        authors = [a.get("name", "") for a in (raw.get("authors") or []) if a.get("name")]
+        ext = raw.get("externalIds") or {}
+        doi = ext.get("DOI", "")
+        urls = [ext.get("ArXiv", "")] if ext.get("ArXiv") else []
+        return LitItem(
+            title=raw.get("title", ""),
+            authors=authors,
+            year=raw.get("year"),
+            venue=(raw.get("venue") or ""),
+            doi=doi,
+            abstract=raw.get("abstract") or "",
+            citation_count=raw.get("citationCount"),
+            urls=urls,
+            item_type="article",
+            language="en",
+            reliability="matched",
+            sources=["semanticscholar"],
+            raw=raw,
+        )
 
     # ------------------------------------------------------------------
     # Crossref

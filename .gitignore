@@ -35,3 +35,6 @@ backend/thesis_docx/storage/outputs/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# 会话知识库（用户下载文献，运行时数据不入库）
+backend/storage/kb/

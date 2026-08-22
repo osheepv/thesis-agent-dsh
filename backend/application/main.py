@@ -82,14 +82,16 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
     # 主编排聚合路由（/api/v1/console）
     app.include_router(writer_console_router)
 
-    # 业务模块原生路由（M1 FSM / M5+M6 docx）：
+    # 业务模块原生路由（M1 FSM / M5+M6 docx / M9 知识库）：
     # 一期曾因 Result[T] 泛型与 pydantic 2 的兼容问题未挂载；pydantic 2.11.4 下
     # 已可正常挂载（实测通过），本次补挂全部业务端点。
     from fsm.api import build_fsm_router
+    from knowledge.router import router as kb_router
     from thesis_docx.router import router as docx_router
 
     app.include_router(build_fsm_router())
     app.include_router(docx_router)
+    app.include_router(kb_router)
 
     # 骨架原生路由（/healthz、/api/v1/tasks）
     app.include_router(health_router)

@@ -14,8 +14,10 @@ from .base import EXECUTOR_REGISTRY, ExecContext, ExecResult, RingExecutor, get_
 
 # 显式 import 触发 register_executor 装饰器，保证注册表填入。
 from . import ring1_topic  # noqa: F401
+from . import ring3  # noqa: F401
 from . import ring5_outline  # noqa: F401
 from . import ring6_chapter  # noqa: F401
+from . import ring8  # noqa: F401
 
 __all__ = [
     "EXECUTOR_REGISTRY",

@@ -136,6 +136,19 @@ async def ring6_chapter(task_id: str, session_id: str = "",
 
 
 # ---------------------------------------------------------------------
+# 环3 文献调研
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/rings/3/execute", response_model=None)
+async def ring3_execute(task_id: str, session_id: str = "",
+                        orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.run_ring3(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
 # 环7 润色
 # ---------------------------------------------------------------------
 @router.post("/tasks/{task_id}/rings/7/polish", response_model=None)

@@ -4494,9 +4494,18 @@ function renderStagesFromProgress(prog) {
 // —— 确认进入下一环（闸门按钮）——
 async function confirmNextRing() {
   if (!currentSession) return;
-  const r = await apiPost(`/api/v1/tasks/${currentSession}/hitl/confirm`, { confirmed: true });
-  if (r.code === 0) { toast('已确认，进入下一环'); loadSessionDetail(currentSession); loadSessions(); }
-  else toast('确认失败: ' + (r.msg || ''));
+  // 通用推进：advance accept=True（非 HITL 环直接推进；HITL 环由 confirm 落闸门）
+  const r = await apiPost(`/api/v1/tasks/${currentSession}/advance`, { accept: true });
+  if (r.code === 0) {
+    toast('已确认，进入下一环');
+    loadSessionDetail(currentSession);
+    loadSessions();
+  } else {
+    // fallback: hitl confirm（HITL 环）
+    const r2 = await apiPost(`/api/v1/tasks/${currentSession}/hitl/confirm`, { confirmed: true });
+    if (r2.code === 0) { toast('已确认闸门，进入下一环'); loadSessionDetail(currentSession); loadSessions(); }
+    else toast('确认失败: ' + (r2.msg || r.msg || ''));
+  }
 }
 // —— 执行当前环节 ——
 let ringRunning = false;
@@ -4512,7 +4521,7 @@ async function runCurrentRing() {
   try {
     const prog = await apiSessionProgress(currentSession);
     const no = prog ? prog.current_ring_no : 1;
-    const pathMap = { 1:'/rings/1/execute', 2:'/rings/2/review', 3:'/rings/3/execute', 4:'/rings/4/review', 5:'/rings/5/outline', 6:'/rings/6/chapter', 7:'/rings/7/polish', 8:'/rings/8/validate' };
+    const pathMap = { 1:'/rings/1/execute', 2:'/rings/2/review', 3:'/rings/3/execute', 4:'/rings/4/review', 5:'/rings/5/outline', 6:'/rings/6/chapter', 7:'/rings/7/polish', 8:'/rings/8/validate', 9:'/rings/9/layout', 10:'/rings/10/final' };
     const path = pathMap[no];
     if (!path) { toast(`环${no} 暂不支持自动执行`); return; }
     await runRingShow(currentSession, no, path);
@@ -4550,7 +4559,7 @@ async function submitNewSession() {
   const subject = document.getElementById('ns-subject').value.trim() || '自然语言处理';
   const r = await apiCreateSession({
     title, degree, subject_field: subject,
-    session_id: currentSessionId || 'default',
+    session_id: 'default',
   });
   const modal = document.getElementById('new-session-modal');
   if (modal) modal.classList.remove('show');

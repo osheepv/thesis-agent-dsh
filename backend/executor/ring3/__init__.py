@@ -142,6 +142,34 @@ def _to_lit_item(it: LitItem) -> LiteratureItem:
     )
 
 
+def _kb_docs_to_items(ctx: ExecContext) -> List[LiteratureItem]:
+    """会话知识库已存文献 → LiteratureItem（用户下载的有题录的进池）。"""
+    result: List[LiteratureItem] = []
+    for doc in (getattr(ctx, "kb_files", None) or []):
+        if not isinstance(doc, dict):
+            continue
+        meta = doc.get("metadata") or {}
+        title = meta.get("title") or doc.get("file_name", "")
+        if not title:
+            continue
+        # 知识库文献可作为"本地可靠"条目（用户已在平台核验下载）
+        result.append(LiteratureItem(
+            title=title,
+            authors=meta.get("authors") or [],
+            year=meta.get("year"),
+            venue=meta.get("venue", ""),
+            doi=meta.get("doi", ""),
+            abstract=meta.get("abstract", ""),
+            category=_categorize(title),
+            reliability="verified",  # 用户自行下载的文献视为已核验
+            gbt7714=format_gbt7714({"title": title, "authors": meta.get("authors") or [],
+                                   "year": meta.get("year"), "venue": meta.get("venue", ""),
+                                   "doi": meta.get("doi", ""), "item_type": "article"}),
+            urls=[],
+        ))
+    return result
+
+
 @register_executor
 class Ring3LiteratureReviewExecutor(RingExecutor):
     """环3 文献调研执行体。
@@ -176,12 +204,18 @@ class Ring3LiteratureReviewExecutor(RingExecutor):
                 evidence={"sources": [], "fetched": 0, "note": "THESIS_LIT_ENABLED=false"},
             )
 
-        # 逐检索词真实检索（去重合并）
+        # 逐检索词真实检索（按 scope 路由标准通道；去重合并）
+        scope = (getattr(ctx, "scope", "") or "all")
         seen_doi: set[str] = set()
         items: List[LiteratureItem] = []
+        kb_items = _kb_docs_to_items(ctx) if hasattr(ctx, "kb_files") else []
+        items.extend(kb_items)  # 知识库已存文献先入池（用户下载的）
+        for kb_it in kb_items:
+            if kb_it.doi:
+                seen_doi.add(kb_it.doi.strip().lower())
         for q in queries[:3]:
             try:
-                hits = svc.search(q, max_results=_API_FETCH_LIMIT)
+                hits = svc.search(q, max_results=_API_FETCH_LIMIT, scope=scope)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("检索词 %s 失败: %s", q, exc)
                 continue

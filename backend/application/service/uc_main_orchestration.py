@@ -15,10 +15,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
 import uuid
+
+logger = logging.getLogger("thesis.uc")
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from common.aicoding.dto.result import Result
@@ -707,22 +710,33 @@ class MainOrchestration:
         """确保文献池已构建（执行环3 并缓存），返回池条目列表。
 
         环3 离线/无文献源时返回空池（环5/6 prompt 会提示"禁止引用"）。
+        已知库文献（用户从引导层平台下载的）合并入池。
         """
         if rec.ring3 is not None:
             return rec.ring3.get("items", [])
+        # 读会话知识库已存文献（用户下载的题录）
+        kb_files = []
+        if rec.session_id:
+            try:
+                from knowledge.store import get_kb_store
+
+                kb_files = get_kb_store().list_documents(rec.session_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("知识库读取失败: %s", exc)
         try:
             res = get_executor(3).execute(
                 ExecContext(
                     subject_field=rec.subject_field,
                     degree=Degree(rec.degree),
                     theme=theme,
+                    scope="all",
+                    kb_files=kb_files,
                     session_id=rec.session_id,
                     tenant_id=rec.tenant_id,
                 )
             )
             data = json.loads(res.output)
             rec.ring3 = data
-            # 环3 真实执行会推进 FSM（文献调研是自动环节）；若未推进则补一次推进
             return data.get("items", [])
         except Exception:  # noqa: BLE001 - 检索失败不阻塞大纲/撰写流程
             return []

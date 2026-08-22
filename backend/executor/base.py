@@ -66,6 +66,11 @@ class ExecContext(BaseModel):
         description="文献池（环3 输出，环5/6 引用来源；引用只能取自池内，禁编造）",
     )
     draft: str = Field(default="", description="环6 初稿 JSON（环7 润色输入）")
+    scope: str = Field(default="all", description="检索范围 english/chinese/all（环3 传入）")
+    kb_files: list[dict] = Field(
+        default_factory=list,
+        description="会话知识库已存文献（用户下载的题录，环3 合并入池）",
+    )
     trace_id: Optional[str] = Field(default=None, description="追踪 ID")
     session_id: str = Field(default="", description="会话 ID（M9 隔离预留）")
     tenant_id: str = Field(default="default", description="租户 ID")

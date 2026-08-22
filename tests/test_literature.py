@@ -21,7 +21,7 @@ from backend.executor import ExecContext, get_executor
 class FakeLitService:
     """假文献检索：返回固定条目，不访问网络。"""
 
-    def search(self, query: str, max_results: int = 10):
+    def search(self, query: str, max_results: int = 10, scope=None, source_ids=None):
         from backend.common.lit import LitItem
 
         return [

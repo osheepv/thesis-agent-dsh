@@ -3543,10 +3543,17 @@ document.getElementById('del-cancel').addEventListener('click', () => {
   delModal.classList.remove('show');
   pendingDelete = null;
 });
-document.getElementById('del-confirm').addEventListener('click', () => {
+document.getElementById('del-confirm').addEventListener('click', async () => {
   if (pendingDelete) {
-    pendingDelete.remove();
-    toast('对话与知识库已删除');
+    const taskId = pendingDelete.dataset.task;
+    const r = await apiDeleteSession(taskId);
+    if (r.code === 0) {
+      if (currentSession === taskId) currentSession = null;
+      await loadSessions();
+      toast('对话与知识库已删除');
+    } else {
+      toast('删除失败: ' + (r.msg || ''));
+    }
   }
   delModal.classList.remove('show');
   pendingDelete = null;
@@ -3704,11 +3711,72 @@ function renderRingResult(ringNo, data) {
       `<p><strong>环${ringNo} ${name} 完成</strong>&nbsp;<span class="badge" style="background:${badgeColor}1a;color:${badgeColor};border:1px solid ${badgeColor}33;">${escapeHtml2(level || data.verdict || '完成')}</span></p>` +
       `<p style="font-size:13px;color:var(--text-subtle);">相似研究：<strong>${similar}</strong> 条</p>${diff}${rec}`,
       `${name} · 已完成`);
+  } else if (ringNo === 5) {
+    // 大纲卡（章节树）
+    const chapters = (data && data.chapters) || [];
+    const levels = chapters.filter(c => c.level === 1);
+    appendAIMsg(`<p><strong>环5 大纲完成</strong>，共 <strong>${levels.length}</strong> 章：</p>` +
+      levels.map(ch => `<p style="margin:5px 0;font-size:13px;">📄 ${escapeHtml2(ch.number || '')} ${escapeHtml2(ch.title)}</p>`).join(''),
+      `${name} · 已完成`);
+  } else if (ringNo === 6) {
+    // 撰写卡
+    const chapters = (data && data.chapters) || [];
+    const words = data && data.total_words != null ? data.total_words : 0;
+    appendAIMsg(`<p><strong>环6 撰写完成</strong>：<strong>${chapters.length}</strong> 章 · <strong>${words}</strong> 字</p>` +
+      chapters.slice(0, 3).map(ch => `<p style="margin:4px 0;font-size:13px;color:var(--text-subtle);">${escapeHtml2(ch.chapter_title || '')}（${ch.word_count || 0} 字）</p>`).join(''),
+      `${name} · 已完成`);
+  } else if (ringNo === 7) {
+    // 润色卡
+    const words = data && data.total_words != null ? data.total_words : 0;
+    const terms = (data && data.applied_terms) || [];
+    appendAIMsg(`<p><strong>环7 润色完成</strong>（只改表达不改事实）：${words} 字</p>` +
+      (terms.length ? `<p style="font-size:13px;color:var(--text-subtle);">术语统一：${terms.slice(0,3).map(t => escapeHtml2(t)).join('、')}</p>` : ''),
+      `${name} · 已完成`);
+  } else if (ringNo === 8) {
+    // 引用校验卡
+    const total = data && data.total != null ? data.total : 0;
+    const passed = data && data.passed != null ? data.passed : 0;
+    const failed = data && data.failed != null ? data.failed : 0;
+    const uncertain = data && data.uncertain != null ? data.uncertain : 0;
+    appendAIMsg(`<p><strong>环8 引用校验完成</strong>：共 <strong>${total}</strong> 条</p>` +
+      `<p style="font-size:13px;"><span style="color:var(--success)">✓ 通过 ${passed}</span> · <span style="color:var(--warning)">待人工 ${uncertain}</span> · <span style="color:var(--error)">伪引 ${failed}</span></p>` +
+      (failed > 0 ? `<p style="font-size:12px;color:var(--error)">存在伪引，请回退环3 补文献</p>` : ''),
+      `${name} · 已完成`);
+  } else if (ringNo === 9) {
+    // 排版卡
+    const compliant = data && data.compliant;
+    const issues = (data && data.issues) || [];
+    appendAIMsg(`<p><strong>环9 排版检查${compliant ? '通过' : '未通过'}</strong></p>` +
+      (issues.length ? `<p style="font-size:13px;color:var(--warning);">${issues.slice(0,3).map(i => escapeHtml2(i.message || i)).join('<br>')}</p>` : `<p style="font-size:13px;color:var(--success);">版式合规（0 硬伤）</p>`),
+      `${name} · ${compliant ? '通过' : '未通过'}`);
+  } else if (ringNo === 10) {
+    // 定稿卡（验收汇总）
+    const rings = (data && data.rings) || [];
+    const passCount = rings.filter(r => r.status === '通过').length;
+    const missing = (data && data.materials_missing) || [];
+    appendAIMsg(`<p><strong>环10 定稿汇总</strong>：${passCount}/9 环通过</p>` +
+      (missing.length ? `<p style="font-size:13px;color:var(--warning);">待补材料：${missing.map(m => escapeHtml2(m)).join('、')}</p>` : `<p style="font-size:13px;color:var(--success);">材料齐备，可提交！</p>`),
+      `${name} · ${missing.length ? '待补' : '通过'}`);
   } else {
     // 通用产物卡
     const text = data && (data.summary || data.msg || '');
     appendAIMsg(`<p><strong>环${ringNo} ${name} 完成</strong></p><p style="font-size:13px;color:var(--text-subtle);">${escapeHtml2(text)}</p>`, `${name} · 已完成`);
   }
+}
+
+// —— 追加"确认进入下一环"闸门 ——
+function appendGateBlock(ringNo) {
+  const flow = document.getElementById('chat-flow');
+  const inner = flow.querySelector('.chat-inner');
+  const gate = document.createElement('div');
+  gate.className = 'gate-block';
+  gate.innerHTML = `<div class="gate-hint"><span class="gate-dot"></span>已完成自动校验，待您确认后进入下一环</div>
+    <div class="gate-row"><span class="gate-label">「${RING_NAMES[ringNo] || '环' + ringNo}」环节已通过自动验收</span>
+    <button class="btn btn-primary" data-gate>确认进入下一环</button></div>`;
+  inner.appendChild(gate);
+  const btn = gate.querySelector('[data-gate]');
+  if (!btn.dataset.bound) { btn.dataset.bound = '1'; btn.addEventListener('click', confirmNextRing); }
+  flow.scrollTop = flow.scrollHeight;
 }
 
 // —— 执行环 + 追加消息 ——
@@ -3717,6 +3785,8 @@ async function runRingShow(taskId, ringNo, path) {
   const r = await apiRunRing(taskId, path);
   if (r.code === 0) {
     renderRingResult(ringNo, r.data);
+    // 追加"确认进入下一环"闸门（双重验证）
+    appendGateBlock(ringNo);
     toast(r.msg || `环${ringNo} 完成`);
   } else {
     // 评审未通过：警告卡 + 回退/重新生成
@@ -4539,6 +4609,11 @@ async function apiSessionProgress(taskId) {
 async function apiRunRing(taskId, ringPath) {
   return apiPost(`/api/v1/console/tasks/${taskId}${ringPath}`);
 }
+async function apiDeleteSession(taskId) {
+  const resp = await fetch(`${API_BASE}/api/v1/console/tasks/${taskId}`, { method: 'DELETE', headers: { 'Accept': 'application/json' } });
+  return resp.json();
+}
+
 async function apiGenerateDocx(taskId) {
   return apiPost(`/api/v1/console/tasks/${taskId}/docx/generate`);
 }

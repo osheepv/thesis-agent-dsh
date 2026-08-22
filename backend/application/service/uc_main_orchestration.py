@@ -187,6 +187,11 @@ class _TaskStore:
         with self._lock:
             return list(self._tasks.values())
 
+    def delete(self, task_id: str) -> bool:
+        """删除任务。"""
+        with self._lock:
+            return self._tasks.pop(task_id, None) is not None
+
 
 # =====================================================================
 # 主编排用例
@@ -209,6 +214,33 @@ class MainOrchestration:
         self._fsm = fsm or FsmOrchestrator(InMemoryFsmRepository())
         self._docx = docx_renderer or RealDocxRenderer()
         self._store = store or _TaskStore()
+
+    def delete_task(self, task_id: str) -> Result[Dict[str, Any]]:
+        """删除会话（连带知识库）。"""
+        rec = self._store.get(task_id)
+        if rec is None:
+            raise BizException(ErrorCode.TASK_NOT_FOUND, msg=f"任务不存在: {task_id}")
+        self._store.delete(task_id)
+        try:
+            self._fsm.delete_task(task_id)
+        except Exception:  # noqa: BLE001 - FSM 无该任务不阻塞
+            pass
+        # 连带删除知识库目录
+        if rec.session_id:
+            try:
+                import shutil as _sh
+                from knowledge.store import get_kb_store
+                import os as _os
+                kb_path = get_kb_store().session_path(rec.session_id)
+                for sub in ("files", "notes", "meta.json"):
+                    target = _os.path.join(kb_path, sub)
+                    if _os.path.isdir(target):
+                        _sh.rmtree(target, ignore_errors=True)
+                    elif _os.path.isfile(target):
+                        _os.remove(target)
+            except Exception:  # noqa: BLE001
+                pass
+        return Result.ok(data={"task_id": task_id}, msg="会话已删除（含知识库）")
 
     # ------------------------------------------------------------------
     # 步骤 1：创建论文任务（UC-01）

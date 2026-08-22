@@ -338,6 +338,13 @@ class FsmOrchestrator:
     # ============================================================
     # HITL 人工确认（M3 网关预留接口，本期仅落状态不调用外部网关）
     # ============================================================
+    def delete_task(self, task_id: str) -> None:
+        """删除任务（仓储移除；回退栈/看门一并清理）。"""
+        state = self.get_task(task_id)  # 不存在抛 TASK_NOT_FOUND
+        # 仓储提供 delete 则清理（InMemory 与 SqlAlchemy 均实现）
+        if hasattr(self._repo, "delete"):
+            self._repo.delete(task_id)
+
     def confirm_hitl(
         self,
         task_id: str,

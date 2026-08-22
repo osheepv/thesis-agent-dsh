@@ -52,6 +52,17 @@ async def create_task(req: Dict[str, Any],
     )
 
 
+@router.delete("/tasks/{task_id}", response_model=None)
+async def delete_task(task_id: str, session_id: str = "",
+                      orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    """删除会话（连带知识库）。"""
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.delete_task(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 @router.get("/tasks", response_model=None)
 async def list_tasks(session_id: str = "",
                      orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:

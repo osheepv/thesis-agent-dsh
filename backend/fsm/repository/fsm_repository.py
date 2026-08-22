@@ -68,6 +68,11 @@ class InMemoryFsmRepository:
             return list(self._gates)
         return [g for g in self._gates if g.task_id == task_id]
 
+    def delete(self, task_id: str) -> None:
+        """删除任务状态与看门。"""
+        self._states.pop(task_id, None)
+        self._gates = [g for g in self._gates if g.task_id != task_id]
+
 
 # ============================================================
 # SQLAlchemy 实现（生产）
@@ -159,6 +164,16 @@ class SqlAlchemyFsmRepository:
                     gate_rule=gate.gate_rule,
                 )
             )
+            session.commit()
+
+    def delete(self, task_id: str) -> None:
+        """删除任务状态与看门（级联）。"""
+        from fsm.state.orm import AcceptanceGateModel, FsmStateModel
+        from sqlalchemy import delete as _del
+
+        with self._new_session() as session:
+            session.execute(_del(FsmStateModel).where(FsmStateModel.task_id == task_id))
+            session.execute(_del(AcceptanceGateModel).where(AcceptanceGateModel.task_id == task_id))
             session.commit()
 
     def persist_transition(self, state: FsmState, gate: Optional[AcceptanceGate] = None) -> None:

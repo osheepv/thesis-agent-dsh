@@ -1372,61 +1372,59 @@ a:hover { text-decoration: underline; }
 .uc-track-big {
   position: relative;
   width: 100%;
-  height: 24px;
-  display: flex; align-items: center;
+  height: 26px;
   cursor: pointer;
   touch-action: none;
   user-select: none;
 }
-.uc-track-big::before {
-  content: '';
+.uc-track-big-track {
   position: absolute;
-  left: 0; right: 0;
-  height: 6px;
-  background: var(--border-divider);
-  border-radius: 3px;
-  transition: background var(--transition-fast);
+  inset: 0;
+  height: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--bg-hover);
+  overflow: hidden;
 }
-.uc-track-big.active::before {
-  background: linear-gradient(90deg, #A78BFA, #F472B6, #FB923C);
-  opacity: 0.85;
+.uc-track-big-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #A855F7, #EC4899, #F97316);
+  transition: width 0.18s ease;
+  width: 0%;
 }
+.uc-track-big.active .uc-track-big-fill { width: 65%; }
+.uc-track-big-stops {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 11px;
+  pointer-events: none;
+}
+.uc-track-big-stops span {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--text-subtle);
+  opacity: 0.9;
+}
+.uc-track-big.active .uc-track-big-stops span.on { background: var(--text-primary); }
 .uc-thumb-big {
   position: absolute;
-  width: 18px; height: 18px;
-  background: #fff;
+  top: 50%;
+  width: 24px; height: 24px;
   border-radius: 50%;
-  top: 3px;
-  left: 0;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.2), 0 0 0 1px var(--border-divider);
-  transition: left 60ms linear, background 200ms ease, box-shadow 200ms ease;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+  transform: translate(-50%, -50%);
+  transition: left 0.18s ease;
+  left: 0%;
 }
-.uc-track-big.active .uc-thumb-big {
-  background: linear-gradient(135deg, #A78BFA, #FB923C);
-  box-shadow: 0 0 0 2px rgba(251,146,60,0.3), 0 0 16px rgba(244,114,182,0.4);
-}
-.uc-track-ticks {
-  display: flex; justify-content: space-between;
-  margin-top: 8px;
-  padding: 0 4px;
-}
-.uc-track-ticks span {
-  width: 1px; height: 4px;
-  background: var(--border-divider);
-}
-.uc-track-ticks span.t-major {
-  width: 2px; height: 6px;
-  background: var(--text-subtle);
-}
-.uc-track-ticks span:first-child,
-.uc-track-ticks span:last-child { background: transparent; }
-.uc-track-big:not(.active) .uc-track-ticks { opacity: 0.5; }
-.uc-value {
-  margin-top: 10px;
-  text-align: center;
-  font-size: 11px;
-  color: var(--text-inactive);
-}
+.uc-track-ticks { display: none; }
+.uc-value { display: none; }
 .uc-value strong {
   font-family: var(--font-mono);
   color: var(--text-primary);
@@ -3206,21 +3204,11 @@ a:hover { text-decoration: underline; }
     <span>Smarter</span>
   </div>
   <div class="uc-track-big" id="uc-track-big" tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="65">
+    <div class="uc-track-big-track"><div class="uc-track-big-fill" id="uc-fill-big"></div></div>
+    <div class="uc-track-big-stops">
+      <span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span>
+    </div>
     <span class="uc-thumb-big" id="uc-thumb-big"></span>
-  </div>
-  <div class="uc-track-ticks">
-    <span></span>
-    <span class="t-major"></span>
-    <span></span>
-    <span class="t-major"></span>
-    <span></span>
-    <span class="t-major"></span>
-    <span></span>
-    <span class="t-major"></span>
-    <span></span>
-  </div>
-  <div class="uc-value">
-    <span data-i18n="uc.current">当前强度</span>: <strong id="uc-value-num">65</strong> / 100
   </div>
 </div>
 
@@ -3496,8 +3484,14 @@ function setUcValue(v, silent = false) {
   if (ucThumb) ucThumb.style.left = `calc(${pct}% - 7px)`;
   // 大 popover thumb
   if (ucThumbBig) {
-    ucThumbBig.style.left = `calc(${pct}% - 9px)`;
+    ucThumbBig.style.left = `calc(${pct}% - 12px)`;
   }
+  const fillBig = document.getElementById('uc-fill-big');
+  if (fillBig) fillBig.style.width = pct + '%';
+  const stops = document.querySelectorAll('.uc-track-big-stops span');
+  stops.forEach((s, i) => {
+    s.classList.toggle('on', ucValue >= (i / Math.max(1, stops.length - 1)) * 100);
+  });
   // 激活态：> 0 时高亮
   const active = ucValue > 0;
   if (ucToggle) ucToggle.classList.toggle('active', active);

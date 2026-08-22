@@ -2472,6 +2472,54 @@ a:hover { text-decoration: underline; }
 .ctx-ring::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--bg-card); }
 .ctx-ring-dot { position: relative; width: 5px; height: 5px; border-radius: 50%; background: var(--permission); z-index: 1; }
 
+
+/* —— 执行当前环节栏 —— */
+.run-bar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: center;
+  padding: 8px 24px 4px;
+  background: linear-gradient(transparent, var(--bg-app) 40%);
+  z-index: 5;
+}
+.run-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 8px 18px;
+  border-radius: 999px;
+  background: var(--claude);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(215,119,87,0.3);
+  transition: opacity 0.15s ease, transform 0.1s ease;
+}
+.run-btn:hover:not(:disabled) { opacity: 0.9; }
+.run-btn:active:not(:disabled) { transform: scale(0.97); }
+.run-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.run-loading { font-size: 12px; opacity: 0.9; }
+
+
+/* —— 新建对话表单 —— */
+.form-field { margin-bottom: 12px; }
+.form-field label { display: block; font-size: 12px; color: var(--text-subtle); margin-bottom: 5px; font-weight: 500; }
+.form-field input, .form-field select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border-divider);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+.form-field input:focus, .form-field select:focus { border-color: var(--claude); }
+.form-field-row { display: flex; gap: 12px; }
+.form-field-row .form-field { flex: 1; }
+
 </style>
 </head>
 <body>
@@ -2568,6 +2616,14 @@ a:hover { text-decoration: underline; }
           </div>
 
         </div>
+      </div>
+
+      <!-- 执行当前环节栏（对话流底部，输入区上方） -->
+      <div class="run-bar" id="run-bar">
+        <button class="btn-primary run-btn" id="run-cur-ring" disabled>
+          <span id="run-btn-label">执行当前环节</span>
+          <span class="run-loading" id="run-loading" style="display:none;">执行中…</span>
+        </button>
       </div>
 
       <!-- 输入区（Claude 官方 1:1：大圆角输入框+内嵌发送 / 下方工具行） -->
@@ -2988,6 +3044,45 @@ a:hover { text-decoration: underline; }
       <span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span>
     </div>
     <span class="uc-thumb-big" id="uc-thumb-big"></span>
+  </div>
+</div>
+
+<!-- ============ 新建对话模态 ============ -->
+<div class="modal-mask" id="new-session-modal">
+  <div class="modal" role="dialog" aria-labelledby="ns-title" aria-modal="true">
+    <div class="modal-title" id="ns-title">新建论文对话</div>
+    <div class="modal-body">
+      <div class="form-field">
+        <label>论文题目</label>
+        <input type="text" id="ns-title-input" placeholder="如：基于深度学习的图像识别研究" />
+      </div>
+      <div class="form-field-row">
+        <div class="form-field">
+          <label>学位</label>
+          <select id="ns-degree">
+            <option value="BACHELOR">本科</option>
+            <option value="MASTER" selected>硕士</option>
+            <option value="PHD">博士</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label>检索范围</label>
+          <select id="ns-scope">
+            <option value="all" selected>全部（英文API+中文引导）</option>
+            <option value="english">仅英文</option>
+            <option value="chinese">仅中文（引导）</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-field">
+        <label>学科方向</label>
+        <input type="text" id="ns-subject" placeholder="如：计算机视觉 / 自然语言处理" />
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="ns-cancel">取消</button>
+      <button class="btn btn-primary" id="ns-confirm">创建</button>
+    </div>
   </div>
 </div>
 
@@ -4244,7 +4339,7 @@ async function loadSessions() {
 
 async function loadSessionDetail(taskId) {
   const prog = await apiSessionProgress(taskId);
-  if (prog) renderStagesFromProgress(prog);
+  if (prog) { renderStagesFromProgress(prog); updateRunBtn(prog); }
   await loadKbPanel(taskId);
   buildHistoryFromProgress(prog);
 }
@@ -4319,34 +4414,78 @@ async function confirmNextRing() {
   else toast('确认失败: ' + (r.msg || ''));
 }
 // —— 执行当前环节 ——
+let ringRunning = false;
 async function runCurrentRing() {
-  if (!currentSession) return;
-  const prog = await apiSessionProgress(currentSession);
+  if (!currentSession || ringRunning) return;
+  const btn = document.getElementById('run-cur-ring');
+  const label = document.getElementById('run-btn-label');
+  const loading = document.getElementById('run-loading');
+  ringRunning = true;
+  if (btn) btn.disabled = true;
+  if (label) label.style.display = 'none';
+  if (loading) loading.style.display = '';
+  try {
+    const prog = await apiSessionProgress(currentSession);
+    const no = prog ? prog.current_ring_no : 1;
+    const pathMap = { 1:'/rings/1/execute', 2:'/rings/2/review', 3:'/rings/3/execute', 4:'/rings/4/review', 5:'/rings/5/outline', 6:'/rings/6/chapter', 7:'/rings/7/polish', 8:'/rings/8/validate' };
+    const path = pathMap[no];
+    if (!path) { toast(`环${no} 暂不支持自动执行`); return; }
+    await runRingShow(currentSession, no, path);
+  } finally {
+    ringRunning = false;
+    if (btn) btn.disabled = false;
+    if (label) label.style.display = '';
+    if (loading) loading.style.display = 'none';
+  }
+}
+
+// —— 更新执行按钮状态（选中会话/完成全部后禁用）——
+function updateRunBtn(prog) {
+  const btn = document.getElementById('run-cur-ring');
+  if (!btn) return;
+  if (!currentSession) { btn.disabled = true; return; }
   const no = prog ? prog.current_ring_no : 1;
-  const pathMap = { 1:'/rings/1/execute', 2:'/rings/2/review', 3:'/rings/3/execute', 4:'/rings/4/review', 5:'/rings/5/outline', 6:'/rings/6/chapter', 7:'/rings/7/polish', 8:'/rings/8/validate' };
-  const path = pathMap[no];
-  if (!path) { toast(`环${no} 暂不支持自动执行`); return; }
-  await runRingShow(currentSession, no, path);
+  const finished = prog ? prog.rings.filter(r => r.state === 'PASSED').length : 0;
+  if (finished >= 10) { btn.disabled = true; document.getElementById('run-btn-label').textContent = '已全部完成'; }
+  else { btn.disabled = false; document.getElementById('run-btn-label').textContent = `执行当前环节（环${no} ${RING_NAMES[no] || ''}）`; }
 }
 
 // —— 新建对话（“新建对话”按钮触发）——
-async function handleNewSession() {
-  const title = prompt('请输入论文题目：', '基于大模型的学术写作影响研究');
-  if (!title) return;
-  const degree = prompt('学位（本科/硕士/博士，默认硕士）：') || '硕士';
-  const degMap = { '本科': 'BACHELOR', '硕士': 'MASTER', '博士': 'PHD' };
-  const subject = prompt('学科方向（如 计算机视觉）：') || '自然语言处理';
+function handleNewSession() {
+  const modal = document.getElementById('new-session-modal');
+  if (modal) modal.classList.add('show');
+  const input = document.getElementById('ns-title-input');
+  if (input) setTimeout(() => input.focus(), 50);
+}
+
+async function submitNewSession() {
+  const title = document.getElementById('ns-title-input').value.trim();
+  if (!title) { toast('请输入论文题目'); return; }
+  const degree = document.getElementById('ns-degree').value;
+  const subject = document.getElementById('ns-subject').value.trim() || '自然语言处理';
   const r = await apiCreateSession({
-    title, degree: degMap[degree] || 'MASTER',
-    subject_field: subject,
+    title, degree, subject_field: subject,
     session_id: currentSessionId || 'default',
   });
+  const modal = document.getElementById('new-session-modal');
+  if (modal) modal.classList.remove('show');
   if (r.code === 0) {
-    toast('会话已创建');
+    toast('会话已创建：' + title);
+    document.getElementById('ns-title-input').value = '';
+    document.getElementById('ns-subject').value = '';
     await loadSessions();
   } else {
     toast('创建失败: ' + (r.msg || ''));
   }
+}
+
+function bindNewSessionModal() {
+  const modal = document.getElementById('new-session-modal');
+  document.getElementById('ns-cancel').addEventListener('click', () => modal.classList.remove('show'));
+  document.getElementById('ns-confirm').addEventListener('click', submitNewSession);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.classList.remove('show'); });
+  const ti = document.getElementById('ns-title-input');
+  if (ti) ti.addEventListener('keydown', e => { if (e.key === 'Enter') submitNewSession(); });
 }
 
 /* ============================================================
@@ -4452,6 +4591,9 @@ async function initApp() {
   document.querySelectorAll('[data-gate]').forEach(b => {
     if (!b.dataset.bound) { b.dataset.bound = '1'; b.addEventListener('click', confirmNextRing); }
   });
+  const runBtn = document.getElementById('run-cur-ring');
+  if (runBtn && !runBtn.dataset.bound) { runBtn.dataset.bound = '1'; runBtn.addEventListener('click', runCurrentRing); }
+  if (!document.getElementById('ns-confirm').dataset.bound) { document.getElementById('ns-confirm').dataset.bound = '1'; bindNewSessionModal(); }
 }
 initApp();
 

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "thesis-agent-dsh"
+version = "0.1.0"
+description = "基于 DSH 的学位论文全流程写作 Agent（一期最小可运行闭环）"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "thesis-agent-dsh" }]
+
+[tool.setuptools]
+packages = []
+
+[tool.pytest.ini_options]
+addopts = "-q -p no:cacheprovider"
+testpaths = ["../tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]

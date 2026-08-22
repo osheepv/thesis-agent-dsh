@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 虚拟环境
+.venv/
+.venv*/
+venv/
+env/
+
+# 测试缓存
+.pytest_cache/
+pytest-cache-files-*/
+
+# 本项目专属：vendored 依赖副本（由 requirements.txt 管理，不进仓库）
+backend/thesis_docx/.vendor/
+
+# 运行时生成产物
+backend/thesis_docx/storage/outputs/
+
+# 编辑器/系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

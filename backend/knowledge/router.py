@@ -89,6 +89,30 @@ async def delete_file(session_id: str, file_id: str, store=Depends(_store)) -> R
     return Result.ok(msg="已删除")
 
 
+@router.get("/{session_id}/notes", response_model=None)
+async def list_notes(session_id: str, store=Depends(_store)) -> Result:
+    """会话笔记列表（含内容）。"""
+    try:
+        notes = store.list_notes(session_id)
+        return Result.ok(data={"items": notes, "count": len(notes)}, msg="笔记列表")
+    except Exception as exc:  # noqa: BLE001
+        return Result.fail(code=1, msg=f"笔记读取失败: {exc}")
+
+
+@router.post("/{session_id}/notes", response_model=None)
+async def save_note(session_id: str, req: Dict[str, Any], store=Depends(_store)) -> Result:
+    """保存笔记（markdown 落盘）。"""
+    try:
+        title = req.get("title", "")
+        content = req.get("content", "")
+        if not title:
+            return Result.fail(code=2, msg="标题不能为空")
+        rec = store.save_note(session_id, title, content)
+        return Result.ok(data={"file_name": rec["file_name"]}, msg="笔记已保存")
+    except Exception as exc:  # noqa: BLE001
+        return Result.fail(code=1, msg=f"笔记保存失败: {exc}")
+
+
 @router.get("/{session_id}/graph", response_model=None)
 async def get_graph(session_id: str, store=Depends(_store)) -> Result:
     """知识图谱数据：笔记/文献节点 + 双链边（供 Cytoscape 渲染）。"""

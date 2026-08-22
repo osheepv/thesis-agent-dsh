@@ -2520,6 +2520,51 @@ a:hover { text-decoration: underline; }
 .form-field-row { display: flex; gap: 12px; }
 .form-field-row .form-field { flex: 1; }
 
+
+/* —— 图谱节点详情抽屉 —— */
+.node-drawer {
+  position: fixed;
+  right: 316px; top: 60px;
+  width: 300px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(0,0,0,0.18);
+  padding: 14px 16px;
+  z-index: 900;
+  display: none;
+}
+.node-drawer.show { display: block; animation: ddIn 160ms ease; }
+.nd-head { display: flex; align-items: center; gap: 8px; }
+.nd-link {
+  padding: 4px 10px;
+  border: 1px solid var(--border-divider);
+  border-radius: 999px;
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.nd-link:hover { border-color: var(--claude); }
+/* —— depth 按钮 —— */
+.dg-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--border-divider);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-subtle);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.dg-btn:hover { border-color: var(--claude); color: var(--claude); }
+.dg-btn.active { background: var(--claude); border-color: var(--claude); color: #fff; }
+
+/* —— 文献池高亮（图谱跳转） —— */
+@keyframes flashItem { 0%, 100% { background: transparent; } 50% { background: var(--claude-soft); } }
+.ref-item.flash { animation: flashItem 1s ease 2; border-radius: 8px; }
+
 </style>
 <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
 </head>
@@ -2771,6 +2816,13 @@ a:hover { text-decoration: underline; }
             <span>概念图谱</span>
             <span class="count" id="graph-count">0 节点</span>
           </div>
+          <div id="graph-depth" style="display:flex;gap:4px;margin-bottom:6px;">
+            <button class="dg-btn active" data-depth="0" onclick="applyDepth(0)">全部</button>
+            <button class="dg-btn" data-depth="1" onclick="applyDepth(1)">1跳</button>
+            <button class="dg-btn" data-depth="2" onclick="applyDepth(2)">2跳</button>
+            <button class="dg-btn" data-depth="3" onclick="applyDepth(3)">3跳</button>
+          </div>
+          </div>
           <div id="kb-graph" style="width:100%;height:380px;background:#1F1F1F;border-radius:12px;"></div>
           <div class="graph-legend" style="margin-top:8px;display:flex;gap:14px;font-size:11px;color:var(--text-subtle);">
             <span class="lg"><span class="lg-dot" style="background:var(--claude);display:inline-block;width:8px;height:8px;border-radius:50%;"></span> 笔记/概念</span>
@@ -3006,6 +3058,21 @@ a:hover { text-decoration: underline; }
       <span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span>
     </div>
     <span class="uc-thumb-big" id="uc-thumb-big"></span>
+  </div>
+</div>
+
+<!-- ============ 图谱节点详情抽屉 ============ -->
+<div class="node-drawer" id="node-drawer" role="dialog" aria-modal="true">
+  <div class="nd-head">
+    <span id="nd-title" style="font-weight:600;font-size:14px;color:var(--text-primary);">节点</span>
+    <span id="nd-type" class="badge" style="background:var(--claude-soft);color:var(--claude);">笔记</span>
+    <button id="nd-close" style="margin-left:auto;background:none;border:none;color:var(--text-subtle);font-size:18px;cursor:pointer;">×</button>
+  </div>
+  <div id="nd-summary" style="font-size:12px;color:var(--text-subtle);margin:8px 0;line-height:1.6;"></div>
+  <div style="font-size:12px;color:var(--text-inactive);margin-bottom:4px;">关联节点（{{双链}}）</div>
+  <div id="nd-neighbors" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;"></div>
+  <div style="display:flex;gap:8px;">
+    <button class="btn btn-primary" id="nd-open" style="flex:1;">打开</button>
   </div>
 </div>
 
@@ -4611,9 +4678,12 @@ applyI18n();
 
 
 /* ============================================================
-   知识图谱（Cytoscape.js 真实渲染）
+   知识图谱（Cytoscape.js，Obsidian Graph View 风格配方）
    ============================================================ */
 let cyGraph = null;
+let graphFocus = null;      // depth 局部视图中心节点
+const GRAPH_TYPE_NAME = { note: '笔记', concept: '概念', paper: '文献' };
+
 async function renderGraph(sessionId) {
   const apiGraph = await apiGet(`/api/v1/kb/${encodeURIComponent(sessionId || 'default')}/graph`);
   const data = apiGraph.code === 0 ? (apiGraph.data || { nodes: [], links: [] }) : { nodes: [], links: [] };
@@ -4622,8 +4692,9 @@ async function renderGraph(sessionId) {
   const el = document.getElementById('kb-graph');
   if (!el || typeof cytoscape === 'undefined') return;
   if (cyGraph) { cyGraph.destroy(); cyGraph = null; }
+  graphFocus = null;
   const elements = [
-    ...(data.nodes || []).map(n => ({ data: { id: n.id, label: n.label, type: n.type } })),
+    ...(data.nodes || []).map(n => ({ data: { id: n.id, label: n.label, type: n.type }, classes: n.type })),
     ...(data.links || []).map(l => ({ data: { source: l.source, target: l.target } })),
   ];
   if (!elements.length) {
@@ -4635,18 +4706,113 @@ async function renderGraph(sessionId) {
     elements,
     style: [
       { selector: 'node', style: {
-          'background-color': '#22c55e', 'label': 'data(label)', 'color': '#fff',
-          'font-size': '9px', 'text-valign': 'bottom', 'text-wrap': 'wrap',
-          'text-max-width': '60px', 'width': 'mapData(degree, 0, 8, 22, 38)',
-          'height': 'mapData(degree, 0, 8, 22, 38)',
+          'background-color': '#A8A8A8',
+          'label': 'data(label)', 'color': '#D4D4D4',
+          'font-size': '10px', 'text-valign': 'bottom', 'text-wrap': 'wrap',
+          'text-max-width': '60px', 'text-opacity': 0,
+          'width': 'mapData(degree, 0, 10, 18, 40)', 'height': 'mapData(degree, 0, 10, 18, 40)',
       }},
-      { selector: 'node[type = "concept"]', style: { 'background-color': 'var(--claude)' } },
-      { selector: 'node[type = "paper"]', style: { 'background-color': '#6FB7FF' } },
-      { selector: 'edge', style: { 'width': 1, 'line-color': 'rgba(255,255,255,0.3)', 'curve-style': 'bezier' } },
+      { selector: 'node.note', style: { 'background-color': '#22c55e' } },
+      { selector: 'node.concept', style: { 'background-color': '#E9973F' } },
+      { selector: 'node.paper', style: { 'background-color': '#6FB7FF' } },
+      { selector: 'node.focus', style: { 'border-width': 2, 'border-color': '#FFF', 'overlay-color': '#FFF', 'overlay-padding': 8, 'overlay-opacity': 0.12 } },
+      { selector: 'node.neighbor', style: { 'border-width': 2, 'border-color': '#8ab4f8' } },
+      { selector: 'node.dimmed', style: { 'opacity': 0.12 } },
+      { selector: 'node.hover-label', style: { 'text-opacity': 1, 'font-size': '11px', 'text-background-color': '#222', 'text-background-opacity': 0.8, 'text-background-padding': 3, 'text-border-radius': 4 } },
+      { selector: 'edge', style: { 'width': 1, 'line-color': 'rgba(255,255,255,0.15)', 'curve-style': 'bezier', 'target-arrow-shape': 'none' } },
+      { selector: 'edge.neighbor', style: { 'line-color': '#8ab4f8', 'width': 2.5 } },
+      { selector: 'edge.dimmed', style: { 'opacity': 0.05 } },
+      { selector: '.depth-out', style: { 'display': 'none' } },
     ],
-    layout: { name: 'cose', animate: true, padding: 20, nodeRepulsion: () => 8000, idealEdgeLength: () => 70 },
+    layout: { name: 'cose', animate: true, padding: 20, nodeRepulsion: () => 5000, idealEdgeLength: () => 60 },
+    wheelSensitivity: 0.2,
+    minZoom: 0.25, maxZoom: 4,
   });
-  cyGraph.on('tap', 'node', evt => toast(evt.target.data('label') + '（图谱节点）'));
+
+  // hover 邻接高亮 + 其余淡化（Obsidian 默认）
+  cyGraph.on('mouseover', 'node', evt => {
+    const n = evt.target;
+    const nb = n.neighborhood();
+    cyGraph.batch(() => {
+      cyGraph.elements().addClass('dimmed');
+      nb.removeClass('dimmed');
+      n.addClass('neighbor'); n.addClass('hover-label');
+      nb.edges().addClass('neighbor'); nb.nodes().addClass('neighbor');
+    });
+  });
+  cyGraph.on('mouseout', 'node', evt => {
+    cyGraph.batch(() => { cyGraph.elements().removeClass('dimmed neighbor hover-label'); });
+  });
+
+  // 缩放渐显标签（Obsidian：(zoom-1)/3.75）
+  const labelOpacity = () => {
+    const z = cyGraph.zoom();
+    const o = Math.max(0, Math.min(1, (z - 1) / 3.75));
+    cyGraph.nodes().not('.hover-label').style('text-opacity', o);
+  };
+  cyGraph.on('zoom', labelOpacity);
+  labelOpacity();
+
+  // 点击节点 → 详情抽屉（且设为中心 focus）
+  cyGraph.on('tap', 'node', evt => {
+    graphFocus = evt.target.id();
+    cyGraph.elements().removeClass('focus');
+    evt.target.addClass('focus');
+    openNodeDrawer(evt.target);
+  });
+
+  applyDepth(0);
+}
+
+// depth 滤镜（0=全部, 1-3=N跳内；BFS 子图，Obsidian local graph 同款）
+function applyDepth(depth) {
+  if (!cyGraph) return;
+  if (depth <= 0 || !graphFocus) {
+    cyGraph.elements().removeClass('depth-out');
+    document.querySelectorAll('#graph-depth .dg-btn').forEach(b => b.classList.toggle('active', b.dataset.depth === '0'));
+    return;
+  }
+  const center = cyGraph.$('#' + CSS.escape(graphFocus));
+  if (!center.length) return;
+  const dist = new Map();
+  cyGraph.elements().bfs({ roots: center, directed: false, visit: (v, e, u, i, d) => { dist.set(v.id(), d); } });
+  cyGraph.batch(() => {
+    cyGraph.elements().removeClass('depth-out');
+    const keep = cyGraph.elements().filter(ele => {
+      if (ele.isNode()) return (dist.get(ele.id()) ?? 1e9) <= depth;
+      const s = dist.get(ele.source().id()) ?? 1e9, t = dist.get(ele.target().id()) ?? 1e9;
+      return s <= depth && t <= depth;
+    });
+    cyGraph.elements().difference(keep).addClass('depth-out');
+  });
+  document.querySelectorAll('#graph-depth .dg-btn').forEach(b => b.classList.toggle('active', b.dataset.depth === String(depth)));
+}
+
+// 节点详情抽屉
+function openNodeDrawer(node) {
+  const id = node.id(), type = node.data('type'), label = node.data('label');
+  const neighbors = node.connectedEdges().connectedNodes().map(x => ({ id: x.id(), label: x.data('label'), type: x.data('type') })).filter(x => x.id !== id);
+  const div = document.getElementById('node-drawer');
+  if (!div) return;
+  document.getElementById('nd-title').textContent = label;
+  document.getElementById('nd-type').textContent = GRAPH_TYPE_NAME[type] || type;
+  document.getElementById('nd-summary').textContent = type === 'concept' ? '待创建笔记的概念节点（在笔记中用 [[链接]] 关联）' : '';
+  document.getElementById('nd-neighbors').innerHTML = neighbors.length
+    ? neighbors.map(nb => `<button class="nd-link" data-target-id="${nb.id}">${nb.label}</button>`).join('')
+    : '暂无关联节点';
+  div.classList.add('show');
+  div.dataset.nodeId = id;
+  div.dataset.nodeType = type;
+  const openBtn = document.getElementById('nd-open');
+  openBtn.textContent = type === 'paper' ? '在文献池查看' : (type === 'note' ? '打开笔记' : '创建笔记');
+  openBtn.style.display = 'inline-flex';
+  div.querySelectorAll('.nd-link').forEach(b => {
+    b.onclick = (e) => {
+      e.stopPropagation();
+      const target = cyGraph.$('#' + CSS.escape(b.dataset.targetId));
+      if (target.length) { target.select(); cyGraph.animate({ center: { eles: target }, zoom: 1.1 }, { duration: 300 }); }
+    };
+  });
 }
 
 /* ============================================================
@@ -4691,6 +4857,29 @@ async function initApp() {
   document.querySelectorAll('[data-gate]').forEach(b => {
     if (!b.dataset.bound) { b.dataset.bound = '1'; b.addEventListener('click', confirmNextRing); }
   });
+  // 图谱抽屉关闭
+  const ndClose = document.getElementById('nd-close');
+  if (ndClose && !ndClose.dataset.bound) { ndClose.dataset.bound = '1'; ndClose.addEventListener('click', () => document.getElementById('node-drawer').classList.remove('show')); }
+  const ndOpen = document.getElementById('nd-open');
+  if (ndOpen && !ndOpen.dataset.bound) {
+    ndOpen.dataset.bound = '1';
+    ndOpen.addEventListener('click', () => {
+      const d = document.getElementById('node-drawer');
+      const type = d.dataset.nodeType;
+      const id = d.dataset.nodeId;
+      if (type === 'paper') {
+        // 切文献池页签（refs）
+        document.querySelector('.kb-tab[data-tab="refs"]')?.click();
+        const fileId = id.replace('paper:', '');
+        const item = document.querySelector(`.ref-item[data-file-id="${fileId}"]`);
+        if (item) { item.classList.add('flash'); item.scrollIntoView({ behavior: 'smooth', block: 'center' }); setTimeout(() => item.classList.remove('flash'), 1500); }
+      } else {
+        toast(type === 'note' ? '打开笔记（笔记编辑器建设中）' : '创建笔记（笔记编辑器建设中）');
+      }
+      d.classList.remove('show');
+    });
+  }
+
   const runBtn = document.getElementById('run-cur-ring');
   if (runBtn && !runBtn.dataset.bound) { runBtn.dataset.bound = '1'; runBtn.addEventListener('click', runCurrentRing); }
   if (!document.getElementById('ns-confirm').dataset.bound) { document.getElementById('ns-confirm').dataset.bound = '1'; bindNewSessionModal(); }

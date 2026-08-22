@@ -2562,175 +2562,9 @@ a:hover { text-decoration: underline; }
       <!-- 对话流 -->
       <div class="chat-flow" id="chat-flow">
         <div class="chat-inner">
-
-          <!-- 用户消息 -->
-          <div class="msg user">
-            <div class="bubble">帮我围绕"大模型对学术写作的影响"做一篇硕士论文。</div>
-            <div class="msg-meta"><span>10:42</span></div>
-          </div>
-
-          <!-- AI 消息 -->
+          <!-- 欢迎消息（第一条） -->
           <div class="msg ai">
-            <div class="bubble">
-              <p>收到，已进入<strong>选题阶段</strong>。我会先围绕"大模型对学术写作的影响"做主题边界扫描，识别三条可研究方向：</p>
-              <p>1. <code>认知依赖</code>—— 大模型对研究生原创性的影响<br>
-                 2. <code>学术规范</code>—— AI 辅助写作的伦理边界<br>
-                 3. <code>评价机制</code>—— 论文查重与评审体系的响应</p>
-              <p>建议聚焦方向 1，因其具备理论与实证双重空间。下面调用选题分析工具。</p>
-            </div>
-          </div>
-
-          <!-- 工具调用卡 -->
-          <div class="tool-card open">
-            <div class="tool-card-head">
-              <div class="left">
-                <span class="tool-icon">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
-                </span>
-                <span class="tool-name">topic_analysis</span>
-                <span class="tool-status done">✓ 已完成</span>
-              </div>
-              <span class="tool-chevron">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-              </span>
-            </div>
-            <div class="tool-card-body">
-<pre>方向: 大模型对学术写作的影响
-候选主题:
-  - "生成式AI对硕士研究生原创性认知的隐性侵蚀"
-  - "AI辅助写作工具在学术规范中的伦理边界研究"
-推荐: 主题1 (理论+实证 双重空间)
-关键词: 生成式AI / 原创性 / 硕士论文 / 认知依赖
-预计章节: 5 章 + 附录</pre>
-            </div>
-          </div>
-
-          <!-- 产物卡 -->
-          <div class="artifact-card">
-            <div class="artifact-head">
-              <div class="artifact-title">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--claude)" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-                选题报告 v1.docx
-              </div>
-              <span class="artifact-type">.docx · 14 KB</span>
-            </div>
-            <div class="artifact-preview">
-              围绕"生成式AI对硕士研究生原创性认知的隐性侵蚀"展开。包含研究背景、问题陈述、研究意义、国内外研究现状概览、研究方法路径。已附 3 个候选题目。
-            </div>
-          </div>
-
-          <!-- 确认闸门 1 -->
-          <div class="gate-block">
-            <div class="gate-hint">
-              <span class="gate-dot"></span>
-              已完成自动校验，待您确认后进入下一环
-            </div>
-            <div class="gate-row">
-              <span class="gate-label">「选题」环节已通过自动验收</span>
-              <button class="btn btn-primary" data-gate>
-                确认进入下一环
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-              </button>
-            </div>
-          </div>
-
-          <!-- AI 文献检索消息 -->
-          <div class="msg ai">
-            <div class="bubble">
-              <p>进入<strong>文献阶段</strong>。已通过标准检索通道查询 <strong>Crossref / OpenAlex / Semantic Scholar</strong>（英文）+ 中文引导平台（<strong>NCPSSD / ChinaXiv</strong>），下面是高质量匹配结果（按可靠度排序）：</p>
-            </div>
-          </div>
-
-          <!-- 文献卡 1 -->
-          <div class="ref-card">
-            <div class="ref-head">
-              <div class="ref-title">生成式人工智能对学术写作原创性的影响机制研究</div>
-              <span class="badge verified">✓ Verified</span>
-            </div>
-            <div class="ref-meta">
-              <span>张明 · 李华</span>
-              <span>·</span>
-              <span>《高等教育研究》2024(03)</span>
-              <span>·</span>
-              <span>被引 28</span>
-            </div>
-            <div class="ref-citation">张明, 李华. 生成式人工智能对学术写作原创性的影响机制研究[J]. 高等教育研究, 2024, 43(3): 45-58.</div>
-            <div class="ref-actions">
-              <button class="link-btn">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                中文平台跳转下载
-              </button>
-              <button class="icon-btn">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--claude)" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                复制 GB/T 7714
-              </button>
-              <button class="icon-btn">+ 收藏到文献池</button>
-            </div>
-          </div>
-
-          <!-- 文献卡 2 -->
-          <div class="ref-card">
-            <div class="ref-head">
-              <div class="ref-title">LLMs and the erosion of academic originality: a multi-institution study</div>
-              <span class="badge matched">◈ Matched</span>
-            </div>
-            <div class="ref-meta">
-              <span>R. Chen, M. Patel</span>
-              <span>·</span>
-              <span>Computers &amp; Education, 2024</span>
-              <span>·</span>
-              <span>被引 51</span>
-            </div>
-            <div class="ref-citation">Chen R, Patel M. LLMs and the erosion of academic originality: a multi-institution study[J]. Computers &amp; Education, 2024, 215: 104553.</div>
-            <div class="ref-actions">
-              <button class="link-btn">DOI 跳转下载</button>
-              <button class="icon-btn">复制 GB/T 7714</button>
-              <button class="icon-btn">+ 收藏到文献池</button>
-            </div>
-          </div>
-
-          <!-- 文献卡 3 - uncertain -->
-          <div class="ref-card" style="border-left-color: var(--warning);">
-            <div class="ref-head">
-              <div class="ref-title">AI辅助研究生论文写作的边界：基于某高校的质性访谈</div>
-              <span class="badge uncertain">⚠ 待人工</span>
-            </div>
-            <div class="ref-meta">
-              <span>来源待核 · 仅会议摘要</span>
-              <span>·</span>
-              <span>匹配度 0.62</span>
-            </div>
-            <div class="ref-citation">该文献元数据不全（缺少卷期/页码），建议人工核实后采用。</div>
-            <div class="ref-actions">
-              <button class="btn btn-secondary btn-sm">人工核实</button>
-              <button class="btn btn-ghost btn-sm">忽略</button>
-            </div>
-          </div>
-
-          <!-- 评审未通过警告卡 -->
-          <div class="warn-card">
-            <span class="warn-icon">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-            </span>
-            <div class="warn-body">
-              <div class="warn-title">综述环节自动评审未通过（环 4/10）</div>
-              <div>检测到 2 处疑似<strong>伪引用</strong>、1 处<strong>逻辑跳跃</strong>。本环节不走闸门，请选择以下处理：</div>
-              <div class="warn-actions">
-                <button class="btn btn-primary btn-sm">重新生成综述</button>
-                <button class="btn btn-secondary btn-sm">回退到「文献」环节</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- AI 当前正在撰写消息 -->
-          <div class="msg ai">
-            <div class="bubble">
-              <p>已为您修复上述问题，正在生成<strong>大纲</strong>（环 5）……</p>
-            </div>
-            <div class="msg-meta">
-              <span class="pulse-dot" style="background: var(--claude); display:inline-block; width:6px; height:6px; border-radius:50%;"></span>
-              正在思考
-            </div>
+            <div class="bubble"><p>欢迎！选择左侧会话，或点击「新建对话」开始论文写作。执行每个环节后结果会显示在这里。</p></div>
           </div>
 
         </div>
@@ -3751,9 +3585,20 @@ function renderRingResult(ringNo, data) {
     appendAIMsg(`<p><strong>环3 文献调研完成</strong>，检索到 <strong>${items.length}</strong> 篇文献：</p>` +
       items.slice(0, 5).map(it => `<div class="ref-card" style="margin:8px 0;"><div class="ref-head"><div class="ref-title">${escapeHtml2(it.title)}</div><span class="badge ${it.reliability || 'matched'}">${escapeHtml2(it.reliability || 'matched')}</span></div><div class="ref-citation">${escapeHtml2(it.gbt7714 || '')}</div></div>`).join(''),
       `${name} · 已完成`);
+  } else if (ringNo === 2 || ringNo === 4) {
+    // 评审卡（新颖度/综述评审）
+    const level = (data && data.novelty_level) || '';
+    const badgeColor = level === 'HIGH' ? 'var(--success)' : level === 'LOW' ? 'var(--error)' : 'var(--warning)';
+    const similar = data && data.similar_count != null ? data.similar_count : (data.relevant_count ?? 0);
+    const diff = data && data.differ_from_prior ? `<p style="margin:8px 0;"><strong>与前人不同：</strong>${escapeHtml2(data.differ_from_prior)}</p>` : '';
+    const rec = data && data.recommendation ? `<p style="margin:8px 0;"><strong>建议：</strong>${escapeHtml2(data.recommendation)}</p>` : '';
+    appendAIMsg(
+      `<p><strong>环${ringNo} ${name} 完成</strong>&nbsp;<span class="badge" style="background:${badgeColor}1a;color:${badgeColor};border:1px solid ${badgeColor}33;">${escapeHtml2(level || data.verdict || '完成')}</span></p>` +
+      `<p style="font-size:13px;color:var(--text-subtle);">相似研究：<strong>${similar}</strong> 条</p>${diff}${rec}`,
+      `${name} · 已完成`);
   } else {
     // 通用产物卡
-    const text = data && (data.summary || data.msg || JSON.stringify(data).slice(0, 300));
+    const text = data && (data.summary || data.msg || '');
     appendAIMsg(`<p><strong>环${ringNo} ${name} 完成</strong></p><p style="font-size:13px;color:var(--text-subtle);">${escapeHtml2(text)}</p>`, `${name} · 已完成`);
   }
 }
@@ -4401,6 +4246,34 @@ async function loadSessionDetail(taskId) {
   const prog = await apiSessionProgress(taskId);
   if (prog) renderStagesFromProgress(prog);
   await loadKbPanel(taskId);
+  buildHistoryFromProgress(prog);
+}
+
+// —— 根据进度重建消息历史（刷新后恢复已完成环）——
+function buildHistoryFromProgress(prog) {
+  if (!prog || !prog.rings) return;
+  const flow = document.getElementById('chat-flow');
+  const inner = flow.querySelector('.chat-inner');
+  // 清掉欢迎语重建（仅一次：检查是否已有历史标记）
+  if (inner.dataset.historyBuilt === '1') return;
+  const finished = prog.rings.filter(r => r.state === 'PASSED');
+  if (!finished.length) return;
+  inner.dataset.historyBuilt = '1';
+  // 移除欢迎语
+  inner.querySelectorAll('.msg.ai').forEach(m => {
+    if (m.textContent.includes('欢迎！')) m.remove();
+  });
+  const firstFinished = finished[0];
+  appendUserMsg(`继续论文：${prog.title || '当前任务'}（已完成 ${finished.length}/10 环）`);
+  finished.forEach(r => {
+    const name = RING_NAMES[r.ring_no] || ('环' + r.ring_no);
+    appendAIMsg(`<p><strong>环${r.ring_no} ${name}</strong> <span style="color:var(--success)">✓ 已通过</span></p><p style="font-size:12px;color:var(--text-subtle);">点击「执行当前环节」继续环${prog.current_ring_no || '下一环'}。</p>`, `${name} · 已通过`);
+  });
+  // 若当前环执行中，加执行按钮提示
+  const cur = prog.current_ring_no;
+  if (cur <= 10 && finished.length < 10) {
+    appendAIMsg(`<p style="font-size:13px;">当前环：<strong>环${cur}（${RING_NAMES[cur] || ''}）</strong>，可点击下方执行当前环节。</p>`, '待执行');
+  }
 }
 
 // —— 进度 → 阶段条（10 环状态）——

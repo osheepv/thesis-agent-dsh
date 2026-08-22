@@ -135,7 +135,7 @@ class TaskRecord:
     __slots__ = (
         "task_id", "title", "degree", "subject_field", "template_id",
         "session_id", "tenant_id",
-        "ring1", "ring3", "ring5", "ring6", "docx",
+        "ring1", "ring3", "ring5", "ring6", "ring7", "docx",
     )
 
     def __init__(self, task_id: str, title: str, degree: str, subject_field: str,
@@ -152,6 +152,7 @@ class TaskRecord:
         self.ring3: Optional[Dict[str, Any]] = None
         self.ring5: Optional[Dict[str, Any]] = None
         self.ring6: Optional[Dict[str, Any]] = None
+        self.ring7: Optional[Dict[str, Any]] = None
         self.docx: Optional[Dict[str, Any]] = None
 
 
@@ -353,7 +354,46 @@ class MainOrchestration:
                                "content_preview": full_content[:200]}, msg="环6撰写完成")
 
     # ------------------------------------------------------------------
-    # 步骤 6：生成 docx（UC-04）
+    # 步骤 6：环7 润色（UC-03 延续）
+    # ------------------------------------------------------------------
+    def run_ring7(self, task_id: str) -> Result[Dict[str, Any]]:
+        """执行环7润色：对环6 初稿做表达润色 + 术语统一，只改表达不改事实。"""
+        rec = self._require(task_id)
+        chosen = (rec.ring1 or {}).get("chosen", rec.title)
+        draft = (rec.ring6 or {}).get("chapters", [])
+        # ring6 产物可能是 chapters 列表，序列化为 JSON 供环7 解析
+        draft_json = json.dumps({"chapters": draft}, ensure_ascii=False)
+        ctx = ExecContext(
+            subject_field=rec.subject_field,
+            degree=Degree(rec.degree),
+            theme=chosen,
+            draft=draft_json,
+            session_id=rec.session_id,
+            tenant_id=rec.tenant_id,
+        )
+        res = get_executor(7).execute(ctx)
+        if not res.accept:
+            raise BizException(
+                ErrorCode.FSM_ACCEPTANCE_REJECTED, msg="环7润色未通过验收",
+                detail={"fallbackTo": res.fallbackTo, "issues": res.issues},
+            )
+        data = json.loads(res.output)
+        polished = data.get("chapters", [])
+        full_content = self._draft_to_text(polished)
+        rec.ring7 = {"chapters": polished, "content": full_content,
+                     "total_words": data.get("total_words", 0)}
+        self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R7", accept=True,
+                          artifact_uri=res.output)
+        self._advance_to(task_id, f"{task_id}-R7", target_ring_no=8)
+        return Result.ok(data={
+            "chapters": polished,
+            "total_words": data.get("total_words", 0),
+            "applied_terms": data.get("applied_terms", []),
+            "issues_found": data.get("issues_found", []),
+        }, msg="环7润色完成（只改表达不改事实）")
+
+    # ------------------------------------------------------------------
+    # 步骤 7：生成 docx（UC-04）
     # ------------------------------------------------------------------
     def generate_docx(self, task_id: str, template_id: Optional[str] = None) -> Result[Dict[str, Any]]:
         """按用户模板 + 初稿内容生成 docx，返回下载链接。

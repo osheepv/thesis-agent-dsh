@@ -17,6 +17,7 @@ from . import ring1_topic  # noqa: F401
 from . import ring3  # noqa: F401
 from . import ring5_outline  # noqa: F401
 from . import ring6_chapter  # noqa: F401
+from . import ring7  # noqa: F401
 from . import ring8  # noqa: F401
 
 __all__ = [

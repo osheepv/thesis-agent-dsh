@@ -65,6 +65,7 @@ class ExecContext(BaseModel):
         default_factory=list,
         description="文献池（环3 输出，环5/6 引用来源；引用只能取自池内，禁编造）",
     )
+    draft: str = Field(default="", description="环6 初稿 JSON（环7 润色输入）")
     trace_id: Optional[str] = Field(default=None, description="追踪 ID")
     session_id: str = Field(default="", description="会话 ID（M9 隔离预留）")
     tenant_id: str = Field(default="default", description="租户 ID")

@@ -1,0 +1,4065 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>论文写作 Agent — 设计原型</title>
+<style>
+/* ============================================================
+   设计 Token 系统（基于 Claude Code 桌面端官方规范）
+   来源: cc-haha(MIT) 逐像素提取 + 产品业务定制
+   ============================================================ */
+:root {
+  /* —— Claude 官方品牌色 Token —— */
+  --claude:            rgb(215, 119, 87);  /* 品牌橙：主色 / Logo / 吉祥物 */
+  --claude-hover:      rgb(199, 105, 75);
+  --claude-soft:       rgba(215, 119, 87, 0.12);
+  --permission:        rgb(87, 105, 247);  /* 权限蓝：审批 / 闸门指示灯 */
+  --permission-soft:   rgba(87, 105, 247, 0.12);
+
+  /* —— 语义状态色 —— */
+  --success:           rgb(44, 122, 57);
+  --success-soft:      rgba(44, 122, 57, 0.12);
+  --error:             rgb(171, 43, 63);
+  --error-soft:        rgba(171, 43, 63, 0.12);
+  --warning:           rgb(150, 108, 30);
+  --warning-soft:      rgba(150, 108, 30, 0.14);
+
+  /* —— Light 主题：界面底色 —— */
+  --bg-app:            #FFFFFF;            /* 主背景 */
+  --bg-sidebar:        #FAF9F7;            /* 侧栏 / 状态栏 暖白 */
+  --bg-tab-active:     #F0EDE8;            /* 标题栏活跃标签 */
+  --bg-user-bubble:    rgb(240, 240, 240); /* 用户消息气泡 */
+  --bg-actions:        rgb(232, 236, 244); /* 消息操作栏背景 */
+  --bg-input:          #FFFFFF;
+  --bg-hover:          rgba(0, 0, 0, 0.04);
+  --bg-card:           #FFFFFF;
+  --bg-code-block:     #F7F6F3;
+  --bg-canvas-dark:    #1F1F1F;            /* 图谱画布深色 */
+
+  /* —— Light 文本 —— */
+  --text-primary:      rgb(0, 0, 0);
+  --text-inactive:     rgb(102, 102, 102);
+  --text-subtle:       rgb(175, 175, 175);
+
+  /* —— 边线 / 分隔 —— */
+  --border-prompt:     rgb(153, 153, 153); /* 输入框聚焦边 */
+  --border-divider:    #E5E3DE;
+  --border-soft:       rgba(0, 0, 0, 0.08);
+  --selection-bg:      rgb(180, 213, 255);
+
+  /* —— 按钮 / 卡片 —— */
+  --btn-primary-bg:    #3D3D3D;
+  --btn-primary-text:  #FFFFFF;
+
+  /* —— 阴影 —— */
+  --shadow-sm:         0 1px 2px 0 rgba(0,0,0,0.05);
+  --shadow-md:         0 4px 12px rgba(0,0,0,0.10);
+  --shadow-lg:         0 10px 24px -6px rgba(0,0,0,0.16);
+
+  /* —— 圆角 —— */
+  --r-btn:             8px;
+  --r-card:            12px;
+  --r-input:           16px;
+  --r-modal:           16px;
+  --r-pill:            999px;
+
+  /* —— 间距（8 点栅格） —— */
+  --sp-1: 4px;  --sp-2: 8px;  --sp-3: 12px; --sp-4: 16px;
+  --sp-6: 24px; --sp-8: 32px; --sp-12: 48px;
+
+  /* —— 字号层级 —— */
+  --fs-h1:    24px;  --lh-h1: 32px;
+  --fs-h2:    18px;  --lh-h2: 24px;
+  --fs-h3:    16px;  --lh-h3: 22px;
+  --fs-body:  14px;  --lh-body: 20px;
+  --fs-small: 13px;  --lh-small: 18px;
+  --fs-cap:   12px;  --lh-cap: 16px;
+  --fs-code:  13px;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Inter", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Fira Code", Consolas, monospace;
+
+  /* —— 布局尺寸 —— */
+  --h-titlebar: 40px;
+  --w-sidebar:  280px;
+  --h-statusbar: 36px;
+  --w-kb-panel: 300px;
+
+  --transition-fast:   150ms ease;
+  --transition-normal: 300ms ease;
+}
+
+/* —— Dark 主题覆写 —— */
+[data-theme="dark"] {
+  --claude:            rgb(215, 119, 87);
+  --permission:        rgb(177, 185, 249);
+
+  --bg-app:            #1F1F1F;
+  --bg-sidebar:        #181818;
+  --bg-tab-active:     #2A2A2A;
+  --bg-user-bubble:    rgb(55, 55, 55);
+  --bg-actions:        rgb(44, 50, 62);
+  --bg-input:          #2A2A2A;
+  --bg-hover:          rgba(255, 255, 255, 0.06);
+  --bg-card:           #262626;
+  --bg-code-block:     #1A1A1A;
+  --bg-canvas-dark:    #111111;
+
+  --text-primary:      #FFFFFF;
+  --text-inactive:     rgb(180, 180, 180);
+  --text-subtle:       rgb(110, 110, 110);
+
+  --border-divider:    #2E2E2E;
+  --border-soft:       rgba(255, 255, 255, 0.08);
+  --border-prompt:     rgb(120, 120, 120);
+  --selection-bg:      rgba(120, 150, 220, 0.35);
+
+  --btn-primary-bg:    #E8E6E1;
+  --btn-primary-text:  #1F1F1F;
+
+  --bg-user-bubble:    rgb(55, 55, 55);
+}
+
+/* ============================================================
+   基础重置
+   ============================================================ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  height: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--text-primary);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+button, input, textarea { font-family: inherit; color: inherit; }
+button { cursor: pointer; border: none; background: none; }
+a { color: var(--claude); text-decoration: none; }
+a:hover { text-decoration: underline; }
+::selection { background: var(--selection-bg); }
+
+/* 键盘焦点（WCAG AA 可见焦点） */
+:focus-visible {
+  outline: 2px solid var(--permission);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border-divider);
+  border-radius: 8px;
+  border: 2px solid var(--bg-app);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-subtle); }
+
+/* ============================================================
+   整体布局
+   ============================================================ */
+.app {
+  display: grid;
+  grid-template-rows: var(--h-titlebar) 1fr;
+  height: 100vh;
+  min-width: 900px;
+  min-height: 600px;
+}
+
+/* —— Title Bar (40px) —— */
+.titlebar {
+  display: flex;
+  align-items: center;
+  height: var(--h-titlebar);
+  padding: 0 12px;
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-divider);
+  -webkit-app-region: drag;
+  user-select: none;
+  gap: 12px;
+}
+.nav-arrows { display: flex; gap: 2px; -webkit-app-region: no-drag; }
+.nav-btn {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px;
+  color: var(--text-inactive);
+  transition: background var(--transition-fast);
+}
+.nav-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.nav-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.title-tabs {
+  display: flex; gap: 2px; margin-left: 8px;
+  -webkit-app-region: no-drag;
+}
+.title-tab {
+  padding: 4px 12px;
+  border-radius: var(--r-btn);
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: background var(--transition-fast);
+}
+.title-tab.active {
+  background: var(--bg-tab-active);
+  color: var(--text-primary);
+}
+.title-tab:hover:not(.active) { background: var(--bg-hover); }
+
+.titlebar-spacer { flex: 1; }
+.titlebar-actions {
+  display: flex; align-items: center; gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+/* —— 主区：侧栏 + 内容 + 知识库 —— */
+.workspace {
+  display: grid;
+  grid-template-columns: var(--w-sidebar) 1fr var(--w-kb-panel);
+  overflow: hidden;
+  background: var(--bg-app);
+}
+.workspace.kb-collapsed { grid-template-columns: var(--w-sidebar) 1fr 0; }
+.workspace.kb-collapsed .kb-panel { transform: translateX(100%); }
+
+/* ============================================================
+   侧栏 Sidebar
+   ============================================================ */
+.sidebar {
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-divider);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.sidebar-top {
+  padding: 12px;
+  display: flex; flex-direction: column; gap: 8px;
+  border-bottom: 1px solid var(--border-divider);
+}
+.new-chat-btn {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px;
+  background: var(--claude);
+  color: #fff;
+  border-radius: var(--r-btn);
+  font-size: var(--fs-body);
+  font-weight: 500;
+  transition: background var(--transition-fast);
+}
+.new-chat-btn:hover { background: var(--claude-hover); }
+.new-chat-btn .left { display: flex; align-items: center; gap: 8px; }
+.new-chat-btn .kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  background: rgba(255,255,255,0.18);
+  border-radius: 4px;
+}
+
+.tasks-dropdown {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 10px;
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.tasks-dropdown:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.sidebar-search {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px;
+  background: var(--bg-app);
+  border: 1px solid var(--border-divider);
+  border-radius: 8px;
+  margin-top: 4px;
+}
+.sidebar-search input {
+  flex: 1; border: none; background: none; outline: none;
+  font-size: var(--fs-small); color: var(--text-primary);
+}
+.sidebar-search input::placeholder { color: var(--text-subtle); }
+
+/* 会话分组 */
+.session-list {
+  flex: 1; overflow-y: auto;
+  padding: 8px 6px;
+}
+.session-group {
+  margin-bottom: 8px;
+}
+.session-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-subtle);
+  text-transform: uppercase;
+  padding: 8px 10px 4px;
+}
+.session-item {
+  position: relative;
+  padding: 10px 12px 10px 18px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.session-item:hover { background: var(--bg-hover); }
+.session-item.active { background: var(--bg-hover); }
+.session-item.active::before {
+  content: '';
+  position: absolute;
+  left: 6px; top: 12px; bottom: 12px;
+  width: 3px;
+  background: var(--claude);
+  border-radius: 2px;
+}
+.session-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.session-title {
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  flex: 1;
+}
+.session-delete {
+  opacity: 0;
+  width: 20px; height: 20px;
+  border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-subtle);
+  transition: opacity var(--transition-fast), background var(--transition-fast);
+}
+.session-item:hover .session-delete { opacity: 1; }
+.session-delete:hover { background: var(--error-soft); color: var(--error); }
+.session-meta {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--text-inactive);
+}
+.session-degree {
+  padding: 1px 6px;
+  background: var(--claude-soft);
+  color: var(--claude);
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  font-weight: 600;
+}
+.session-progress-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.session-progress-bar {
+  height: 3px;
+  background: var(--border-divider);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 2px;
+}
+.session-progress-fill {
+  height: 100%;
+  background: var(--claude);
+  border-radius: 2px;
+  transition: width var(--transition-normal);
+}
+
+/* 侧栏底部 */
+.sidebar-foot {
+  padding: 10px 12px;
+  border-top: 1px solid var(--border-divider);
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px;
+}
+.foot-user {
+  display: flex; align-items: center; gap: 8px;
+  font-size: var(--fs-small); color: var(--text-inactive);
+}
+.foot-avatar {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--claude), #c97c5a);
+  color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600;
+}
+.theme-toggle {
+  width: 28px; height: 28px;
+  border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-inactive);
+  transition: background var(--transition-fast);
+}
+.theme-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* ============================================================
+   主区 Main
+   ============================================================ */
+.main {
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-app);
+  position: relative;
+}
+
+/* —— 阶段进度条（对话级） —— */
+.stage-bar {
+  padding: 14px 24px 10px;
+  border-bottom: 1px solid var(--border-divider);
+  background: var(--bg-app);
+  display: flex; align-items: flex-start; gap: 0;
+  overflow-x: auto;
+}
+.stage-node {
+  display: flex; flex-direction: column; align-items: center;
+  position: relative;
+  flex-shrink: 0;
+  min-width: 64px;
+  padding-top: 4px;
+}
+.stage-dot {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  background: var(--border-divider);
+  border: 2px solid var(--bg-app);
+  box-shadow: 0 0 0 1px var(--border-divider);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9px;
+  color: #fff;
+  position: relative;
+  z-index: 2;
+  transition: all var(--transition-normal);
+}
+.stage-label {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-subtle);
+  white-space: nowrap;
+}
+.stage-node.done .stage-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 1px var(--success);
+}
+.stage-node.done .stage-label { color: var(--text-inactive); }
+.stage-node.current .stage-dot {
+  background: var(--claude);
+  box-shadow: 0 0 0 1px var(--claude), 0 0 0 6px var(--claude-soft);
+  animation: pulse 2s ease-in-out infinite;
+}
+.stage-node.current .stage-label {
+  color: var(--claude);
+  font-weight: 600;
+}
+.stage-node.revert .stage-dot {
+  background: var(--warning);
+  box-shadow: 0 0 0 1px var(--warning);
+}
+.stage-node.revert .stage-label { color: var(--warning); font-weight: 600; }
+.stage-node.gate .stage-dot::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+  border: 1.5px dashed var(--permission);
+  border-radius: 50%;
+  animation: spin 8s linear infinite;
+}
+
+.stage-line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-divider);
+  margin-top: 11px;
+  min-width: 8px;
+}
+.stage-line.done { background: var(--success); }
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--claude), 0 0 0 6px var(--claude-soft); }
+  50%      { box-shadow: 0 0 0 1px var(--claude), 0 0 0 10px rgba(215,119,87,0.04); }
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* —— 对话流 —— */
+.chat-flow {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 0 8px;
+  scroll-behavior: smooth;
+}
+.chat-inner { max-width: 820px; margin: 0 auto; padding: 0 24px 80px; }
+
+.msg {
+  margin-bottom: 24px;
+  display: flex; flex-direction: column;
+}
+.msg.user { align-items: flex-end; }
+.msg.ai { align-items: flex-start; }
+
+.bubble {
+  max-width: 78%;
+  padding: 12px 16px;
+  border-radius: 14px;
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--text-primary);
+  word-wrap: break-word;
+}
+.msg.user .bubble {
+  background: var(--bg-user-bubble);
+  border-top-right-radius: 4px;
+}
+.msg.ai .bubble {
+  background: transparent;
+  padding-left: 0; padding-right: 0;
+  max-width: 100%;
+}
+.msg.ai .bubble p { margin-bottom: 10px; }
+.msg.ai .bubble p:last-child { margin-bottom: 0; }
+.msg.ai .bubble code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-code);
+  background: var(--bg-code-block);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.msg-meta {
+  font-size: 11px;
+  color: var(--text-subtle);
+  margin-top: 4px;
+  display: flex; align-items: center; gap: 8px;
+}
+
+/* —— 工具调用卡 —— */
+.tool-card {
+  margin: 12px 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  border-radius: var(--r-card);
+  overflow: hidden;
+  font-size: var(--fs-small);
+  transition: box-shadow var(--transition-fast);
+}
+.tool-card:hover { box-shadow: var(--shadow-sm); }
+.tool-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+}
+.tool-card-head .left { display: flex; align-items: center; gap: 8px; }
+.tool-icon {
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--claude);
+}
+.tool-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.tool-status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+}
+.tool-status.done   { background: var(--success-soft); color: var(--success); }
+.tool-status.run    { background: var(--claude-soft); color: var(--claude); }
+.tool-status.fail   { background: var(--error-soft); color: var(--error); }
+.tool-chevron {
+  color: var(--text-subtle);
+  transition: transform var(--transition-fast);
+}
+.tool-card.open .tool-chevron { transform: rotate(90deg); }
+.tool-card-body {
+  display: none;
+  padding: 0 14px 12px;
+  border-top: 1px solid var(--border-divider);
+  margin-top: 0;
+  padding-top: 10px;
+}
+.tool-card.open .tool-card-body { display: block; }
+.tool-card-body pre {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--bg-code-block);
+  padding: 10px 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  color: var(--text-inactive);
+  line-height: 1.6;
+}
+
+/* —— 文献检索结果卡 —— */
+.ref-card {
+  margin: 12px 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  border-left: 3px solid var(--claude);
+  border-radius: var(--r-card);
+  padding: 12px 14px;
+  font-size: var(--fs-small);
+}
+.ref-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.ref-title {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+}
+.ref-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px;
+  color: var(--text-inactive);
+  font-size: 11px;
+  margin-bottom: 8px;
+}
+.ref-citation {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-inactive);
+  background: var(--bg-code-block);
+  padding: 6px 8px;
+  border-radius: 6px;
+  line-height: 1.55;
+}
+.ref-actions {
+  display: flex; align-items: center; gap: 8px;
+  margin-top: 10px;
+}
+
+/* —— 可靠度徽章 —— */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge.verified  { background: var(--success-soft); color: var(--success); }
+.badge.matched   { background: var(--permission-soft); color: var(--permission); }
+.badge.discovery { background: var(--border-divider); color: var(--text-inactive); }
+.badge.uncertain { background: var(--warning-soft); color: var(--warning); }
+
+/* —— 链接按钮（跳转下载） —— */
+.link-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 5px 10px;
+  background: var(--claude-soft);
+  color: var(--claude);
+  border-radius: var(--r-btn);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background var(--transition-fast);
+}
+.link-btn:hover { background: var(--claude); color: #fff; }
+
+/* —— 警告卡（评审未通过） —— */
+.warn-card {
+  margin: 12px 0;
+  background: var(--warning-soft);
+  border: 1px solid var(--warning);
+  border-radius: var(--r-card);
+  padding: 12px 14px;
+  display: flex; align-items: flex-start; gap: 10px;
+}
+.warn-card .warn-icon {
+  color: var(--warning);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.warn-card .warn-body { flex: 1; font-size: var(--fs-small); }
+.warn-card .warn-title {
+  font-weight: 600;
+  color: var(--warning);
+  margin-bottom: 4px;
+}
+.warn-card .warn-actions {
+  display: flex; gap: 8px;
+  margin-top: 10px;
+}
+
+/* —— 确认闸门块 —— */
+.gate-block {
+  margin: 16px 0 8px;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, var(--claude-soft) 0%, transparent 100%);
+  border: 1px solid var(--claude);
+  border-radius: var(--r-card);
+}
+.gate-hint {
+  font-size: 12px;
+  color: var(--text-inactive);
+  margin-bottom: 8px;
+  display: flex; align-items: center; gap: 6px;
+}
+.gate-hint .gate-dot {
+  width: 6px; height: 6px;
+  background: var(--permission);
+  border-radius: 50%;
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+@keyframes pulse-dot {
+  0%,100% { opacity: 1; }
+  50%     { opacity: 0.3; }
+}
+.gate-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+}
+.gate-label {
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+/* —— 按钮 —— */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--r-btn);
+  font-size: var(--fs-small);
+  font-weight: 500;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+.btn-primary {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--text-primary);
+  color: var(--bg-app);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+.btn-primary:disabled {
+  opacity: 0.5; cursor: not-allowed;
+}
+.btn-secondary {
+  background: transparent;
+  color: var(--text-primary);
+  border: 1px solid var(--border-divider);
+}
+.btn-secondary:hover { background: var(--bg-hover); }
+.btn-ghost {
+  background: transparent;
+  color: var(--text-inactive);
+  padding: 6px 10px;
+}
+.btn-ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+/* —— 产物卡 —— */
+.artifact-card {
+  margin: 12px 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  border-radius: var(--r-card);
+  overflow: hidden;
+}
+.artifact-head {
+  padding: 10px 14px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--border-divider);
+  background: var(--bg-code-block);
+}
+.artifact-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: var(--fs-small);
+  font-weight: 500;
+}
+.artifact-type {
+  font-size: 11px;
+  color: var(--text-subtle);
+  font-family: var(--font-mono);
+}
+.artifact-preview {
+  padding: 12px 14px;
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+  line-height: 1.6;
+}
+
+/* —— 输入区 —— */
+.input-area {
+  padding: 12px 24px 16px;
+  background: var(--bg-app);
+  border-top: 1px solid var(--border-divider);
+}
+.input-inner { max-width: 820px; margin: 0 auto; }
+.input-box {
+  position: relative;
+  border: 1px solid var(--border-divider);
+  border-radius: var(--r-input);
+  background: var(--bg-input);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.input-box:focus-within {
+  border-color: var(--border-prompt);
+  box-shadow: 0 0 0 3px rgba(153, 153, 153, 0.12);
+}
+.input-box textarea {
+  width: 100%;
+  border: none; outline: none; resize: none;
+  background: transparent;
+  padding: 14px 56px 14px 16px;
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--text-primary);
+  min-height: 52px;
+  max-height: 200px;
+  font-family: var(--font-sans);
+}
+.input-box textarea::placeholder { color: var(--text-subtle); }
+
+/* —— 发送按钮（图片4风格的回车弯箭头图标） —— */
+.input-send {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 32px; height: 32px;
+  border-radius: 8px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-subtle);
+  background: transparent;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.input-send:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.input-send:disabled {
+  opacity: 0.45; cursor: not-allowed;
+}
+.input-box textarea {
+  padding-right: 50px;
+}
+
+/* —— 输入区下方一行控件（确认模式 + 模型选择） —— */
+.input-controls {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-top: 10px;
+  font-size: var(--fs-small);
+  gap: 12px;
+}
+.input-controls-left, .input-controls-right {
+  display: flex; align-items: center; gap: 6px;
+}
+.input-controls-right { gap: 10px; }
+
+/* —— 确认模式 chip —— */
+.perm-chip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 5px 10px 5px 8px;
+  background: rgba(220, 190, 110, 0.18);  /* 淡黄 */
+  color: rgb(150, 108, 30);                /* warning 同色系 */
+  border: 1px solid rgba(220, 190, 110, 0.35);
+  border-radius: var(--r-pill);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background var(--transition-fast);
+}
+.perm-chip:hover { background: rgba(220, 190, 110, 0.28); }
+.perm-chip svg { color: rgb(150, 108, 30); }
+.perm-add {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-inactive);
+  border-radius: 50%;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.perm-add:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* —— 模型 chip —— */
+.model-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 8px 5px 10px;
+  background: transparent;
+  border-radius: var(--r-pill);
+  color: var(--text-inactive);
+  font-size: 12px;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.model-chip:hover { background: var(--bg-hover); color: var(--text-primary); }
+.model-chip .model-name { color: inherit; }
+.model-chip .model-cap {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  background: var(--bg-hover);
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  color: var(--text-subtle);
+}
+.model-chip .model-chev { opacity: 0.6; }
+.model-chip.subtle { color: var(--text-subtle); }
+.model-chip[aria-pressed="true"] {
+  background: var(--claude-soft);
+  color: var(--claude);
+}
+.model-chip[aria-pressed="true"] svg { color: var(--claude); }
+
+/* —— 主题切换（图片4右侧的圆形图标按钮） —— */
+.theme-toggle {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-inactive);
+  border: 1px solid transparent;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+.theme-toggle:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-divider);
+}
+
+[data-theme="dark"] .theme-toggle:hover { border-color: var(--border-soft); }
+
+[data-theme="dark"] .perm-chip {
+  background: rgba(220, 190, 110, 0.22);
+  border-color: rgba(220, 190, 110, 0.4);
+}
+
+/* ============================================================
+   通用 Dropdown 组件（模型 / 模式 / +号 三个下拉复用）
+   ============================================================ */
+.dd-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 240px;
+  max-width: 320px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px -8px rgba(0,0,0,0.18), 0 2px 6px rgba(0,0,0,0.06);
+  padding: 6px;
+  display: none;
+  transform-origin: bottom left;
+  animation: ddIn 160ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.dd-menu.show { display: block; }
+.dd-menu.align-right { transform-origin: bottom right; }
+@keyframes ddIn {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+.dd-head {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-subtle);
+  letter-spacing: 0.02em;
+  padding: 8px 10px 6px;
+}
+.dd-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: var(--fs-small);
+  color: var(--text-primary);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  width: 100%;
+  text-align: left;
+  transition: background var(--transition-fast);
+}
+.dd-item:hover { background: var(--bg-hover); }
+.dd-item.active { background: var(--bg-hover); }
+.dd-item .dd-icon {
+  width: 14px; height: 14px;
+  color: var(--text-inactive);
+  flex-shrink: 0;
+}
+.dd-item:hover .dd-icon,
+.dd-item.active .dd-icon { color: var(--text-primary); }
+.dd-item .dd-label { flex: 1; }
+.dd-item .dd-kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-subtle);
+  min-width: 28px; text-align: right;
+}
+.dd-item .dd-check {
+  color: var(--claude);
+  font-weight: 600;
+  font-size: 12px;
+  min-width: 12px;
+}
+.dd-item .dd-chevron {
+  width: 12px; height: 12px;
+  color: var(--text-subtle);
+}
+
+/* ============================================================
+   Ultracode 思考深度滑块（紫色→橙色渐变 + thumb）
+   ============================================================ */
+.uc-slider {
+  display: inline-flex; align-items: center;
+  padding: 4px 10px 4px 12px;
+  background: transparent;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  user-select: none;
+}
+.uc-slider:hover { background: var(--bg-hover); }
+.uc-slider.active {
+  background: linear-gradient(135deg, rgba(167, 139, 250, 0.18), rgba(244, 114, 182, 0.18), rgba(251, 146, 60, 0.18));
+}
+.uc-label {
+  font-size: 12px;
+  font-weight: 500;
+  background: linear-gradient(90deg, #A78BFA, #F472B6, #FB923C);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-right: 8px;
+}
+.uc-slider.active .uc-label {
+  font-weight: 600;
+}
+.uc-track {
+  position: relative;
+  width: 80px;
+  height: 16px;
+  display: flex; align-items: center;
+  margin-left: 4px;
+}
+.uc-track::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  height: 4px;
+  background: var(--border-divider);
+  border-radius: 2px;
+}
+.uc-slider.active .uc-track::before {
+  background: linear-gradient(90deg, #A78BFA, #F472B6, #FB923C);
+  opacity: 0.45;
+}
+.uc-thumb {
+  position: relative;
+  width: 14px; height: 14px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25), 0 0 0 1px var(--border-divider);
+  transition: left 200ms cubic-bezier(0.2, 0.9, 0.3, 1), background 200ms ease, box-shadow 200ms ease;
+}
+.uc-slider.active .uc-thumb {
+  left: calc(100% - 14px) !important;
+  background: linear-gradient(135deg, #A78BFA, #FB923C);
+  box-shadow: 0 0 0 1px rgba(251, 146, 60, 0.5), 0 0 12px rgba(251, 146, 60, 0.5);
+}
+.uc-slider.smarter .uc-thumb {
+  box-shadow: 0 0 0 2px rgba(251, 146, 60, 0.3), 0 0 16px rgba(244, 114, 182, 0.4);
+}
+
+/* ============================================================
+   上下文窗口进度卡片
+   ============================================================ */
+.context-card {
+  margin: 0 auto 12px;
+  max-width: 820px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  border-radius: 10px;
+  padding: 10px 14px 12px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.context-card:hover {
+  border-color: var(--border-prompt);
+  box-shadow: var(--shadow-sm);
+}
+.cc-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 8px;
+}
+.cc-label {
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.cc-meta {
+  display: flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+}
+.cc-meta .chev { color: var(--text-subtle); }
+.cc-bar {
+  height: 4px;
+  background: var(--border-divider);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.cc-bar-fill {
+  height: 100%;
+  width: 54%;
+  background: #3B82F6;
+  border-radius: 2px;
+  transition: width var(--transition-normal);
+}
+[data-theme="dark"] .cc-bar-fill { background: #60A5FA; }
+
+/* 模型 chip 触发器箭头旋转 */
+.model-chip[aria-expanded="true"] .model-chev { transform: rotate(180deg); }
+
+/* ============================================================
+   Popover 气泡弹窗组件（上下文详情 / Ultracode 弹窗复用）
+   ============================================================ */
+.popover {
+  position: fixed;
+  z-index: 250;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  border-radius: 14px;
+  box-shadow: 0 16px 40px -8px rgba(0,0,0,0.22), 0 2px 8px rgba(0,0,0,0.08);
+  padding: 16px;
+  display: none;
+  transform-origin: bottom center;
+  animation: popIn 200ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.popover.show { display: block; }
+@keyframes popIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+/* 上方小三角（默认） */
+.popover::before {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+  width: 12px; height: 12px;
+  background: var(--bg-card);
+  border-right: 1px solid var(--border-divider);
+  border-bottom: 1px solid var(--border-divider);
+}
+/* 下方小三角（当 popover 在触发器上方时） */
+.popover.below {
+  transform-origin: top center;
+  animation: popInDown 200ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.popover.below::before {
+  top: -6px;
+  bottom: auto;
+  border-right: none;
+  border-bottom: none;
+  border-left: 1px solid var(--border-divider);
+  border-top: 1px solid var(--border-divider);
+}
+@keyframes popInDown {
+  from { opacity: 0; transform: translateY(-8px) scale(0.96); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+
+/* —— 上下文详细 Popover —— */
+.ctx-pop {
+  width: 360px;
+}
+.ctx-pop-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.ctx-pop-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: var(--fs-h3);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ctx-pop-close {
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-subtle);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.ctx-pop-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+.ctx-big-num {
+  font-family: var(--font-mono);
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.02em;
+}
+.ctx-big-pct {
+  font-size: 13px;
+  color: var(--text-inactive);
+  margin-left: 4px;
+}
+.ctx-bar-smooth {
+  position: relative;
+  height: 8px;
+  background: var(--border-divider);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 14px 0 12px;
+}
+.ctx-bar-smooth::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(59,130,246,0.06) 50%, transparent 100%);
+  animation: shimmer 2.4s linear infinite;
+}
+@keyframes shimmer {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%); }
+}
+.ctx-bar-fill-smooth {
+  height: 100%;
+  width: 54%;
+  background: linear-gradient(90deg, #60A5FA, #3B82F6);
+  border-radius: 4px;
+  transition: width 600ms cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+.ctx-bar-fill-smooth::after {
+  content: '';
+  position: absolute;
+  top: 0; right: 0; bottom: 0;
+  width: 12px;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.6));
+  border-radius: 4px;
+}
+.ctx-legend {
+  display: flex; gap: 12px;
+  font-size: 11px;
+  color: var(--text-inactive);
+}
+.ctx-legend .lg-it {
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.ctx-legend .lg-dot {
+  width: 8px; height: 8px;
+  border-radius: 2px;
+}
+.ctx-detail-row {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-divider);
+  font-size: var(--fs-small);
+}
+.ctx-detail-row:first-of-type { border-top: none; }
+.ctx-detail-row .cdr-label { color: var(--text-inactive); }
+.ctx-detail-row .cdr-val {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+}
+
+/* —— 上下文卡片主视图：环形百分比 —— */
+.context-card {
+  margin: 0 auto 12px;
+  max-width: 820px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  border-radius: 10px;
+  padding: 10px 14px 12px;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.context-card:hover {
+  border-color: var(--border-prompt);
+  box-shadow: var(--shadow-sm);
+}
+.cc-row {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 12px;
+}
+.cc-left {
+  display: flex; align-items: center; gap: 12px;
+}
+.cc-ring {
+  position: relative;
+  width: 36px; height: 36px;
+  flex-shrink: 0;
+}
+.cc-ring svg {
+  width: 100%; height: 100%;
+  transform: rotate(-90deg);
+}
+.cc-ring .ring-bg {
+  fill: none;
+  stroke: var(--border-divider);
+  stroke-width: 4;
+}
+.cc-ring .ring-fg {
+  fill: none;
+  stroke: var(--claude);
+  stroke-width: 4;
+  stroke-linecap: round;
+  transition: stroke-dasharray 600ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.cc-ring .ring-text {
+  position: absolute;
+  inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.cc-meta-stack {
+  display: flex; flex-direction: column; gap: 2px;
+}
+.cc-label {
+  font-size: var(--fs-small);
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.cc-sub {
+  font-size: 11px;
+  color: var(--text-inactive);
+  font-family: var(--font-mono);
+}
+.cc-right {
+  display: flex; align-items: center; gap: 4px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+}
+.cc-right .chev { color: var(--text-subtle); }
+.cc-bar {
+  height: 4px;
+  background: var(--border-divider);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.cc-bar-fill {
+  height: 100%;
+  width: 54%;
+  background: linear-gradient(90deg, #60A5FA, #3B82F6);
+  border-radius: 2px;
+  transition: width var(--transition-normal);
+}
+[data-theme="dark"] .cc-bar-fill {
+  background: linear-gradient(90deg, #93C5FD, #60A5FA);
+}
+
+/* —— Ultracode 弹窗 —— */
+.uc-pop {
+  width: 320px;
+}
+.uc-pop-head {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
+.uc-pop-title {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-primary);
+  display: flex; align-items: center; gap: 6px;
+}
+.uc-pop-title .uc-name {
+  background: linear-gradient(90deg, #A78BFA, #F472B6, #FB923C);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.uc-help-btn {
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-subtle);
+  border: 1px solid var(--border-divider);
+  font-size: 10px;
+  transition: all var(--transition-fast);
+}
+.uc-help-btn:hover { color: var(--text-primary); border-color: var(--text-subtle); }
+.uc-ends {
+  display: flex; justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-inactive);
+  margin-bottom: 8px;
+}
+.uc-track-big {
+  position: relative;
+  width: 100%;
+  height: 24px;
+  display: flex; align-items: center;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+.uc-track-big::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0;
+  height: 6px;
+  background: var(--border-divider);
+  border-radius: 3px;
+  transition: background var(--transition-fast);
+}
+.uc-track-big.active::before {
+  background: linear-gradient(90deg, #A78BFA, #F472B6, #FB923C);
+  opacity: 0.85;
+}
+.uc-thumb-big {
+  position: absolute;
+  width: 18px; height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  top: 3px;
+  left: 0;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.2), 0 0 0 1px var(--border-divider);
+  transition: left 60ms linear, background 200ms ease, box-shadow 200ms ease;
+}
+.uc-track-big.active .uc-thumb-big {
+  background: linear-gradient(135deg, #A78BFA, #FB923C);
+  box-shadow: 0 0 0 2px rgba(251,146,60,0.3), 0 0 16px rgba(244,114,182,0.4);
+}
+.uc-track-ticks {
+  display: flex; justify-content: space-between;
+  margin-top: 8px;
+  padding: 0 4px;
+}
+.uc-track-ticks span {
+  width: 1px; height: 4px;
+  background: var(--border-divider);
+}
+.uc-track-ticks span.t-major {
+  width: 2px; height: 6px;
+  background: var(--text-subtle);
+}
+.uc-track-ticks span:first-child,
+.uc-track-ticks span:last-child { background: transparent; }
+.uc-track-big:not(.active) .uc-track-ticks { opacity: 0.5; }
+.uc-value {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-inactive);
+}
+.uc-value strong {
+  font-family: var(--font-mono);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* ============================================================
+   知识库面板
+   ============================================================ */
+.kb-panel {
+  background: var(--bg-sidebar);
+  border-left: 1px solid var(--border-divider);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  transition: transform var(--transition-normal);
+}
+.kb-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-divider);
+}
+.kb-head-title {
+  display: flex; align-items: center; gap: 8px;
+  font-size: var(--fs-small);
+  font-weight: 600;
+}
+.kb-head-title .dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+.kb-tabs {
+  display: flex;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border-divider);
+}
+.kb-tab {
+  flex: 1;
+  padding: 10px 4px;
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+  border-bottom: 2px solid transparent;
+  transition: all var(--transition-fast);
+  text-align: center;
+}
+.kb-tab:hover { color: var(--text-primary); }
+.kb-tab.active {
+  color: var(--claude);
+  border-bottom-color: var(--claude);
+  font-weight: 500;
+}
+.kb-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+.kb-pane { display: none; }
+.kb-pane.active { display: block; }
+
+/* 文献池 */
+.kb-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 4px 4px 8px;
+  display: flex; justify-content: space-between; align-items: center;
+}
+.kb-section-title .count {
+  font-weight: 500;
+  color: var(--text-inactive);
+}
+.ref-item {
+  padding: 10px 10px;
+  border-radius: 8px;
+  margin-bottom: 4px;
+  transition: background var(--transition-fast);
+  cursor: pointer;
+}
+.ref-item:hover { background: var(--bg-hover); }
+.ref-item-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.4;
+  margin-bottom: 4px;
+}
+.ref-item-meta {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px;
+  color: var(--text-inactive);
+}
+.ref-item-actions {
+  display: flex; gap: 4px;
+  margin-top: 6px;
+}
+.icon-btn {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: var(--text-inactive);
+  transition: all var(--transition-fast);
+}
+.icon-btn:hover {
+  background: var(--claude-soft);
+  color: var(--claude);
+}
+
+/* 笔记（TipTap 模拟） */
+.note-editor {
+  background: var(--bg-app);
+  border: 1px solid var(--border-divider);
+  border-radius: 8px;
+  padding: 12px 14px;
+  min-height: 240px;
+  font-size: var(--fs-small);
+  line-height: 1.7;
+  color: var(--text-primary);
+  outline: none;
+}
+.note-editor h2 { font-size: 16px; font-weight: 600; margin: 6px 0 4px; }
+.note-editor p { margin-bottom: 6px; }
+.note-bilink {
+  color: var(--permission);
+  background: var(--permission-soft);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.note-bilink:hover { text-decoration: underline; }
+.note-toolbar {
+  display: flex; gap: 2px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-divider);
+  background: var(--bg-sidebar);
+  border-radius: 8px 8px 0 0;
+}
+.note-toolbar .tb-btn {
+  width: 26px; height: 26px;
+  border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-inactive);
+  font-size: 12px;
+}
+.note-toolbar .tb-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+/* 图谱 */
+.graph-wrap {
+  position: relative;
+  background: var(--bg-canvas-dark);
+  border-radius: 8px;
+  height: 320px;
+  overflow: hidden;
+}
+.graph-wrap svg { width: 100%; height: 100%; display: block; }
+.graph-legend {
+  position: absolute;
+  bottom: 8px; left: 8px;
+  background: rgba(0,0,0,0.5);
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #fff;
+  display: flex; gap: 12px;
+}
+.graph-legend .lg {
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.graph-legend .lg::before {
+  content: '';
+  width: 8px; height: 8px;
+  border-radius: 50%;
+}
+.graph-legend .lg.theme::before { background: var(--claude); }
+.graph-legend .lg.method::before { background: var(--success); }
+.graph-legend .lg.data::before { background: #6FB7FF; }
+
+/* ============================================================
+   Status Bar
+   ============================================================ */
+.statusbar {
+  display: flex; align-items: center;
+  height: var(--h-statusbar);
+  padding: 0 14px;
+  background: var(--bg-sidebar);
+  border-top: 1px solid var(--border-divider);
+  font-size: 11px;
+  color: var(--text-inactive);
+  gap: 16px;
+  user-select: none;
+}
+.sb-item {
+  display: inline-flex; align-items: center; gap: 6px;
+  white-space: nowrap;
+}
+.sb-item .icon { color: var(--text-subtle); }
+.sb-divider { width: 1px; height: 14px; background: var(--border-divider); }
+.sb-spacer { flex: 1; }
+.sb-item.clickable { cursor: pointer; transition: color var(--transition-fast); }
+.sb-item.clickable:hover { color: var(--text-primary); }
+.sb-item .pulse-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--claude);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+/* ============================================================
+   侧栏底部触发器 + 弹出菜单（仿 Claude Code 桌面端）
+   ============================================================ */
+.foot-trigger {
+  flex: 1;
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+  transition: background var(--transition-fast), color var(--transition-fast);
+  cursor: pointer;
+  min-width: 0;
+}
+.foot-trigger:hover { background: var(--bg-hover); color: var(--text-primary); }
+.foot-trigger.open { background: var(--bg-hover); color: var(--text-primary); }
+.foot-trigger .label {
+  flex: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  text-align: left;
+}
+.foot-trigger .chevron {
+  color: var(--text-subtle);
+  flex-shrink: 0;
+  transition: transform var(--transition-fast);
+}
+.foot-trigger.open .chevron { transform: rotate(180deg); }
+
+/* —— 菜单弹层（仿 Claude Code） —— */
+.foot-menu {
+  position: fixed;
+  left: 12px; bottom: 48px;
+  width: 280px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px -8px rgba(0,0,0,0.18), 0 2px 6px rgba(0,0,0,0.06);
+  z-index: 100;
+  overflow: hidden;
+  display: none;
+  transform-origin: bottom left;
+  animation: menuIn 180ms ease-out;
+}
+.foot-menu.show { display: block; }
+@keyframes menuIn {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+.menu-head {
+  padding: 14px 14px 12px;
+  display: flex; align-items: flex-start; gap: 10px;
+}
+.menu-head-avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--claude), #c97c5a);
+  color: #fff;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600;
+  flex-shrink: 0;
+}
+.menu-head-info {
+  flex: 1; min-width: 0;
+}
+.menu-head-name {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+.menu-head-status {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px;
+  color: var(--text-inactive);
+}
+.menu-head-status .ok-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 2px var(--success-soft);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+.menu-list {
+  padding: 4px 6px 6px;
+}
+.menu-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: var(--fs-body);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  width: 100%;
+  text-align: left;
+  background: transparent;
+}
+.menu-item:hover { background: var(--bg-hover); }
+.menu-item .mi-icon {
+  width: 16px; height: 16px;
+  color: var(--text-inactive);
+  flex-shrink: 0;
+}
+.menu-item:hover .mi-icon { color: var(--text-primary); }
+.menu-item .mi-label { flex: 1; }
+.menu-item .mi-kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-inactive);
+}
+.menu-item .mi-chevron {
+  width: 14px; height: 14px;
+  color: var(--text-subtle);
+  flex-shrink: 0;
+}
+.menu-divider {
+  height: 1px;
+  background: var(--border-divider);
+  margin: 4px 6px;
+}
+
+/* —— 语言子菜单 —— */
+.lang-submenu {
+  position: fixed;
+  left: 296px; bottom: 48px;
+  width: 160px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-divider);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px -8px rgba(0,0,0,0.18);
+  z-index: 101;
+  padding: 4px;
+  display: none;
+  animation: menuIn 180ms ease-out;
+}
+.lang-submenu.show { display: block; }
+.lang-option {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: var(--fs-small);
+  color: var(--text-primary);
+  cursor: pointer;
+  width: 100%;
+  background: transparent;
+  text-align: left;
+}
+.lang-option:hover { background: var(--bg-hover); }
+.lang-option.active {
+  background: var(--claude-soft);
+  color: var(--claude);
+  font-weight: 500;
+}
+.lang-option .flag {
+  font-size: 14px;
+  width: 16px; text-align: center;
+}
+.lang-option .check {
+  margin-left: auto;
+  color: var(--claude);
+  opacity: 0;
+}
+.lang-option.active .check { opacity: 1; }
+
+/* ============================================================
+   设置面板（仿 Claude Code 桌面端）
+   ============================================================ */
+.settings-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.40);
+  display: none;
+  align-items: center; justify-content: center;
+  z-index: 1100;
+  backdrop-filter: blur(3px);
+}
+.settings-overlay.show { display: flex; animation: fadeIn 150ms ease; }
+
+.settings-panel {
+  background: var(--bg-card);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px -12px rgba(0,0,0,0.30), 0 4px 12px rgba(0,0,0,0.10);
+  width: 880px;
+  max-width: 92vw;
+  height: 640px;
+  max-height: 88vh;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  animation: scaleIn 220ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.settings-header {
+  display: flex; align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border-divider);
+}
+.settings-search {
+  flex: 1;
+  display: flex; align-items: center; gap: 8px;
+  background: var(--bg-app);
+  border: 1px solid var(--border-divider);
+  border-radius: 8px;
+  padding: 6px 10px;
+  transition: border-color var(--transition-fast);
+}
+.settings-search:focus-within { border-color: var(--border-prompt); }
+.settings-search svg { color: var(--text-subtle); flex-shrink: 0; }
+.settings-search input {
+  flex: 1;
+  border: none; background: none; outline: none;
+  font-size: var(--fs-small);
+  color: var(--text-primary);
+}
+.settings-search input::placeholder { color: var(--text-subtle); }
+.settings-close {
+  width: 28px; height: 28px;
+  border-radius: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--text-inactive);
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.settings-close:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+.settings-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  overflow: hidden;
+}
+.settings-nav {
+  padding: 12px 8px;
+  border-right: 1px solid var(--border-divider);
+  overflow-y: auto;
+  background: var(--bg-sidebar);
+}
+.settings-nav-group-title {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-subtle);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 10px 12px 6px;
+}
+.settings-nav-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px;
+  border-radius: 6px;
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+  cursor: pointer;
+  width: 100%;
+  background: transparent;
+  text-align: left;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.settings-nav-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.settings-nav-item.active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.settings-nav-item .ni-icon { width: 14px; height: 14px; flex-shrink: 0; color: inherit; }
+
+.settings-content {
+  padding: 24px 28px;
+  overflow-y: auto;
+  background: var(--bg-app);
+}
+.settings-content[hidden] { display: none; }
+.settings-section-title {
+  font-size: var(--fs-h3);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 18px;
+}
+.settings-row {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border-divider);
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: start;
+  gap: 24px;
+}
+.settings-row:last-child { border-bottom: none; }
+.settings-row-label {
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+.settings-row-desc {
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+  line-height: 1.5;
+  max-width: 460px;
+}
+.settings-row-control { display: flex; align-items: center; gap: 8px; }
+
+/* 开关 */
+.toggle {
+  position: relative;
+  width: 36px; height: 20px;
+  background: var(--border-divider);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  flex-shrink: 0;
+}
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  transition: transform var(--transition-fast);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.toggle.on { background: var(--claude); }
+.toggle.on::after { transform: translateX(16px); }
+
+/* 选择器（Select） */
+.select {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 10px 6px 12px;
+  background: var(--bg-app);
+  border: 1px solid var(--border-divider);
+  border-radius: 6px;
+  font-size: var(--fs-small);
+  color: var(--text-primary);
+  cursor: pointer;
+  min-width: 140px;
+  justify-content: space-between;
+  transition: border-color var(--transition-fast);
+}
+.select:hover { border-color: var(--border-prompt); }
+.select .chev {
+  color: var(--text-subtle);
+  flex-shrink: 0;
+}
+
+/* 字体输入框 */
+.input-line {
+  display: inline-flex; align-items: center;
+  background: var(--bg-app);
+  border: 1px solid var(--border-divider);
+  border-radius: 6px;
+  padding: 6px 12px;
+  min-width: 220px;
+  transition: border-color var(--transition-fast);
+}
+.input-line:focus-within { border-color: var(--border-prompt); box-shadow: 0 0 0 3px rgba(153,153,153,0.12); }
+.input-line input {
+  flex: 1;
+  border: none; background: none; outline: none;
+  font-size: var(--fs-small);
+  color: var(--text-primary);
+}
+.input-line input::placeholder { color: var(--text-subtle); }
+
+/* 转录文本大小分段 */
+.segmented {
+  display: inline-flex;
+  background: var(--bg-app);
+  border: 1px solid var(--border-divider);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+.segmented button {
+  padding: 5px 16px;
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+  border-radius: 6px;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  min-width: 44px;
+}
+.segmented button.active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* 代码外观预览对 */
+.code-preview-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 4px;
+}
+.code-preview-card {
+  display: flex; flex-direction: column; gap: 8px;
+}
+.code-preview-card .cp-head {
+  display: flex; align-items: center; gap: 8px;
+}
+.code-preview-card .cp-body {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 12px 14px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.cp-light {
+  background: #FFFFFF;
+  border: 1px solid var(--border-divider);
+  color: #1F1F1F;
+}
+.cp-light .ln-num { color: #B0B0B0; user-select: none; display: inline-block; width: 18px; }
+.cp-light .kw { color: #AF00DB; }
+.cp-light .fn { color: #0066CC; }
+.cp-light .str { color: #C7254E; background: #F9F2F4; }
+.cp-light .var { color: #1F1F1F; }
+.cp-light .punct { color: #1F1F1F; }
+.cp-light .brc { color: #1F1F1F; }
+.cp-light .brace-op { background: rgba(255, 220, 210, 0.45); display: inline-block; width: 100%; }
+.cp-light .brace-mod { background: rgba(220, 245, 220, 0.45); display: inline-block; width: 100%; }
+
+.cp-dark {
+  background: #1E1E1E;
+  color: #D4D4D4;
+  border: 1px solid #2A2A2A;
+}
+.cp-dark .ln-num { color: #6E6E6E; user-select: none; display: inline-block; width: 18px; }
+.cp-dark .kw { color: #C586C0; }
+.cp-dark .fn { color: #569CD6; }
+.cp-dark .str { color: #CE9178; }
+.cp-dark .var { color: #D4D4D4; }
+.cp-dark .punct { color: #D4D4D4; }
+.cp-dark .brc { color: #D4D4D4; }
+.cp-dark .brace-op { background: rgba(180, 80, 60, 0.25); display: inline-block; width: 100%; }
+.cp-dark .brace-mod { background: rgba(60, 110, 60, 0.25); display: inline-block; width: 100%; }
+
+/* 设置分组小标题 */
+.settings-sub {
+  font-size: var(--fs-h3);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 24px 0 8px;
+}
+.settings-sub:first-child { margin-top: 0; }
+
+/* ============================================================
+   模态
+   ============================================================ */
+.modal-mask {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.32);
+  display: none;
+  align-items: center; justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+.modal-mask.show { display: flex; animation: fadeIn var(--transition-fast); }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+.modal {
+  background: var(--bg-card);
+  border-radius: var(--r-modal);
+  box-shadow: var(--shadow-lg);
+  width: 420px;
+  max-width: 90vw;
+  padding: 20px 22px;
+  animation: scaleIn var(--transition-normal);
+}
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.96); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.modal-title {
+  font-size: var(--fs-h3);
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.modal-body {
+  font-size: var(--fs-small);
+  color: var(--text-inactive);
+  line-height: 1.6;
+  margin-bottom: 18px;
+}
+.modal-body strong { color: var(--text-primary); }
+.modal-warn {
+  background: var(--error-soft);
+  border-left: 3px solid var(--error);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin: 10px 0 16px;
+  font-size: 12px;
+  color: var(--error);
+}
+.modal-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+}
+
+/* —— Toast —— */
+.toast {
+  position: fixed;
+  bottom: 60px; left: 50%;
+  transform: translateX(-50%);
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  padding: 8px 16px;
+  border-radius: var(--r-btn);
+  font-size: var(--fs-small);
+  box-shadow: var(--shadow-md);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  z-index: 1001;
+}
+.toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(-4px);
+}
+
+/* 响应式 */
+@media (max-width: 1100px) {
+  :root { --w-kb-panel: 260px; }
+}
+@media (max-width: 900px) {
+  .workspace { grid-template-columns: var(--w-sidebar) 1fr 0; }
+  .kb-panel { transform: translateX(100%); }
+}
+
+/* 减少动效（运动敏感用户） */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ============ Title Bar ============ -->
+  <header class="titlebar">
+    <div class="nav-arrows">
+      <button class="nav-btn" title="后退" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <button class="nav-btn" title="前进" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+      </button>
+    </div>
+    <div class="title-tabs">
+      <div class="title-tab active">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--claude)" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        论文写作 Agent
+      </div>
+      <div class="title-tab">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        历史记录
+      </div>
+    </div>
+    <div class="titlebar-spacer"></div>
+    <div class="titlebar-actions">
+      <button class="nav-btn" id="toggle-kb" title="切换知识库面板">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+      </button>
+      <button class="nav-btn" title="设置">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============ Workspace ============ -->
+  <div class="workspace" id="workspace">
+
+    <!-- ===== Sidebar ===== -->
+    <aside class="sidebar">
+      <div class="sidebar-top">
+        <button class="new-chat-btn" id="new-chat">
+          <span class="left">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            新建对话
+          </span>
+          <span class="kbd">⌘N</span>
+        </button>
+        <div class="tasks-dropdown">
+          <span>📋 All tasks</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div class="sidebar-search">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-subtle)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input placeholder="搜索对话 / 主题 / 文献…" />
+        </div>
+      </div>
+
+      <div class="session-list" id="session-list">
+        <!-- Today 分组 -->
+        <div class="session-group">
+          <div class="session-group-title">Today</div>
+
+          <div class="session-item active" data-session="1">
+            <div class="session-row">
+              <span class="session-title">大模型对学术写作的影响研究</span>
+              <button class="session-delete" title="删除对话">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <div class="session-meta">
+              <span class="session-degree">硕士</span>
+              <span class="session-progress-text">阶段 6/10 · 60%</span>
+            </div>
+            <div class="session-progress-bar"><div class="session-progress-fill" style="width:60%"></div></div>
+          </div>
+
+          <div class="session-item" data-session="2">
+            <div class="session-row">
+              <span class="session-title">乡村教师流动机制综述</span>
+              <button class="session-delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+            </div>
+            <div class="session-meta">
+              <span class="session-degree">博士</span>
+              <span class="session-progress-text">阶段 3/10 · 30%</span>
+            </div>
+            <div class="session-progress-bar"><div class="session-progress-fill" style="width:30%"></div></div>
+          </div>
+        </div>
+
+        <div class="session-group">
+          <div class="session-group-title">Previous 7 Days</div>
+
+          <div class="session-item" data-session="3">
+            <div class="session-row">
+              <span class="session-title">地方政府债务风险评价模型</span>
+              <button class="session-delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+            </div>
+            <div class="session-meta">
+              <span class="session-degree">硕士</span>
+              <span class="session-progress-text">已完成 · 100%</span>
+            </div>
+            <div class="session-progress-bar"><div class="session-progress-fill" style="width:100%; background: var(--success)"></div></div>
+          </div>
+
+          <div class="session-item" data-session="4">
+            <div class="session-row">
+              <span class="session-title">Transformer 在病理切片的应用</span>
+              <button class="session-delete"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+            </div>
+            <div class="session-meta">
+              <span class="session-degree">博士</span>
+              <span class="session-progress-text">阶段 8/10 · 80%</span>
+            </div>
+            <div class="session-progress-bar"><div class="session-progress-fill" style="width:80%"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sidebar-foot">
+        <button class="foot-trigger" id="foot-trigger" aria-haspopup="menu" aria-expanded="false">
+          <span class="foot-avatar">欧</span>
+          <span class="label">
+            <span data-i18n="user.name">欧弱弱</span>
+            <span style="color: var(--text-subtle); font-size: 11px;"> · </span>
+            <span data-i18n="user.role" style="color: var(--text-subtle); font-size: 11px;">Pro</span>
+          </span>
+          <svg class="chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+      </div>
+    </aside>
+
+    <!-- ===== Main ===== -->
+    <main class="main">
+
+      <!-- 阶段进度条 -->
+      <div class="stage-bar" id="stage-bar">
+        <!-- 节点 + 连线 由 JS 注入 -->
+      </div>
+
+      <!-- 对话流 -->
+      <div class="chat-flow" id="chat-flow">
+        <div class="chat-inner">
+
+          <!-- 用户消息 -->
+          <div class="msg user">
+            <div class="bubble">帮我围绕"大模型对学术写作的影响"做一篇硕士论文。</div>
+            <div class="msg-meta"><span>10:42</span></div>
+          </div>
+
+          <!-- AI 消息 -->
+          <div class="msg ai">
+            <div class="bubble">
+              <p>收到，已进入<strong>选题阶段</strong>。我会先围绕"大模型对学术写作的影响"做主题边界扫描，识别三条可研究方向：</p>
+              <p>1. <code>认知依赖</code>—— 大模型对研究生原创性的影响<br>
+                 2. <code>学术规范</code>—— AI 辅助写作的伦理边界<br>
+                 3. <code>评价机制</code>—— 论文查重与评审体系的响应</p>
+              <p>建议聚焦方向 1，因其具备理论与实证双重空间。下面调用选题分析工具。</p>
+            </div>
+          </div>
+
+          <!-- 工具调用卡 -->
+          <div class="tool-card open">
+            <div class="tool-card-head">
+              <div class="left">
+                <span class="tool-icon">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
+                </span>
+                <span class="tool-name">topic_analysis</span>
+                <span class="tool-status done">✓ 已完成</span>
+              </div>
+              <span class="tool-chevron">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+              </span>
+            </div>
+            <div class="tool-card-body">
+<pre>方向: 大模型对学术写作的影响
+候选主题:
+  - "生成式AI对硕士研究生原创性认知的隐性侵蚀"
+  - "AI辅助写作工具在学术规范中的伦理边界研究"
+推荐: 主题1 (理论+实证 双重空间)
+关键词: 生成式AI / 原创性 / 硕士论文 / 认知依赖
+预计章节: 5 章 + 附录</pre>
+            </div>
+          </div>
+
+          <!-- 产物卡 -->
+          <div class="artifact-card">
+            <div class="artifact-head">
+              <div class="artifact-title">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--claude)" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                选题报告 v1.docx
+              </div>
+              <span class="artifact-type">.docx · 14 KB</span>
+            </div>
+            <div class="artifact-preview">
+              围绕"生成式AI对硕士研究生原创性认知的隐性侵蚀"展开。包含研究背景、问题陈述、研究意义、国内外研究现状概览、研究方法路径。已附 3 个候选题目。
+            </div>
+          </div>
+
+          <!-- 确认闸门 1 -->
+          <div class="gate-block">
+            <div class="gate-hint">
+              <span class="gate-dot"></span>
+              已完成自动校验，待您确认后进入下一环
+            </div>
+            <div class="gate-row">
+              <span class="gate-label">「选题」环节已通过自动验收</span>
+              <button class="btn btn-primary" data-gate>
+                确认进入下一环
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <!-- AI 文献检索消息 -->
+          <div class="msg ai">
+            <div class="bubble">
+              <p>进入<strong>文献阶段</strong>。已通过标准检索通道查询 <strong>Crossref / OpenAlex / Semantic Scholar</strong>（英文）+ 中文引导平台（<strong>NCPSSD / ChinaXiv</strong>），下面是高质量匹配结果（按可靠度排序）：</p>
+            </div>
+          </div>
+
+          <!-- 文献卡 1 -->
+          <div class="ref-card">
+            <div class="ref-head">
+              <div class="ref-title">生成式人工智能对学术写作原创性的影响机制研究</div>
+              <span class="badge verified">✓ Verified</span>
+            </div>
+            <div class="ref-meta">
+              <span>张明 · 李华</span>
+              <span>·</span>
+              <span>《高等教育研究》2024(03)</span>
+              <span>·</span>
+              <span>被引 28</span>
+            </div>
+            <div class="ref-citation">张明, 李华. 生成式人工智能对学术写作原创性的影响机制研究[J]. 高等教育研究, 2024, 43(3): 45-58.</div>
+            <div class="ref-actions">
+              <button class="link-btn">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                中文平台跳转下载
+              </button>
+              <button class="icon-btn">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--claude)" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                复制 GB/T 7714
+              </button>
+              <button class="icon-btn">+ 收藏到文献池</button>
+            </div>
+          </div>
+
+          <!-- 文献卡 2 -->
+          <div class="ref-card">
+            <div class="ref-head">
+              <div class="ref-title">LLMs and the erosion of academic originality: a multi-institution study</div>
+              <span class="badge matched">◈ Matched</span>
+            </div>
+            <div class="ref-meta">
+              <span>R. Chen, M. Patel</span>
+              <span>·</span>
+              <span>Computers &amp; Education, 2024</span>
+              <span>·</span>
+              <span>被引 51</span>
+            </div>
+            <div class="ref-citation">Chen R, Patel M. LLMs and the erosion of academic originality: a multi-institution study[J]. Computers &amp; Education, 2024, 215: 104553.</div>
+            <div class="ref-actions">
+              <button class="link-btn">DOI 跳转下载</button>
+              <button class="icon-btn">复制 GB/T 7714</button>
+              <button class="icon-btn">+ 收藏到文献池</button>
+            </div>
+          </div>
+
+          <!-- 文献卡 3 - uncertain -->
+          <div class="ref-card" style="border-left-color: var(--warning);">
+            <div class="ref-head">
+              <div class="ref-title">AI辅助研究生论文写作的边界：基于某高校的质性访谈</div>
+              <span class="badge uncertain">⚠ 待人工</span>
+            </div>
+            <div class="ref-meta">
+              <span>来源待核 · 仅会议摘要</span>
+              <span>·</span>
+              <span>匹配度 0.62</span>
+            </div>
+            <div class="ref-citation">该文献元数据不全（缺少卷期/页码），建议人工核实后采用。</div>
+            <div class="ref-actions">
+              <button class="btn btn-secondary btn-sm">人工核实</button>
+              <button class="btn btn-ghost btn-sm">忽略</button>
+            </div>
+          </div>
+
+          <!-- 评审未通过警告卡 -->
+          <div class="warn-card">
+            <span class="warn-icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            </span>
+            <div class="warn-body">
+              <div class="warn-title">综述环节自动评审未通过（环 4/10）</div>
+              <div>检测到 2 处疑似<strong>伪引用</strong>、1 处<strong>逻辑跳跃</strong>。本环节不走闸门，请选择以下处理：</div>
+              <div class="warn-actions">
+                <button class="btn btn-primary btn-sm">重新生成综述</button>
+                <button class="btn btn-secondary btn-sm">回退到「文献」环节</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- AI 当前正在撰写消息 -->
+          <div class="msg ai">
+            <div class="bubble">
+              <p>已为您修复上述问题，正在生成<strong>大纲</strong>（环 5）……</p>
+            </div>
+            <div class="msg-meta">
+              <span class="pulse-dot" style="background: var(--claude); display:inline-block; width:6px; height:6px; border-radius:50%;"></span>
+              正在思考
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- 输入区（仿 Claude Code 极简风格） -->
+      <div class="input-area">
+        <div class="input-inner">
+
+          <!-- 上下文窗口进度卡片（环形指示器） -->
+          <div class="context-card" id="context-card" role="button" tabindex="0" aria-label="上下文窗口使用情况">
+            <div class="cc-row">
+              <div class="cc-left">
+                <div class="cc-ring" aria-hidden="true">
+                  <svg viewBox="0 0 36 36">
+                    <circle class="ring-bg" cx="18" cy="18" r="15" />
+                    <circle class="ring-fg" cx="18" cy="18" r="15"
+                      stroke-dasharray="50.93 94.25"
+                      stroke-dashoffset="0" />
+                  </svg>
+                  <span class="ring-text">54%</span>
+                </div>
+                <div class="cc-meta-stack">
+                  <span class="cc-label" data-i18n="ctx.label">上下文窗口</span>
+                  <span class="cc-sub">539.2k / 1.0M</span>
+                </div>
+              </div>
+              <span class="cc-right">
+                <svg class="chev" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+              </span>
+            </div>
+            <div class="cc-bar"><div class="cc-bar-fill"></div></div>
+          </div>
+
+          <div class="input-box">
+            <textarea id="prompt" data-i18n-placeholder="input.placeholder" placeholder="输入 / 作为命令" rows="1"></textarea>
+            <button class="input-send" id="send-btn" title="发送" disabled aria-label="发送">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="10 8 16 12 10 16"/>
+                <line x1="4" y1="12" x2="14" y2="12"/>
+              </svg>
+            </button>
+          </div>
+          <div class="input-controls">
+            <!-- 左：模式 + 添加 -->
+            <div class="input-controls-left">
+              <button class="perm-chip" id="perm-bypass" aria-haspopup="menu" aria-expanded="false">
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" style="display:none;"><polyline points="20 6 9 17 4 12"/></svg>
+                <span id="perm-label" data-i18n="input.bypass">逐环确认</span>
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity:0.6; margin-left:2px;"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <button class="perm-add" id="perm-add" aria-haspopup="menu" aria-expanded="false" title="添加">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+            </div>
+            <!-- 右：模型 + Ultracode + 主题 -->
+            <div class="input-controls-right">
+              <button class="model-chip" id="model-select" aria-haspopup="menu" aria-expanded="false">
+                <span class="model-name" id="model-name">deepseek-v4-flash-vision-exp</span>
+                <span class="model-cap" id="model-cap">1M</span>
+                <svg class="model-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
+              <button class="uc-slider" id="ultracode-toggle" aria-haspopup="dialog" aria-expanded="false" title="思考深度 Ultracode">
+                <span class="uc-label">Ultracode</span>
+                <span class="uc-track"><span class="uc-thumb" id="uc-thumb"></span></span>
+              </button>
+              <button class="theme-toggle" id="theme-toggle" title="切换主题" aria-label="切换主题">
+                <svg id="icon-theme" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <circle cx="12" cy="12" r="9"/>
+                  <path d="M12 3a9 9 0 0 0 0 18 6 6 0 0 1 0-12 6 6 0 0 0 0-6z" fill="currentColor" stroke="none"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- ===== 知识库面板 ===== -->
+    <aside class="kb-panel" id="kb-panel">
+      <div class="kb-head">
+        <div class="kb-head-title">
+          <span class="dot"></span>
+          知识库 · 大模型对学术写作
+        </div>
+        <button class="nav-btn" id="close-kb" title="折叠">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+        </button>
+      </div>
+
+      <div class="kb-tabs">
+        <button class="kb-tab active" data-tab="refs">文献池</button>
+        <button class="kb-tab" data-tab="notes">笔记</button>
+        <button class="kb-tab" data-tab="graph">图谱</button>
+      </div>
+
+      <div class="kb-body">
+        <!-- 文献池 -->
+        <div class="kb-pane active" data-pane="refs">
+          <div class="kb-section-title">
+            <span>核心文献</span>
+            <span class="count">12</span>
+          </div>
+
+          <div class="ref-item">
+            <div class="ref-item-title">生成式AI对学术写作原创性的影响机制研究</div>
+            <div class="ref-item-meta">
+              <span class="badge verified" style="font-size:10px; padding:1px 6px;">✓</span>
+              <span>张明 · 2024</span>
+            </div>
+            <div class="ref-item-actions">
+              <button class="icon-btn">复制 GB/T 7714</button>
+              <button class="icon-btn">查看</button>
+            </div>
+          </div>
+
+          <div class="ref-item">
+            <div class="ref-item-title">LLMs and the erosion of academic originality</div>
+            <div class="ref-item-meta">
+              <span class="badge matched" style="font-size:10px; padding:1px 6px;">◈</span>
+              <span>Chen R · 2024</span>
+            </div>
+            <div class="ref-item-actions">
+              <button class="icon-btn">复制 GB/T 7714</button>
+              <button class="icon-btn">查看</button>
+            </div>
+          </div>
+
+          <div class="ref-item">
+            <div class="ref-item-title">AI辅助研究生写作的伦理边界</div>
+            <div class="ref-item-meta">
+              <span class="badge discovery" style="font-size:10px; padding:1px 6px;">○</span>
+              <span>王芳 · 2023</span>
+            </div>
+            <div class="ref-item-actions">
+              <button class="icon-btn">复制 GB/T 7714</button>
+              <button class="icon-btn">查看</button>
+            </div>
+          </div>
+
+          <div class="kb-section-title" style="margin-top:12px;">
+            <span>边缘文献</span>
+            <span class="count">5</span>
+          </div>
+          <div class="ref-item">
+            <div class="ref-item-title">某高校质性访谈：AI辅助写作边界</div>
+            <div class="ref-item-meta">
+              <span class="badge uncertain" style="font-size:10px; padding:1px 6px;">⚠</span>
+              <span>来源待核</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 笔记 -->
+        <div class="kb-pane" data-pane="notes">
+          <div class="note-toolbar">
+            <button class="tb-btn" title="加粗"><b>B</b></button>
+            <button class="tb-btn" title="斜体"><i>I</i></button>
+            <button class="tb-btn" title="标题">H</button>
+            <button class="tb-btn" title="列表">•</button>
+            <button class="tb-btn" title="双链" style="color: var(--permission);">[[</button>
+            <button class="tb-btn" title="引用">"</button>
+          </div>
+          <div class="note-editor" contenteditable="true">
+            <h2>核心观点笔记</h2>
+            <p>生成式 AI 对学术原创性的影响主要存在三条路径：</p>
+            <p>1. <b>认知依赖</b>：研究生在反复使用中逐渐丧失独立论证能力；</p>
+            <p>2. <b>规范漂移</b>：引用边界模糊化，参见 <span class="note-bilink">[[张明2024-影响机制]]</span>；</p>
+            <p>3. <b>评价滞后</b>：查重与评审体系尚未响应，详见 <span class="note-bilink">[[Chen2024-LLMs-erosion]]</span>。</p>
+            <p>下一步可结合访谈数据，构建 <span class="note-bilink">[[原创性-认知依赖模型]]</span>。</p>
+          </div>
+        </div>
+
+        <!-- 图谱 -->
+        <div class="kb-pane" data-pane="graph">
+          <div class="kb-section-title">
+            <span>概念图谱</span>
+            <span class="count">23 节点</span>
+          </div>
+          <div class="graph-wrap">
+            <svg viewBox="0 0 300 320" xmlns="http://www.w3.org/2000/svg">
+              <!-- 连线 -->
+              <g stroke="rgba(215,119,87,0.35)" stroke-width="1">
+                <line x1="150" y1="160" x2="80" y2="80"/>
+                <line x1="150" y1="160" x2="220" y2="80"/>
+                <line x1="150" y1="160" x2="80" y2="240"/>
+                <line x1="150" y1="160" x2="220" y2="240"/>
+                <line x1="150" y1="160" x2="150" y2="40"/>
+                <line x1="150" y1="160" x2="150" y2="280"/>
+                <line x1="80" y1="80" x2="40" y2="120"/>
+                <line x1="220" y1="80" x2="260" y2="120"/>
+                <line x1="80" y1="240" x2="40" y2="200"/>
+                <line x1="220" y1="240" x2="260" y2="200"/>
+              </g>
+              <!-- 中心节点 -->
+              <circle cx="150" cy="160" r="14" fill="rgb(215,119,87)" filter="drop-shadow(0 0 8px rgba(215,119,87,0.8))"/>
+              <text x="150" y="164" text-anchor="middle" fill="#fff" font-size="10" font-weight="600">核心</text>
+              <!-- 主题节点（橙） -->
+              <circle cx="80" cy="80" r="9" fill="rgb(215,119,87)" filter="drop-shadow(0 0 6px rgba(215,119,87,0.6))"/>
+              <text x="80" y="68" text-anchor="middle" fill="#fff" font-size="9">认知依赖</text>
+              <circle cx="220" cy="80" r="9" fill="rgb(215,119,87)" filter="drop-shadow(0 0 6px rgba(215,119,87,0.6))"/>
+              <text x="220" y="68" text-anchor="middle" fill="#fff" font-size="9">规范漂移</text>
+              <circle cx="150" cy="40" r="9" fill="rgb(215,119,87)" filter="drop-shadow(0 0 6px rgba(215,119,87,0.6))"/>
+              <text x="150" y="28" text-anchor="middle" fill="#fff" font-size="9">评价滞后</text>
+              <!-- 方法节点（绿） -->
+              <circle cx="80" cy="240" r="8" fill="rgb(44,122,57)" filter="drop-shadow(0 0 6px rgba(44,122,57,0.6))"/>
+              <text x="80" y="262" text-anchor="middle" fill="#fff" font-size="9">访谈法</text>
+              <circle cx="220" cy="240" r="8" fill="rgb(44,122,57)" filter="drop-shadow(0 0 6px rgba(44,122,57,0.6))"/>
+              <text x="220" y="262" text-anchor="middle" fill="#fff" font-size="9">问卷法</text>
+              <!-- 数据节点（蓝） -->
+              <circle cx="150" cy="280" r="8" fill="#6FB7FF" filter="drop-shadow(0 0 6px rgba(111,183,255,0.6))"/>
+              <text x="150" y="302" text-anchor="middle" fill="#fff" font-size="9">案例数据</text>
+              <!-- 边缘节点 -->
+              <circle cx="40" cy="120" r="5" fill="rgba(255,255,255,0.4)"/>
+              <circle cx="260" cy="120" r="5" fill="rgba(255,255,255,0.4)"/>
+              <circle cx="40" cy="200" r="5" fill="rgba(255,255,255,0.4)"/>
+              <circle cx="260" cy="200" r="5" fill="rgba(255,255,255,0.4)"/>
+            </svg>
+            <div class="graph-legend">
+              <span class="lg theme">主题</span>
+              <span class="lg method">方法</span>
+              <span class="lg data">数据</span>
+            </div>
+          </div>
+          <p style="font-size:11px; color: var(--text-inactive); margin-top: 8px; line-height:1.5;">
+            力导向布局，节点发光强度反映与核心主题的关联度。点击节点可在笔记中跳转。
+          </p>
+        </div>
+      </div>
+    </aside>
+
+  </div>
+</div>
+
+<!-- ============ 删除确认模态 ============ -->
+<div class="modal-mask" id="del-modal">
+  <div class="modal" role="dialog" aria-labelledby="del-title" aria-modal="true">
+    <div class="modal-title" id="del-title">删除该对话？</div>
+    <div class="modal-body">
+      即将删除对话 <strong id="del-name">大模型对学术写作的影响研究</strong>。
+    </div>
+    <div class="modal-warn">
+      ⚠️ 该操作会一并删除该对话专属的知识库（文献池 / 笔记 / 图谱），且不可恢复。
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="del-cancel">取消</button>
+      <button class="btn btn-primary" id="del-confirm" style="background: var(--error); color: #fff;">确认删除</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Toast ============ -->
+<div class="toast" id="toast" data-i18n="toast.clipboard">已复制到剪贴板</div>
+
+<!-- ============ 左下角弹出菜单（仿 Claude Code） ============ -->
+<div class="foot-menu" id="foot-menu" role="menu" aria-label="用户菜单">
+  <div class="menu-head">
+    <span class="menu-head-avatar">欧</span>
+    <div class="menu-head-info">
+      <div class="menu-head-name" data-i18n="user.name">欧弱弱</div>
+      <div class="menu-head-status">
+        <span class="ok-dot"></span>
+        <span data-i18n="menu.gateway">网关</span>
+      </div>
+    </div>
+  </div>
+  <div class="menu-list">
+    <button class="menu-item" data-action="settings" role="menuitem">
+      <svg class="mi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span class="mi-label" data-i18n="menu.settings">设置</span>
+      <span class="mi-kbd">Ctrl+,</span>
+    </button>
+    <button class="menu-item" data-action="language" role="menuitem" id="menu-lang">
+      <svg class="mi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+      <span class="mi-label" data-i18n="menu.language">语言</span>
+      <svg class="mi-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+    <button class="menu-item" data-action="inference" role="menuitem">
+      <svg class="mi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 2a4 4 0 0 1 4 4v2a4 4 0 0 1-3 3.87V14a1 1 0 0 0 1 1h2a3 3 0 0 1 3 3v3a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-3a3 3 0 0 1 3-3h2a1 1 0 0 0 1-1v-2.13A4 4 0 0 1 8 8V6a4 4 0 0 1 4-4z"/></svg>
+      <span class="mi-label" data-i18n="menu.inference">推理配置</span>
+    </button>
+    <div class="menu-divider"></div>
+    <button class="menu-item" data-action="changelog" role="menuitem">
+      <svg class="mi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+      <span class="mi-label" data-i18n="menu.changelog">查看更新日志</span>
+    </button>
+    <button class="menu-item" data-action="about" role="menuitem">
+      <svg class="mi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+      <span class="mi-label" data-i18n="menu.about">了解更多</span>
+      <svg class="mi-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
+    <div class="menu-divider"></div>
+    <button class="menu-item" data-action="logout" role="menuitem">
+      <svg class="mi-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      <span class="mi-label" data-i18n="menu.logout">注销</span>
+    </button>
+  </div>
+</div>
+
+<!-- ============ 语言子菜单 ============ -->
+<div class="lang-submenu" id="lang-submenu" role="menu">
+  <button class="lang-option active" data-lang="zh-CN" role="menuitem">
+    <span class="flag">中</span>
+    <span>简体中文</span>
+    <span class="check">✓</span>
+  </button>
+  <button class="lang-option" data-lang="en-US" role="menuitem">
+    <span class="flag">EN</span>
+    <span>English</span>
+    <span class="check">✓</span>
+  </button>
+</div>
+
+<!-- ============ 设置面板（仿 Claude Code） ============ -->
+<div class="settings-overlay" id="settings-overlay">
+  <div class="settings-panel" role="dialog" aria-labelledby="settings-title" aria-modal="true">
+    <div class="settings-header">
+      <div class="settings-search">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input id="settings-search-input" data-i18n-placeholder="settings.search" placeholder="搜索" />
+      </div>
+      <button class="settings-close" id="settings-close" aria-label="关闭">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="settings-body">
+      <nav class="settings-nav" id="settings-nav">
+        <!-- 由 JS 渲染 -->
+      </nav>
+      <main class="settings-content" id="settings-content">
+        <!-- 由 JS 渲染 -->
+      </main>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 模型选择下拉 ============ -->
+<div class="dd-menu" id="dd-model" role="menu" aria-label="模型选择">
+  <div class="dd-head" data-i18n="dd.model.head">模型</div>
+  <button class="dd-item" data-model="deepseek-v4-flash-vision-exp" data-cap="" data-i18n="dd.model.visionExp">deepseek-v4-flash-vision-exp</button>
+  <button class="dd-item active" data-model="deepseek-v4-flash-vision-exp" data-cap="1M" data-i18n="dd.model.visionExp1m">deepseek-v4-flash-vision-exp</button>
+  <button class="dd-item" data-model="deepseek-v4-flash" data-cap="" data-i18n="dd.model.flash">deepseek-v4-flash</button>
+  <button class="dd-item" data-model="deepseek-v4-flash" data-cap="1M" data-i18n="dd.model.flash1m">deepseek-v4-flash</button>
+  <button class="dd-item" data-model="deepseek-v4-pro" data-cap="" data-i18n="dd.model.pro">deepseek-v4-pro</button>
+  <button class="dd-item" data-model="deepseek-v4-pro" data-cap="1M" data-i18n="dd.model.pro1m">deepseek-v4-pro</button>
+  <button class="dd-item" data-model="deepseek-v4-pro" data-cap="2M" data-i18n="dd.model.pro2m">deepseek-v4-pro</button>
+</div>
+
+<!-- ============ 模式（逐环确认）下拉 ============ -->
+<div class="dd-menu" id="dd-perm" role="menu" aria-label="模式选择" style="min-width: 200px;">
+  <div class="dd-head" data-i18n="dd.perm.head">确认模式</div>
+  <button class="dd-item active" data-mode="perRing" data-i18n="dd.perm.perRing">
+    <span class="dd-label">逐环确认</span>
+  </button>
+  <button class="dd-item" data-mode="auto" data-i18n="dd.perm.auto">
+    <span class="dd-label">自动运行（演示）</span>
+  </button>
+</div>
+
+<!-- ============ + 号添加菜单 ============ -->
+<div class="dd-menu" id="dd-add" role="menu" aria-label="添加" style="min-width: 220px;">
+  <button class="dd-item" data-add="file">
+    <svg class="dd-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>
+    <span class="dd-label" data-i18n="dd.add.file">添加文件或照片</span>
+    <span class="dd-kbd">Ctrl+U</span>
+  </button>
+  <button class="dd-item" data-add="folder">
+    <svg class="dd-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+    <span class="dd-label" data-i18n="dd.add.folder">添加文件夹</span>
+  </button>
+  <button class="dd-item" data-add="slash">
+    <svg class="dd-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><line x1="7" y1="22" x2="17" y2="2"/></svg>
+    <span class="dd-label" data-i18n="dd.add.slash">斜线命令</span>
+    <span class="dd-kbd">/</span>
+  </button>
+  <button class="dd-item" data-add="connector">
+    <svg class="dd-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 2v6"/><path d="M15 2v6"/><path d="M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/></svg>
+    <span class="dd-label" data-i18n="dd.add.connector">添加连接器</span>
+  </button>
+  <button class="dd-item" data-add="plugin">
+    <svg class="dd-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M19 11h-1V8a2 2 0 0 0-2-2h-3V5a2 2 0 1 0-4 0v1H6a2 2 0 0 0-2 2v3h1a2 2 0 1 1 0 4H4v3a2 2 0 0 0 2 2h3v-1a2 2 0 1 1 4 0v1h3a2 2 0 0 0 2-2v-3h1a2 2 0 1 0 0-4z"/></svg>
+    <span class="dd-label" data-i18n="dd.add.plugin">插件</span>
+    <svg class="dd-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+  </button>
+</div>
+
+<!-- ============ 上下文窗口详细 Popover ============ -->
+<div class="popover ctx-pop" id="pop-ctx" role="dialog" aria-labelledby="ctx-pop-title">
+  <div class="ctx-pop-head">
+    <div class="ctx-pop-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+      <span id="ctx-pop-title" data-i18n="ctx.label">上下文窗口</span>
+    </div>
+    <button class="ctx-pop-close" id="ctx-pop-close" aria-label="关闭">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div>
+    <span class="ctx-big-num">539.2k</span>
+    <span class="ctx-big-pct">/ 1.0M · 54%</span>
+  </div>
+  <div class="ctx-bar-smooth">
+    <div class="ctx-bar-fill-smooth"></div>
+  </div>
+  <div class="ctx-legend">
+    <span class="lg-it"><span class="lg-dot" style="background:#3B82F6;"></span><span data-i18n="ctx.legend.used">已使用</span></span>
+    <span class="lg-it"><span class="lg-dot" style="background:var(--border-divider);"></span><span data-i18n="ctx.legend.free">剩余</span></span>
+  </div>
+  <div style="margin-top: 12px;">
+    <div class="ctx-detail-row">
+      <span class="cdr-label" data-i18n="ctx.detail.system">系统提示</span>
+      <span class="cdr-val">12.4k</span>
+    </div>
+    <div class="ctx-detail-row">
+      <span class="cdr-label" data-i18n="ctx.detail.user">用户消息</span>
+      <span class="cdr-val">86.1k</span>
+    </div>
+    <div class="ctx-detail-row">
+      <span class="cdr-label" data-i18n="ctx.detail.tools">工具调用</span>
+      <span class="cdr-val">221.7k</span>
+    </div>
+    <div class="ctx-detail-row">
+      <span class="cdr-label" data-i18n="ctx.detail.output">模型输出</span>
+      <span class="cdr-val">219.0k</span>
+    </div>
+  </div>
+</div>
+
+<!-- ============ Ultracode 思考深度 Popover ============ -->
+<div class="popover uc-pop" id="pop-uc" role="dialog" aria-labelledby="uc-pop-title">
+  <div class="uc-pop-head">
+    <div class="uc-pop-title" id="uc-pop-title">
+      <span data-i18n="uc.thinkDepth">思考深度</span>
+      <span class="uc-name">Ultracode</span>
+    </div>
+    <button class="uc-help-btn" aria-label="帮助">?</button>
+  </div>
+  <div class="uc-ends">
+    <span>Faster</span>
+    <span>Smarter</span>
+  </div>
+  <div class="uc-track-big" id="uc-track-big" tabindex="0" role="slider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="65">
+    <span class="uc-thumb-big" id="uc-thumb-big"></span>
+  </div>
+  <div class="uc-track-ticks">
+    <span></span>
+    <span class="t-major"></span>
+    <span></span>
+    <span class="t-major"></span>
+    <span></span>
+    <span class="t-major"></span>
+    <span></span>
+    <span class="t-major"></span>
+    <span></span>
+  </div>
+  <div class="uc-value">
+    <span data-i18n="uc.current">当前强度</span>: <strong id="uc-value-num">65</strong> / 100
+  </div>
+</div>
+
+<!-- ============ 推理配置占位 Modal ============ -->
+<div class="modal-mask" id="inference-modal">
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-title" data-i18n="inference.title">推理配置</div>
+    <div class="modal-body" data-i18n="inference.desc">
+      此处将支持用户自行配置大模型（OpenAI / Anthropic / DeepSeek / 自定义端点），包含 API Key、模型选择、推理参数。后续迭代补齐。
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" id="inference-close" data-i18n="modal.ok">好的</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   交互逻辑
+   ============================================================ */
+
+/* —— 主题切换（图片4右下角的圆形图标按钮） —— */
+const themeBtn = document.getElementById('theme-toggle');
+if (themeBtn) {
+  themeBtn.addEventListener('click', () => {
+    const cur = document.documentElement.getAttribute('data-theme');
+    const next = cur === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', next);
+    toast(t('toast.theme'));
+  });
+}
+
+/* ============================================================
+   输入区下方控件：4 个下拉 + Ultracode 滑块 + 上下文卡片
+   ============================================================ */
+
+// 通用 dropdown 打开/关闭工具
+function openDd(menuId, triggerEl, alignRight = false) {
+  // 关闭其他
+  document.querySelectorAll('.dd-menu.show').forEach(m => {
+    if (m.id !== menuId) m.classList.remove('show');
+  });
+  // 同步关闭按钮 aria-expanded
+  ['perm-bypass', 'perm-add', 'model-select'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+  const menu = document.getElementById(menuId);
+  if (!menu || !triggerEl) return;
+  // 定位
+  const rect = triggerEl.getBoundingClientRect();
+  menu.classList.toggle('show');
+  const open = menu.classList.contains('show');
+  triggerEl.setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  // 计算位置：上方弹出
+  const menuRect = menu.getBoundingClientRect();
+  let left = rect.left;
+  let top = rect.top - menuRect.height - 6;
+  // 右对齐：让菜单右边对齐 trigger 右边
+  if (alignRight) {
+    left = rect.right - menuRect.width;
+  }
+  // 边界保护
+  if (left < 8) left = 8;
+  if (left + menuRect.width > window.innerWidth - 8) left = window.innerWidth - menuRect.width - 8;
+  if (top < 8) top = rect.bottom + 6; // 上面不够则下面弹
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+  menu.style.bottom = 'auto';
+}
+function closeAllDd() {
+  document.querySelectorAll('.dd-menu.show').forEach(m => m.classList.remove('show'));
+  ['perm-bypass', 'perm-add', 'model-select'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.setAttribute('aria-expanded', 'false');
+  });
+}
+
+/* —— 模型选择 —— */
+const modelSelect = document.getElementById('model-select');
+const modelName = document.getElementById('model-name');
+const modelCap = document.getElementById('model-cap');
+let currentModel = { model: 'deepseek-v4-flash-vision-exp', cap: '1M' };
+
+// 给每个模型 item 加上数字快捷键 1-7
+document.querySelectorAll('#dd-model .dd-item').forEach((item, idx) => {
+  const num = document.createElement('span');
+  num.className = 'dd-kbd';
+  num.textContent = String(idx + 1);
+  item.appendChild(num);
+  // 当前选中标记
+  syncModelItemActive(item);
+  item.addEventListener('click', () => {
+    currentModel = { model: item.dataset.model, cap: item.dataset.cap || '' };
+    if (modelName) modelName.textContent = currentModel.model;
+    if (modelCap) modelCap.textContent = currentModel.cap || '';
+    if (modelCap) modelCap.style.display = currentModel.cap ? '' : 'none';
+    // 同步选中态
+    document.querySelectorAll('#dd-model .dd-item').forEach(syncModelItemActive);
+    closeAllDd();
+    toast(currentLang === 'zh-CN' ? `已切换到 ${currentModel.model}${currentModel.cap ? ' ' + currentModel.cap : ''}` : `Switched to ${currentModel.model}${currentModel.cap ? ' ' + currentModel.cap : ''}`);
+  });
+});
+function syncModelItemActive(item) {
+  const isActive = item.dataset.model === currentModel.model && (item.dataset.cap || '') === currentModel.cap;
+  item.classList.toggle('active', isActive);
+  // 移除/添加 ✓
+  const exist = item.querySelector('.dd-check');
+  if (isActive && !exist) {
+    const chk = document.createElement('span');
+    chk.className = 'dd-check';
+    chk.textContent = '✓';
+    item.appendChild(chk);
+  } else if (!isActive && exist) {
+    exist.remove();
+  }
+}
+modelSelect?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openDd('dd-model', modelSelect, true);
+});
+
+/* —— 模式（逐环确认）—— */
+const permBypass = document.getElementById('perm-bypass');
+const permLabel = document.getElementById('perm-label');
+const MODE_LABELS = {
+  'zh-CN': { perRing: '逐环确认', auto: '自动运行（演示）' },
+  'en-US': { perRing: 'Per-ring confirm', auto: 'Auto run (demo)' },
+};
+let currentMode = 'perRing';
+function applyMode(mode) {
+  currentMode = mode;
+  if (permLabel) permLabel.textContent = MODE_LABELS[currentLang][mode] || mode;
+  // 逐环确认时显示对勾 + 品牌橙 chip 样式
+  const checkSvg = permBypass.querySelector('svg:first-child');
+  if (checkSvg) checkSvg.style.display = mode === 'perRing' ? '' : 'none';
+  // 同步选中态
+  document.querySelectorAll('#dd-perm .dd-item').forEach(item => {
+    const isActive = item.dataset.mode === mode;
+    item.classList.toggle('active', isActive);
+    const exist = item.querySelector('.dd-check');
+    if (isActive && !exist) {
+      const chk = document.createElement('span');
+      chk.className = 'dd-check';
+      chk.textContent = '✓';
+      item.appendChild(chk);
+    } else if (!isActive && exist) exist.remove();
+  });
+}
+document.querySelectorAll('#dd-perm .dd-item').forEach(item => {
+  syncPermActive(item);
+  item.addEventListener('click', () => {
+    applyMode(item.dataset.mode);
+    closeAllDd();
+  });
+});
+function syncPermActive(item) {
+  const isActive = item.dataset.mode === currentMode;
+  item.classList.toggle('active', isActive);
+  const exist = item.querySelector('.dd-check');
+  if (isActive && !exist) {
+    const chk = document.createElement('span');
+    chk.className = 'dd-check';
+    chk.textContent = '✓';
+    item.appendChild(chk);
+  } else if (!isActive && exist) exist.remove();
+}
+permBypass?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openDd('dd-perm', permBypass, false);
+});
+
+/* —— + 号添加菜单 —— */
+const permAdd = document.getElementById('perm-add');
+document.querySelectorAll('#dd-add .dd-item').forEach(item => {
+  item.addEventListener('click', () => {
+    const action = item.dataset.add;
+    const actionLabels = currentLang === 'zh-CN'
+      ? { file: '添加文件或照片', folder: '添加文件夹', slash: '斜线命令', connector: '添加连接器', plugin: '插件' }
+      : { file: 'Add file/photo', folder: 'Add folder', slash: 'Slash command', connector: 'Add connector', plugin: 'Plugin' };
+    closeAllDd();
+    toast(actionLabels[action] || action);
+    // 斜线命令 → 在输入框插入 /
+    if (action === 'slash' && prompt) {
+      prompt.value = '/';
+      prompt.dispatchEvent(new Event('input'));
+      prompt.focus();
+    }
+  });
+});
+permAdd?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openDd('dd-add', permAdd, false);
+});
+
+/* —— 点击外部关闭所有 dd —— */
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.dd-menu') && !e.target.closest('#perm-bypass') && !e.target.closest('#perm-add') && !e.target.closest('#model-select')) {
+    closeAllDd();
+  }
+});
+
+/* ============================================================
+   通用 Popover 工具（打开 / 关闭 / 智能定位）
+   ============================================================ */
+let activePopover = null;
+let activePopoverTrigger = null;
+function openPopover(popId, triggerEl, opts = {}) {
+  // 关闭其他 popover
+  document.querySelectorAll('.popover.show').forEach(p => { if (p.id !== popId) p.classList.remove('show'); });
+  closeAllDd();
+  const pop = document.getElementById(popId);
+  if (!pop || !triggerEl) return;
+  pop.classList.toggle('show');
+  const open = pop.classList.contains('show');
+  triggerEl.setAttribute('aria-expanded', String(open));
+  if (typeof opts.onOpen === 'function') opts.onOpen(open);
+  if (!open) {
+    activePopover = null;
+    activePopoverTrigger = null;
+    return;
+  }
+  activePopover = pop;
+  activePopoverTrigger = triggerEl;
+  // 定位
+  const rect = triggerEl.getBoundingClientRect();
+  pop.classList.remove('below');
+  pop.style.left = '';
+  pop.style.right = '';
+  pop.style.top = '';
+  pop.style.bottom = '';
+  pop.style.visibility = 'hidden';
+  pop.style.display = 'block';
+  const popRect = pop.getBoundingClientRect();
+  pop.style.display = '';
+  pop.style.visibility = '';
+  // 默认：上方弹出，三角朝下
+  let left = rect.left + rect.width / 2 - popRect.width / 2;
+  let top = rect.top - popRect.height - 12;
+  if (top < 8) {
+    // 下方弹出，三角朝上
+    pop.classList.add('below');
+    top = rect.bottom + 10;
+  }
+  if (left < 8) left = 8;
+  if (left + popRect.width > window.innerWidth - 8) left = window.innerWidth - popRect.width - 8;
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+  // 三角水平位置：默认 50%（已经在 ::before 中），如有需要可调整 left
+}
+function closeActivePopover() {
+  if (activePopover) activePopover.classList.remove('show');
+  if (activePopoverTrigger) activePopoverTrigger.setAttribute('aria-expanded', 'false');
+  activePopover = null;
+  activePopoverTrigger = null;
+}
+
+/* —— Ultracode 思考深度（点击 chip → 弹窗 + 拖动 thumb） —— */
+const ucToggle = document.getElementById('ultracode-toggle');
+const ucThumb = document.getElementById('uc-thumb');
+const ucTrackBig = document.getElementById('uc-track-big');
+const ucThumbBig = document.getElementById('uc-thumb-big');
+const ucValueNum = document.getElementById('uc-value-num');
+let ucValue = 65; // 0-100
+const UC_MAX = 100;
+const UC_MIN = 0;
+
+function setUcValue(v, silent = false) {
+  ucValue = Math.max(UC_MIN, Math.min(UC_MAX, v));
+  const pct = (ucValue / UC_MAX) * 100;
+  // 小 chip thumb：用于在输入区下方反映当前值
+  if (ucThumb) ucThumb.style.left = `calc(${pct}% - 7px)`;
+  // 大 popover thumb
+  if (ucThumbBig) {
+    ucThumbBig.style.left = `calc(${pct}% - 9px)`;
+  }
+  // 激活态：> 0 时高亮
+  const active = ucValue > 0;
+  if (ucToggle) ucToggle.classList.toggle('active', active);
+  if (ucTrackBig) ucTrackBig.classList.toggle('active', active);
+  if (ucTrackBig) ucTrackBig.setAttribute('aria-valuenow', String(ucValue));
+  if (ucValueNum) ucValueNum.textContent = ucValue;
+  if (!silent) toast(`${t('uc.thumbMoved')} · ${ucValue}/100`);
+}
+
+ucToggle?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openPopover('pop-uc', ucToggle, { onOpen: (open) => { if (open) setUcValue(ucValue, true); } });
+});
+
+// 大滑块：拖动 + 点击
+let ucDragging = false;
+function ucTrackToValue(clientX) {
+  const rect = ucTrackBig.getBoundingClientRect();
+  const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
+  return Math.round((x / rect.width) * UC_MAX);
+}
+function startUcDrag(e) {
+  ucDragging = true;
+  e.preventDefault();
+  const x = e.touches ? e.touches[0].clientX : e.clientX;
+  setUcValue(ucTrackToValue(x), true);
+}
+function moveUcDrag(e) {
+  if (!ucDragging) return;
+  const x = e.touches ? e.touches[0].clientX : e.clientX;
+  setUcValue(ucTrackToValue(x), true);
+}
+function endUcDrag(e) {
+  if (!ucDragging) return;
+  ucDragging = false;
+  toast(`${t('uc.thumbMoved')} · ${ucValue}/100`);
+}
+if (ucTrackBig) {
+  ucTrackBig.addEventListener('mousedown', startUcDrag);
+  document.addEventListener('mousemove', moveUcDrag);
+  document.addEventListener('mouseup', endUcDrag);
+  ucTrackBig.addEventListener('touchstart', startUcDrag, { passive: false });
+  document.addEventListener('touchmove', moveUcDrag, { passive: false });
+  document.addEventListener('touchend', endUcDrag);
+  // 键盘
+  ucTrackBig.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); setUcValue(ucValue - 1); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); setUcValue(ucValue + 1); }
+    if (e.key === 'Home')       { e.preventDefault(); setUcValue(UC_MIN); }
+    if (e.key === 'End')        { e.preventDefault(); setUcValue(UC_MAX); }
+  });
+}
+// 初始化
+setUcValue(ucValue, true);
+
+/* —— 上下文窗口卡片：点击 → 弹出详细 Popover —— */
+const contextCard = document.getElementById('context-card');
+contextCard?.addEventListener('click', () => openPopover('pop-ctx', contextCard));
+contextCard?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPopover('pop-ctx', contextCard); }
+});
+document.getElementById('ctx-pop-close')?.addEventListener('click', closeActivePopover);
+
+/* —— 点击外部关闭所有 popover —— */
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.popover') &&
+      !e.target.closest('#context-card') &&
+      !e.target.closest('#ultracode-toggle')) {
+    closeActivePopover();
+  }
+});
+document.getElementById('context-card')?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    e.currentTarget.click();
+  }
+});
+
+/* —— 数字快捷键 1-7 切换模型 / m 切换模式 —— */
+document.addEventListener('keydown', (e) => {
+  if (document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
+  if (e.key >= '1' && e.key <= '7') {
+    const items = document.querySelectorAll('#dd-model .dd-item');
+    const idx = parseInt(e.key, 10) - 1;
+    if (items[idx]) items[idx].click();
+  }
+});
+
+/* —— 移除 footer 状态栏：旧 sb-status 引用安全 fallback —— */
+const sbFallback = document.getElementById('sb-status');
+if (sbFallback) sbFallback.remove();
+
+/* —— 阶段进度条构建 —— */
+const STAGES = [
+  { name: '选题', state: 'done' },
+  { name: '开题', state: 'done' },
+  { name: '文献', state: 'done' },
+  { name: '综述', state: 'done' },
+  { name: '大纲', state: 'done' },
+  { name: '撰写', state: 'current' },  // 当前
+  { name: '润色', state: 'todo' },
+  { name: '引用', state: 'gate' },     // 评审关卡
+  { name: '排版', state: 'todo' },
+  { name: '定稿', state: 'todo' },
+];
+
+const stageBar = document.getElementById('stage-bar');
+STAGES.forEach((s, i) => {
+  const node = document.createElement('div');
+  let cls = 'stage-node ' + (s.state === 'todo' ? '' : s.state);
+  node.className = cls;
+  node.innerHTML = `
+    <div class="stage-dot">${s.state === 'done' ? '✓' : ''}</div>
+    <div class="stage-label">${i+1}. ${s.name}</div>
+  `;
+  node.title = `${i+1}. ${s.name} · ${ {done:'已完成', current:'当前进行中', todo:'未开始', gate:'人工评审闸门', revert:'已回退'}[s.state] || '' }`;
+  stageBar.appendChild(node);
+
+  if (i < STAGES.length - 1) {
+    const line = document.createElement('div');
+    line.className = 'stage-line' + (s.state === 'done' ? ' done' : '');
+    stageBar.appendChild(line);
+  }
+});
+
+/* —— 工具卡展开 —— */
+document.querySelectorAll('.tool-card-head').forEach(head => {
+  head.addEventListener('click', () => {
+    head.parentElement.classList.toggle('open');
+  });
+});
+
+/* —— 知识库面板页签 —— */
+document.querySelectorAll('.kb-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.kb-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.kb-pane').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    const target = tab.dataset.tab;
+    document.querySelector(`.kb-pane[data-pane="${target}"]`).classList.add('active');
+  });
+});
+
+/* —— 折叠知识库面板 —— */
+const workspace = document.getElementById('workspace');
+const toggleKb = document.getElementById('toggle-kb');
+const closeKb = document.getElementById('close-kb');
+function toggleKbPanel() { workspace.classList.toggle('kb-collapsed'); }
+toggleKb.addEventListener('click', toggleKbPanel);
+closeKb.addEventListener('click', toggleKbPanel);
+
+/* —— 会话项切换 —— */
+document.querySelectorAll('.session-item').forEach(item => {
+  item.addEventListener('click', (e) => {
+    if (e.target.closest('.session-delete')) return;
+    document.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
+    item.classList.add('active');
+    toast('已切换对话');
+  });
+});
+
+/* —— 删除会话（模态） —— */
+const delModal = document.getElementById('del-modal');
+const delName = document.getElementById('del-name');
+let pendingDelete = null;
+document.querySelectorAll('.session-delete').forEach(btn => {
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    pendingDelete = btn.closest('.session-item');
+    delName.textContent = pendingDelete.querySelector('.session-title').textContent;
+    delModal.classList.add('show');
+  });
+});
+document.getElementById('del-cancel').addEventListener('click', () => {
+  delModal.classList.remove('show');
+  pendingDelete = null;
+});
+document.getElementById('del-confirm').addEventListener('click', () => {
+  if (pendingDelete) {
+    pendingDelete.remove();
+    toast('对话与知识库已删除');
+  }
+  delModal.classList.remove('show');
+  pendingDelete = null;
+});
+delModal.addEventListener('click', (e) => {
+  if (e.target === delModal) {
+    delModal.classList.remove('show');
+    pendingDelete = null;
+  }
+});
+
+/* —— 确认闸门按钮 —— */
+document.querySelectorAll('[data-gate]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    btn.innerHTML = '✓ 已确认';
+    toast('已进入下一环节');
+    // 进度条：将 current 推进到下一节点
+    const cur = document.querySelector('.stage-node.current');
+    if (cur) {
+      cur.classList.remove('current');
+      cur.classList.add('done');
+      cur.querySelector('.stage-dot').textContent = '✓';
+      // 前一条线
+      const prevLine = cur.previousElementSibling;
+      if (prevLine && prevLine.classList.contains('stage-line')) prevLine.classList.add('done');
+      // 下一节点变 current
+      let next = cur.nextElementSibling;
+      while (next && !next.classList.contains('stage-node')) next = next.nextElementSibling;
+      if (next) next.classList.add('current');
+    }
+    document.getElementById('sb-status')?.remove();
+    // 同时把页签 active 进度指示更新
+    const tabLabel = document.querySelector('.title-tab.active');
+    if (tabLabel && tabLabel.dataset.progressLabel) tabLabel.textContent = tabLabel.dataset.progressLabel;
+  });
+});
+
+/* —— 输入框 —— */
+const prompt = document.getElementById('prompt');
+const sendBtn = document.getElementById('send-btn');
+prompt.addEventListener('input', () => {
+  sendBtn.disabled = prompt.value.trim().length === 0;
+  prompt.style.height = 'auto';
+  prompt.style.height = Math.min(prompt.scrollHeight, 200) + 'px';
+});
+prompt.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !sendBtn.disabled) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+sendBtn.addEventListener('click', sendMessage);
+
+function sendMessage() {
+  const v = prompt.value.trim();
+  if (!v) return;
+  const flow = document.getElementById('chat-flow');
+  const inner = flow.querySelector('.chat-inner');
+  const msg = document.createElement('div');
+  msg.className = 'msg user';
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  msg.innerHTML = `<div class="bubble">${escapeHtml(v)}</div><div class="msg-meta"><span>${hh}:${mm}</span></div>`;
+  // 插入到末尾（input-area 之前自动滚动）
+  const gateBlocks = inner.querySelectorAll('.gate-block');
+  if (gateBlocks.length) {
+    inner.insertBefore(msg, gateBlocks[gateBlocks.length - 1]);
+  } else {
+    inner.appendChild(msg);
+  }
+  prompt.value = '';
+  prompt.style.height = 'auto';
+  sendBtn.disabled = true;
+  flow.scrollTop = flow.scrollHeight;
+  toast('消息已发送');
+}
+
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+/* —— Toast —— */
+let toastTimer = null;
+const toastEl = document.getElementById('toast');
+function toast(text) {
+  toastEl.textContent = text;
+  toastEl.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1800);
+}
+
+/* —— ESC 关闭模态 —— */
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && delModal.classList.contains('show')) {
+    delModal.classList.remove('show');
+    pendingDelete = null;
+  }
+});
+
+/* —— 新建对话 —— */
+document.getElementById('new-chat').addEventListener('click', () => {
+  toast('已创建新对话（含独立知识库）');
+});
+
+/* —— 复制 GB/T 7714 —— */
+document.querySelectorAll('.icon-btn, .link-btn').forEach(b => {
+  if (b.textContent.includes('GB/T 7714') || b.textContent.includes('复制')) {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toast('已复制 GB/T 7714 引用到剪贴板');
+    });
+  }
+});
+
+/* —— 文献收藏 —— */
+document.querySelectorAll('.icon-btn').forEach(b => {
+  if (b.textContent.includes('收藏')) {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      b.textContent = '✓ 已收藏';
+      b.style.color = 'var(--claude)';
+      toast('已加入文献池');
+    });
+  }
+});
+
+/* ============================================================
+   i18n 国际化系统（中英双语）
+   ============================================================ */
+const I18N = {
+  'zh-CN': {
+    'user.name': '欧弱弱',
+    'user.role': 'Pro',
+    'menu.gateway': '网关',
+    'menu.settings': '设置',
+    'menu.language': '语言',
+    'menu.inference': '推理配置',
+    'menu.changelog': '查看更新日志',
+    'menu.about': '了解更多',
+    'menu.logout': '注销',
+    'settings.title': '设置',
+    'settings.search': '搜索',
+    'settings.section.account': '设置',
+    'settings.section.desktop': '桌面应用',
+    'settings.section.custom': '自定义',
+    'settings.nav.general': '一般',
+    'settings.nav.privacy': '隐私',
+    'settings.nav.usage': '用量',
+    'settings.nav.cc': 'Claude Code',
+    'settings.nav.cowork': 'Cowork',
+    'settings.nav.appGeneral': '一般',
+    'settings.nav.dev': '开发者',
+    'settings.nav.skills': '技能',
+    'settings.nav.connectors': '连接器',
+    'settings.nav.plugins': '插件',
+    'settings.tab.basic.title': '一般',
+    'settings.tab.basic.item1': '默认开启智能建议',
+    'settings.tab.cc.title': 'Claude Code',
+    'settings.tab.cc.appearance': '代码外观',
+    'settings.tab.cc.appearanceLight': 'Claude 浅色',
+    'settings.tab.cc.appearanceDark': 'Claude 深色',
+    'settings.tab.cc.font': '代码字体',
+    'settings.tab.cc.fontDesc': '为代码和终端设置自定义等宽字体。',
+    'settings.tab.cc.fontPh': '例如 JetBrains Mono',
+    'settings.tab.appearance.title': '外观',
+    'settings.tab.appearance.contrast': '高对比度深色主题',
+    'settings.tab.appearance.contrastDesc': '开启深色模式时使用更暗、接近黑色的背景。',
+    'settings.tab.appearance.uiFont': '界面字体',
+    'settings.tab.appearance.uiFontDesc': 'Claude Code 界面字体，包括菜单、侧边栏和聊天。',
+    'settings.tab.appearance.tts': '转录文本大小',
+    'settings.tab.appearance.ttsDesc': '转录呈现文本的大小。',
+    'settings.tab.appearance.tts.s': '小',
+    'settings.tab.appearance.tts.m': '中',
+    'settings.tab.appearance.tts.l': '大',
+    'inference.title': '推理配置',
+    'inference.desc': '此处将支持用户自行配置大模型（OpenAI / Anthropic / DeepSeek / 自定义端点），包含 API Key、模型选择、推理参数。后续迭代补齐。',
+    'modal.ok': '好的',
+    'modal.cancel': '取消',
+    'toast.settings.open': '已打开设置（设置面板演示中）',
+    'toast.changelog': '当前已是最新版本',
+    'toast.lang.switched': '已切换到中文',
+    'toast.lang.switchedEn': 'Switched to English',
+    'toast.theme': '已切换主题',
+    'toast.menu.placeholder': '功能开发中',
+    'common.system': '系统',
+    'newChat': '新建对话',
+    'tasks.all': 'All tasks',
+    'search.placeholder': '搜索对话 / 主题 / 文献…',
+    'input.bypass': '逐环确认',
+    'input.placeholder': '输入 / 作为命令',
+    'toast.bypass.on': '已切换：逐环确认',
+    'toast.bypass.off': '已切换：自动运行',
+    'ctx.label': '上下文窗口',
+    'dd.model.head': '模型',
+    'dd.model.visionExp': 'deepseek-v4-flash-vision-exp',
+    'dd.model.visionExp1m': 'deepseek-v4-flash-vision-exp',
+    'dd.model.flash': 'deepseek-v4-flash',
+    'dd.model.flash1m': 'deepseek-v4-flash',
+    'dd.model.pro': 'deepseek-v4-pro',
+    'dd.model.pro1m': 'deepseek-v4-pro',
+    'dd.model.pro2m': 'deepseek-v4-pro',
+    'dd.perm.head': '确认模式',
+    'dd.perm.perRing': '逐环确认',
+    'dd.perm.auto': '自动运行（演示）',
+    'dd.add.file': '添加文件或照片',
+    'dd.add.folder': '添加文件夹',
+    'dd.add.slash': '斜线命令',
+    'dd.add.connector': '添加连接器',
+    'dd.add.plugin': '插件',
+    'uc.thinkDepth': '思考深度',
+    'uc.current': '当前强度',
+    'uc.thumbMoved': '思考强度已调整',
+    'ctx.legend.used': '已使用',
+    'ctx.legend.free': '剩余',
+    'ctx.detail.system': '系统提示',
+    'ctx.detail.user': '用户消息',
+    'ctx.detail.tools': '工具调用',
+    'ctx.detail.output': '模型输出',
+  },
+  'en-US': {
+    'user.name': 'Ruoruo',
+    'user.role': 'Pro',
+    'menu.gateway': 'Gateway',
+    'menu.settings': 'Settings',
+    'menu.language': 'Language',
+    'menu.inference': 'Inference config',
+    'menu.changelog': 'View changelog',
+    'menu.about': 'Learn more',
+    'menu.logout': 'Log out',
+    'settings.title': 'Settings',
+    'settings.search': 'Search',
+    'settings.section.account': 'Settings',
+    'settings.section.desktop': 'Desktop app',
+    'settings.section.custom': 'Customize',
+    'settings.nav.general': 'General',
+    'settings.nav.privacy': 'Privacy',
+    'settings.nav.usage': 'Usage',
+    'settings.nav.cc': 'Claude Code',
+    'settings.nav.cowork': 'Cowork',
+    'settings.nav.appGeneral': 'General',
+    'settings.nav.dev': 'Developer',
+    'settings.nav.skills': 'Skills',
+    'settings.nav.connectors': 'Connectors',
+    'settings.nav.plugins': 'Plugins',
+    'settings.tab.basic.title': 'General',
+    'settings.tab.basic.item1': 'Enable smart suggestions by default',
+    'settings.tab.cc.title': 'Claude Code',
+    'settings.tab.cc.appearance': 'Code appearance',
+    'settings.tab.cc.appearanceLight': 'Claude light',
+    'settings.tab.cc.appearanceDark': 'Claude dark',
+    'settings.tab.cc.font': 'Code font',
+    'settings.tab.cc.fontDesc': 'Set a custom monospace font for code and terminal.',
+    'settings.tab.cc.fontPh': 'e.g. JetBrains Mono',
+    'settings.tab.appearance.title': 'Appearance',
+    'settings.tab.appearance.contrast': 'High-contrast dark theme',
+    'settings.tab.appearance.contrastDesc': 'Use a darker, near-black background when dark mode is on.',
+    'settings.tab.appearance.uiFont': 'Interface font',
+    'settings.tab.appearance.uiFontDesc': 'Claude Code interface font — menus, sidebar, chat.',
+    'settings.tab.appearance.tts': 'Transcript text size',
+    'settings.tab.appearance.ttsDesc': 'Size of rendered transcript text.',
+    'settings.tab.appearance.tts.s': 'S',
+    'settings.tab.appearance.tts.m': 'M',
+    'settings.tab.appearance.tts.l': 'L',
+    'inference.title': 'Inference config',
+    'inference.desc': 'You will be able to configure your own LLM providers here (OpenAI / Anthropic / DeepSeek / custom endpoint), including API key, model selection, and inference parameters. Coming in a future release.',
+    'modal.ok': 'OK',
+    'modal.cancel': 'Cancel',
+    'toast.settings.open': 'Opened Settings (panel preview)',
+    'toast.changelog': 'You are up to date',
+    'toast.lang.switched': '已切换到中文',
+    'toast.lang.switchedEn': 'Switched to English',
+    'toast.theme': 'Theme switched',
+    'toast.menu.placeholder': 'Coming soon',
+    'common.system': 'System',
+    'newChat': 'New chat',
+    'tasks.all': 'All tasks',
+    'search.placeholder': 'Search chats / topics / papers…',
+    'input.bypass': 'Per-ring confirm',
+    'input.placeholder': 'Type / to command',
+    'toast.bypass.on': 'Switched: Per-ring confirm',
+    'toast.bypass.off': 'Switched: Auto run',
+    'ctx.label': 'Context window',
+    'dd.model.head': 'Model',
+    'dd.model.visionExp': 'deepseek-v4-flash-vision-exp',
+    'dd.model.visionExp1m': 'deepseek-v4-flash-vision-exp',
+    'dd.model.flash': 'deepseek-v4-flash',
+    'dd.model.flash1m': 'deepseek-v4-flash',
+    'dd.model.pro': 'deepseek-v4-pro',
+    'dd.model.pro1m': 'deepseek-v4-pro',
+    'dd.model.pro2m': 'deepseek-v4-pro',
+    'dd.perm.head': 'Confirm mode',
+    'dd.perm.perRing': 'Per-ring confirm',
+    'dd.perm.auto': 'Auto run (demo)',
+    'dd.add.file': 'Add file or photo',
+    'dd.add.folder': 'Add folder',
+    'dd.add.slash': 'Slash command',
+    'dd.add.connector': 'Add connector',
+    'dd.add.plugin': 'Plugins',
+    'uc.thinkDepth': 'Reasoning depth',
+    'uc.current': 'Current depth',
+    'uc.thumbMoved': 'Reasoning depth adjusted',
+    'ctx.legend.used': 'Used',
+    'ctx.legend.free': 'Free',
+    'ctx.detail.system': 'System',
+    'ctx.detail.user': 'User',
+    'ctx.detail.tools': 'Tool calls',
+    'ctx.detail.output': 'Output',
+  }
+};
+
+const LANG_KEY = 'thesis-agent-lang';
+let currentLang = localStorage.getItem(LANG_KEY) || 'zh-CN';
+
+function t(key) {
+  return (I18N[currentLang] && I18N[currentLang][key]) || I18N['zh-CN'][key] || key;
+}
+
+function applyI18n() {
+  document.documentElement.setAttribute('lang', currentLang === 'zh-CN' ? 'zh-CN' : 'en');
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const key = el.dataset.i18n;
+    if (I18N[currentLang][key] !== undefined) el.textContent = I18N[currentLang][key];
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    const key = el.dataset.i18nPlaceholder;
+    if (I18N[currentLang][key] !== undefined) el.setAttribute('placeholder', I18N[currentLang][key]);
+  });
+  document.querySelectorAll('.lang-option').forEach(opt => {
+    opt.classList.toggle('active', opt.dataset.lang === currentLang);
+  });
+  // 模式 chip 文案随当前模式 + 语言同步
+  if (typeof currentMode !== 'undefined' && typeof applyMode === 'function') applyMode(currentMode);
+  // 模型 chip 文本不随语言切换（模型名固定英文）
+}
+
+function switchLang(lang) {
+  currentLang = lang;
+  localStorage.setItem(LANG_KEY, lang);
+  applyI18n();
+  // 重新渲染设置面板（如果打开）
+  if (document.getElementById('settings-overlay').classList.contains('show')) {
+    renderSettings();
+  }
+  closeFootMenu();
+  toast(lang === 'zh-CN' ? t('toast.lang.switched') : t('toast.lang.switchedEn'));
+}
+
+/* ============================================================
+   左下角弹出菜单
+   ============================================================ */
+const footTrigger = document.getElementById('foot-trigger');
+const footMenu = document.getElementById('foot-menu');
+const langSubmenu = document.getElementById('lang-submenu');
+
+function closeFootMenu() {
+  footMenu.classList.remove('show');
+  footTrigger.classList.remove('open');
+  footTrigger.setAttribute('aria-expanded', 'false');
+  closeLangSubmenu();
+}
+function closeLangSubmenu() {
+  langSubmenu.classList.remove('show');
+}
+
+footTrigger.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const open = footMenu.classList.toggle('show');
+  footTrigger.classList.toggle('open', open);
+  footTrigger.setAttribute('aria-expanded', String(open));
+  if (!open) closeLangSubmenu();
+});
+
+document.addEventListener('click', (e) => {
+  if (!footMenu.contains(e.target) && !footTrigger.contains(e.target)) closeFootMenu();
+  if (!langSubmenu.contains(e.target) && !e.target.closest('[data-action="language"]')) closeLangSubmenu();
+});
+
+footMenu.querySelectorAll('.menu-item').forEach(item => {
+  item.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const action = item.dataset.action;
+    if (action === 'settings') { openSettings(); closeFootMenu(); }
+    else if (action === 'language') {
+      const rect = item.getBoundingClientRect();
+      langSubmenu.style.left = (rect.right + 8) + 'px';
+      langSubmenu.style.bottom = (window.innerHeight - rect.bottom) + 'px';
+      langSubmenu.classList.toggle('show');
+    }
+    else if (action === 'inference') { openInferenceModal(); closeFootMenu(); }
+    else if (action === 'changelog') { toast(t('toast.changelog')); closeFootMenu(); }
+    else if (action === 'about') { toast(t('toast.menu.placeholder')); closeFootMenu(); }
+    else if (action === 'logout') { toast(t('toast.menu.placeholder')); closeFootMenu(); }
+  });
+});
+
+document.querySelectorAll('.lang-option').forEach(opt => {
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation();
+    switchLang(opt.dataset.lang);
+  });
+});
+
+/* ============================================================
+   设置面板（仿 Claude Code 桌面端）
+   ============================================================ */
+const SETTINGS_NAV = [
+  { groupKey: 'settings.section.account',
+    items: [
+      { id: 'basic',    icon: 'gear',    label: 'settings.nav.general' },
+      { id: 'privacy',  icon: 'shield',  label: 'settings.nav.privacy' },
+      { id: 'usage',    icon: 'chart',   label: 'settings.nav.usage' },
+      { id: 'cc',       icon: 'code',    label: 'settings.nav.cc', active: true },
+      { id: 'cowork',   icon: 'users',   label: 'settings.nav.cowork' },
+    ]
+  },
+  { groupKey: 'settings.section.desktop',
+    items: [
+      { id: 'appGeneral', icon: 'monitor',  label: 'settings.nav.appGeneral' },
+      { id: 'dev',        icon: 'terminal', label: 'settings.nav.dev' },
+    ]
+  },
+  { groupKey: 'settings.section.custom',
+    items: [
+      { id: 'skills',     icon: 'sparkles', label: 'settings.nav.skills' },
+      { id: 'connectors', icon: 'plug',     label: 'settings.nav.connectors' },
+      { id: 'plugins',    icon: 'puzzle',   label: 'settings.nav.plugins' },
+    ]
+  },
+];
+
+const ICON_PATHS = {
+  gear:    '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+  shield:  '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
+  chart:   '<line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/>',
+  code:    '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',
+  users:   '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+  monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>',
+  terminal:'<polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>',
+  sparkles:'<path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"/><path d="M19 14l.7 2.1L22 17l-2.3.9L19 20l-.7-2.1L16 17l2.3-.9z"/>',
+  plug:    '<path d="M9 2v6"/><path d="M15 2v6"/><path d="M6 8h12v3a6 6 0 0 1-12 0z"/><path d="M12 17v5"/>',
+  puzzle:  '<path d="M19 11h-1V8a2 2 0 0 0-2-2h-3V5a2 2 0 1 0-4 0v1H6a2 2 0 0 0-2 2v3h1a2 2 0 1 1 0 4H4v3a2 2 0 0 0 2 2h3v-1a2 2 0 1 1 4 0v1h3a2 2 0 0 0 2-2v-3h1a2 2 0 1 0 0-4z"/>'
+};
+
+function renderSettingsNav() {
+  const nav = document.getElementById('settings-nav');
+  nav.innerHTML = SETTINGS_NAV.map(group => `
+    <div class="settings-nav-group-title">${t(group.groupKey)}</div>
+    ${group.items.map(it => `
+      <button class="settings-nav-item ${it.active ? 'active' : ''}" data-settings-nav="${it.id}">
+        <svg class="ni-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">${ICON_PATHS[it.icon] || ''}</svg>
+        <span>${t(it.label)}</span>
+      </button>
+    `).join('')}
+  `).join('');
+  nav.querySelectorAll('.settings-nav-item').forEach(btn => {
+    btn.addEventListener('click', () => {
+      nav.querySelectorAll('.settings-nav-item').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderSettingsContent(btn.dataset.settingsNav);
+    });
+  });
+}
+
+const CODE_PREVIEW_LIGHT = `
+<div class="cp-body cp-light">
+  <div><span class="ln-num">1</span><span class="kw">function</span> <span class="fn">greet</span>(<span class="var">name</span>: <span class="kw">string</span>) {</div>
+  <div><span class="ln-num">2</span><span class="brace-op">  <span style="color:#af00db">return</span> <span style="color:#c7254e">"Hello, "</span> + <span style="color:#1f1f1f">name</span>;</span></div>
+  <div><span class="ln-num">3</span><span class="brace-mod">  <span style="color:#af00db">return</span> <span style="color:#c7254e">\`Hello, \${name}\`</span>;</span></div>
+  <div><span class="ln-num">4</span>}</div>
+</div>`;
+const CODE_PREVIEW_DARK = `
+<div class="cp-body cp-dark">
+  <div><span class="ln-num">1</span><span class="kw">function</span> <span class="fn">greet</span>(<span class="var">name</span>: <span class="kw">string</span>) {</div>
+  <div><span class="ln-num">2</span><span class="brace-op">  <span style="color:#c586c0">return</span> <span style="color:#ce9178">"Hello, "</span> + <span style="color:#d4d4d4">name</span>;</span></div>
+  <div><span class="ln-num">3</span><span class="brace-mod">  <span style="color:#c586c0">return</span> <span style="color:#ce9178">\`Hello, \${name}\`</span>;</span></div>
+  <div><span class="ln-num">4</span>}</div>
+</div>`;
+
+function renderSettingsContent(tab = 'cc') {
+  const content = document.getElementById('settings-content');
+  if (tab === 'cc') {
+    content.innerHTML = `
+      <h2 class="settings-section-title">${t('settings.tab.cc.title')}</h2>
+      <div class="settings-sub">${t('settings.tab.cc.appearance')}</div>
+      <div style="display:block; margin-bottom: 16px;">
+        <div class="code-preview-pair">
+          <div class="code-preview-card">
+            <div class="cp-head">
+              <div class="select" style="pointer-events:none; min-width: 180px;">
+                <span>${t('settings.tab.cc.appearanceLight')}</span>
+                <svg class="chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </div>
+            </div>
+            ${CODE_PREVIEW_LIGHT}
+          </div>
+          <div class="code-preview-card">
+            <div class="cp-head">
+              <div class="select" style="pointer-events:none; min-width: 180px;">
+                <span>${t('settings.tab.cc.appearanceDark')}</span>
+                <svg class="chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </div>
+            </div>
+            ${CODE_PREVIEW_DARK}
+          </div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">${t('settings.tab.cc.font')}</div>
+          <div class="settings-row-desc">${t('settings.tab.cc.fontDesc')}</div>
+        </div>
+        <div class="settings-row-control">
+          <div class="input-line"><input placeholder="${t('settings.tab.cc.fontPh')}" /></div>
+        </div>
+      </div>
+      <div class="settings-sub" style="margin-top: 24px;">${t('settings.tab.appearance.title')}</div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">${t('settings.tab.appearance.contrast')}</div>
+          <div class="settings-row-desc">${t('settings.tab.appearance.contrastDesc')}</div>
+        </div>
+        <div class="settings-row-control"><div class="toggle" data-toggle="contrast"></div></div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">${t('settings.tab.appearance.uiFont')}</div>
+          <div class="settings-row-desc">${t('settings.tab.appearance.uiFontDesc')}</div>
+        </div>
+        <div class="settings-row-control">
+          <div class="select" style="min-width: 200px;">
+            <span>Anthropic Sans</span>
+            <span style="font-size:11px; color: var(--text-subtle); margin: 0 4px;">${t('common.system')}</span>
+            <svg class="chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+          </div>
+        </div>
+      </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">${t('settings.tab.appearance.tts')}</div>
+          <div class="settings-row-desc">${t('settings.tab.appearance.ttsDesc')}</div>
+        </div>
+        <div class="settings-row-control">
+          <div class="segmented" data-tts>
+            <button data-size="s">${t('settings.tab.appearance.tts.s')}</button>
+            <button class="active" data-size="m">${t('settings.tab.appearance.tts.m')}</button>
+            <button data-size="l">${t('settings.tab.appearance.tts.l')}</button>
+          </div>
+        </div>
+      </div>
+    `;
+  } else if (tab === 'basic') {
+    content.innerHTML = `
+      <h2 class="settings-section-title">${t('settings.tab.basic.title')}</h2>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">${t('settings.tab.basic.item1')}</div>
+          <div class="settings-row-desc">${currentLang === 'zh-CN' ? '开启后，Agent 会主动建议下一步操作。' : 'When on, the agent proactively suggests next steps.'}</div>
+        </div>
+        <div class="settings-row-control"><div class="toggle on" data-toggle="suggest"></div></div>
+      </div>
+    `;
+  } else {
+    const labelMap = { privacy:'settings.nav.privacy', usage:'settings.nav.usage', cowork:'settings.nav.cowork',
+                       appGeneral:'settings.nav.appGeneral', dev:'settings.nav.dev',
+                       skills:'settings.nav.skills', connectors:'settings.nav.connectors', plugins:'settings.nav.plugins' };
+    content.innerHTML = `
+      <h2 class="settings-section-title">${t(labelMap[tab] || tab)}</h2>
+      <div style="color: var(--text-inactive); font-size: var(--fs-small); padding: 12px 0;">${currentLang === 'zh-CN' ? '该分类下暂无配置项。' : 'No settings in this category yet.'}</div>
+    `;
+  }
+  // 绑定交互
+  content.querySelectorAll('.toggle').forEach(tg => {
+    tg.addEventListener('click', () => tg.classList.toggle('on'));
+  });
+  content.querySelectorAll('.segmented button').forEach(b => {
+    b.addEventListener('click', () => {
+      b.parentElement.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+    });
+  });
+}
+
+function renderSettings() {
+  renderSettingsNav();
+  const active = document.querySelector('.settings-nav-item.active');
+  renderSettingsContent(active ? active.dataset.settingsNav : 'cc');
+}
+
+function openSettings() {
+  document.getElementById('settings-overlay').classList.add('show');
+  renderSettings();
+}
+function closeSettings() {
+  document.getElementById('settings-overlay').classList.remove('show');
+}
+document.getElementById('settings-close').addEventListener('click', closeSettings);
+document.getElementById('settings-overlay').addEventListener('click', (e) => {
+  if (e.target.id === 'settings-overlay') closeSettings();
+});
+
+document.getElementById('settings-search-input').addEventListener('input', (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  document.querySelectorAll('.settings-nav-item').forEach(item => {
+    item.style.display = (q === '' || item.textContent.toLowerCase().includes(q)) ? '' : 'none';
+  });
+});
+
+/* ============================================================
+   推理配置 Modal
+   ============================================================ */
+const inferenceModal = document.getElementById('inference-modal');
+function openInferenceModal() { inferenceModal.classList.add('show'); }
+function closeInferenceModal() { inferenceModal.classList.remove('show'); }
+document.getElementById('inference-close').addEventListener('click', closeInferenceModal);
+inferenceModal.addEventListener('click', (e) => {
+  if (e.target === inferenceModal) closeInferenceModal();
+});
+
+/* ============================================================
+   全局快捷键 & 启动初始化
+   ============================================================ */
+document.addEventListener('keydown', (e) => {
+  // Ctrl+, 打开设置
+  if ((e.ctrlKey || e.metaKey) && e.key === ',' && document.activeElement.tagName !== 'TEXTAREA' && document.activeElement.tagName !== 'INPUT') {
+    e.preventDefault();
+    openSettings();
+  }
+  if (e.key === 'Escape') {
+    closeSettings();
+    closeInferenceModal();
+    if (delModal.classList.contains('show')) {
+      delModal.classList.remove('show');
+      pendingDelete = null;
+    }
+    closeFootMenu();
+    if (typeof closeAllDd === 'function') closeAllDd();
+    if (typeof closeActivePopover === 'function') closeActivePopover();
+  }
+});
+
+applyI18n();
+
+</script>
+</body>
+</html>

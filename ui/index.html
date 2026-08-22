@@ -2792,21 +2792,23 @@ a:hover { text-decoration: underline; }
 
         <!-- 笔记 -->
         <div class="kb-pane" data-pane="notes">
-          <div class="note-toolbar">
-            <button class="tb-btn" title="加粗"><b>B</b></button>
-            <button class="tb-btn" title="斜体"><i>I</i></button>
-            <button class="tb-btn" title="标题">H</button>
-            <button class="tb-btn" title="列表">•</button>
-            <button class="tb-btn" title="双链" style="color: var(--permission);">[[</button>
-            <button class="tb-btn" title="引用">"</button>
+          <!-- 笔记列表 -->
+          <div id="notes-list" style="margin-bottom:8px;max-height:140px;overflow-y:auto;border:1px solid var(--border-divider);border-radius:8px;padding:4px;">
+            <div style="padding:8px;font-size:12px;color:var(--text-subtle);">加载笔记…</div>
           </div>
-          <div class="note-editor" contenteditable="true">
-            <h2>核心观点笔记</h2>
-            <p>生成式 AI 对学术原创性的影响主要存在三条路径：</p>
-            <p>1. <b>认知依赖</b>：研究生在反复使用中逐渐丧失独立论证能力；</p>
-            <p>2. <b>规范漂移</b>：引用边界模糊化，参见 <span class="note-bilink">[[张明2024-影响机制]]</span>；</p>
-            <p>3. <b>评价滞后</b>：查重与评审体系尚未响应，详见 <span class="note-bilink">[[Chen2024-LLMs-erosion]]</span>。</p>
-            <p>下一步可结合访谈数据，构建 <span class="note-bilink">[[原创性-认知依赖模型]]</span>。</p>
+          <!-- 编辑器 -->
+          <div class="note-toolbar">
+            <button class="tb-btn" title="加粗" onclick="noteInsert('**','**')"><b>B</b></button>
+            <button class="tb-btn" title="斜体" onclick="noteInsert('_','_')"><i>I</i></button>
+            <button class="tb-btn" title="双链" style="color: var(--permission);" onclick="noteInsert('[[',']]')">[[</button>
+            <button class="tb-btn" title="引用" onclick="noteInsert('&gt;','')">"</button>
+            <button class="tb-btn" title="保存" style="color:var(--claude);font-weight:600;" id="note-save-btn" onclick="saveNote()">保存</button>
+          </div>
+          <div class="note-editor" id="note-editor" contenteditable="true" data-note-id="">
+            <p><span style="color:var(--text-subtle);">选择左侧笔记，或在此输入新笔记（支持 [[双链]]）…</span></p>
+          </div>
+          <div style="margin-top:6px;display:flex;gap:6px;">
+            <button class="btn btn-secondary btn-sm" onclick="newNote()">新建笔记</button>
           </div>
         </div>
 
@@ -4813,6 +4815,82 @@ function openNodeDrawer(node) {
       if (target.length) { target.select(); cyGraph.animate({ center: { eles: target }, zoom: 1.1 }, { duration: 300 }); }
     };
   });
+}
+
+/* ============================================================
+   笔记模块（接 /api/v1/kb/{sid}/notes）
+   ============================================================ */
+let currentNoteId = null;
+
+async function loadNotes(sessionId) {
+  const r = await apiGet(`/api/v1/kb/${encodeURIComponent(sessionId || 'default')}/notes`);
+  const items = r.code === 0 ? (r.data?.items || []) : [];
+  const box = document.getElementById('notes-list');
+  if (!box) return;
+  window.notesCache = items;
+  if (!items.length) {
+    box.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text-subtle);">暂无笔记，点击「新建笔记」开始</div>';
+    return;
+  }
+  box.innerHTML = items.map(n => `
+    <div class="note-item" data-note-id="${n.note_id}" onclick="openNote('${n.note_id.replace(/'/g, "\\'")}')"
+         style="padding:6px 8px;font-size:12px;cursor:pointer;border-radius:6px;border-bottom:1px solid var(--border-divider);">
+      ${escapeHtml(n.title)}
+    </div>`).join('');
+}
+
+function openNote(noteId) {
+  const editor = document.getElementById('note-editor');
+  if (!editor) return;
+  const items = window.notesCache || [];
+  const n = items.find(x => x.note_id === noteId);
+  if (!n) return;
+  editor.innerHTML = n.content.split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;');
+  editor.dataset.noteId = noteId;
+  currentNoteId = noteId;
+  document.querySelectorAll('.note-item').forEach(el => el.style.background = el.dataset.noteId === noteId ? 'var(--claude-soft)' : '');
+}
+
+function newNote() {
+  const title = prompt('笔记标题：', '新笔记');
+  if (!title) return;
+  const editor = document.getElementById('note-editor');
+  editor.innerHTML = '';
+  editor.dataset.noteId = '';
+  currentNoteId = '';
+  editor.dataset.newTitle = title;
+  editor.focus();
+  toast('标题：' + title + '（输入内容后点保存）');
+}
+
+async function saveNote() {
+  const editor = document.getElementById('note-editor');
+  const title = editor.dataset.newTitle || (editor.dataset.noteId ? '' : prompt('笔记标题：', '新笔记'));
+  if (!title) { toast('请先设置标题'); return; }
+  const content = editor.innerText.trim();
+  const r = await apiPost(`/api/v1/kb/${encodeURIComponent(currentSession || 'default')}/notes`, {
+    title, content,
+  });
+  if (r.code === 0) {
+    toast('笔记已保存');
+    editor.dataset.noteId = '';
+    delete editor.dataset.newTitle;
+    await loadNotes(currentSession);
+    await renderGraph(currentSession);
+  } else toast('保存失败: ' + (r.msg || ''));
+}
+
+function noteInsert(before, after) {
+  const editor = document.getElementById('note-editor');
+  if (!editor) return;
+  editor.focus();
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  const text = range.toString();
+  range.deleteContents();
+  const newNode = document.createTextNode(before + text + after);
+  range.insertNode(newNode);
 }
 
 /* ============================================================

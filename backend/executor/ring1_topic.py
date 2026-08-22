@@ -143,7 +143,7 @@ class Ring1TopicExecutor(RingExecutor):
         }
 
         return ExecResult(
-            output=topic_result.model_dump_json(indent=2, ensure_ascii=False),
+            output=topic_result.model_dump_json(indent=2),
             accept=True,
             fallbackTo=None,
             issues=[],

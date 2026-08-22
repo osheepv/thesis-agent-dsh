@@ -156,7 +156,7 @@ class Ring6ChapterExecutor(RingExecutor):
         }
 
         return ExecResult(
-            output=chapter_result.model_dump_json(indent=2, ensure_ascii=False),
+            output=chapter_result.model_dump_json(indent=2),
             accept=True,
             fallbackTo=None,
             issues=[],

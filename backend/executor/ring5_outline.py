@@ -152,7 +152,7 @@ class Ring5OutlineExecutor(RingExecutor):
         }
 
         return ExecResult(
-            output=outline_result.model_dump_json(indent=2, ensure_ascii=False),
+            output=outline_result.model_dump_json(indent=2),
             accept=True,
             fallbackTo=None,
             issues=[],

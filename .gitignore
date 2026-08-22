@@ -17,6 +17,13 @@ env/
 .pytest_cache/
 pytest-cache-files-*/
 
+# 敏感配置（API key 等，严禁入库）
+.env
+
+# 本地 SQLite 数据库
+thesis.db
+backend/thesis.db
+
 # 本项目专属：vendored 依赖副本（由 requirements.txt 管理，不进仓库）
 backend/thesis_docx/.vendor/
 

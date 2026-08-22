@@ -1,23 +1,29 @@
 # -*- coding: utf-8 -*-
-"""环5 大纲生成执行体（M2 一期，确定性 Mock）。
+"""环5 大纲生成执行体（M2 二期：LLM 优先 + Mock 回退）。
 
 职责：根据选题（``ctx.theme``）生成章节结构蓝图（Outline：章/节/要点），
 体现学位差异——本科章节少、博士章节深。
 
-DSH 二期接入点：真实实现应调用 DSH 生成带文献支撑的章节蓝图。
-本期以学位化模板生成章节结构，保证闭环可运行。
+LLM 接入（决策 D1）：
+    优先调用 DeepSeek（JSON 结构化输出）生成大纲；失败时按
+    ``LLMSettings.fallback_to_mock`` 决定回退确定性 Mock 或抛错。
 """
 from __future__ import annotations
+
+import logging
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.aicoding.enums import Degree, RingType
+from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
 from executor.base import (
     ExecContext,
     ExecResult,
     RingExecutor,
     register_executor,
 )
+
+logger = logging.getLogger("thesis.ring5")
 
 
 class OutlineNode(BaseModel):
@@ -32,6 +38,15 @@ class OutlineNode(BaseModel):
     number: str = Field(default="", description="编号，如 '第1章'/'1.1'/'1.1.1'")
     title: str = Field(default="", description="标题")
     points: list[str] = Field(default_factory=list, description="本节点要点描述")
+
+
+class LLMOutlineOut(BaseModel):
+    """LLM 环5 输出模型（要求严格按此 schema 返回 JSON）。"""
+
+    theme: str = Field(default="", description="题目")
+    degree: str = Field(default="", description="学位层次 BACHELOR/MASTER/PHD")
+    chapters: list[OutlineNode] = Field(default_factory=list, description="章节节点（平铺，含 level 区分）")
+    summary: str = Field(default="", description="大纲整体说明")
 
 
 class OutlineResult(BaseModel):
@@ -92,6 +107,39 @@ _DEGREE_CHAPTERS: dict[Degree, list[dict]] = {
 }
 
 
+def _llm_generate(ctx: ExecContext) -> OutlineResult:
+    """调用 DeepSeek 生成大纲（LLM 分支，失败抛异常由调用方决定回退）。"""
+    degree_gen = {
+        Degree.BACHELOR: "本科：5 章（绪论/理论/设计/实验/总结），章下 2~3 节",
+        Degree.MASTER: "硕士：6 章（绪论/综述/方法/实现/实验/总结），章下 3~4 节",
+        Degree.PHD: "博士：7 章（绪论/综述/方法/扩展/实验/结论/计划），章下 4~5 节",
+    }[ctx.degree]
+    prompt = (
+        f"【任务】为学位论文生成大纲。题目：{ctx.theme}；学科：{ctx.subject_field}；"
+        f"学位层次：{ctx.degree.label}。{degree_gen}。\n"
+        "【要求】章节结构遵循'提出问题→论证→解决→总结'闭环；每章要点（points）说明"
+        "该章服务于哪个研究贡献；输出平铺节点（level=1 章，level=2 节，level=3 要点），"
+        "number 形如'第1章'/'1.1'/'1.1.1'；summary 为大纲整体说明。\n"
+        "【输出格式】严格输出 JSON（包含 \"json\" 键），结构如下：\n"
+        '{"theme": "…", "degree": "MASTER", '
+        '"chapters": [{"level": 1, "number": "第1章", "title": "绪论", "points": ["…"]}, '
+        '{"level": 2, "number": "1.1", "title": "…", "points": ["…"]}], '
+        '"summary": "…"}\n'
+        "只输出 JSON，不要有任何额外文字。"
+    )
+    raw = get_llm_client().generate_json(
+        system="你是学位论文写作指导专家，熟悉本硕博论文章节结构规范。",
+        prompt=prompt,
+        model_cls=LLMOutlineOut,
+    )
+    return OutlineResult(
+        theme=raw.theme or ctx.theme,
+        degree=ctx.degree,
+        chapters=raw.chapters,
+        summary=raw.summary,
+    )
+
+
 @register_executor
 class Ring5OutlineExecutor(RingExecutor):
     """环5 大纲生成执行体。"""
@@ -101,14 +149,49 @@ class Ring5OutlineExecutor(RingExecutor):
 
     def execute(self, ctx: ExecContext) -> ExecResult:
         theme = ctx.theme.strip() or f"基于{ctx.subject_field}的研究"
+
+        # LLM 优先；失败按配置回退 Mock 或报错
+        source = "mock"
+        settings = get_llm_settings()
+        outline_result = None
+        if settings.enabled and settings.api_key:
+            try:
+                outline_result = _llm_generate(ctx)
+                source = "deepseek"
+                if not outline_result.chapters:
+                    raise StructuredOutputError("LLM 返回空大纲")
+            except (LLMError, StructuredOutputError) as exc:
+                if settings.fallback_to_mock:
+                    logger.warning("环5 LLM 不可用，回退 Mock：%s", exc)
+                    return self._fallback_mock(ctx, theme)
+                raise
+
+        if outline_result is None:
+            return self._fallback_mock(ctx, theme)
+
+        evidence = {
+            "degree": ctx.degree.value,
+            "chapter_count": len(outline_result.chapters),
+            "node_count": sum(1 for c in outline_result.chapters if c.level >= 2),
+            "source": source,
+        }
+
+        return ExecResult(
+            output=outline_result.model_dump_json(indent=2),
+            accept=True,
+            fallbackTo=None,
+            issues=[],
+            evidence=evidence,
+        )
+
+    def _fallback_mock(self, ctx: ExecContext, theme: str) -> ExecResult:
+        """LLM 返回空时兜底：确定性 Mock 大纲。"""
         chapters_spec = _DEGREE_CHAPTERS[ctx.degree]
 
         chapters: list[OutlineNode] = []
         for spec in chapters_spec:
-            # 生成节（level=2）与要点（level=3）
             sections: list[OutlineNode] = []
             points = spec["points"]
-            # 由 points 推导节标题（Mock：直接以要点作为节标题的候选）
             sec_titles = points if len(points) <= 6 else points[:6]
             for i, sec in enumerate(sec_titles, start=1):
                 number = f"{spec['n'].replace('第', '').replace('章', '')}.{i}"
@@ -120,7 +203,6 @@ class Ring5OutlineExecutor(RingExecutor):
                         points=[f"深入展开：{sec} 相关论述与数据/案例支撑。"],
                     )
                 )
-            # 章节点本身
             chapters.append(
                 OutlineNode(
                     level=1,
@@ -129,32 +211,21 @@ class Ring5OutlineExecutor(RingExecutor):
                     points=[f"{spec['title']}下共 {len(sections)} 节，层次深度匹配{ctx.degree.label}要求。"],
                 )
             )
-            chapters.extend(sections)  # 平铺输出，保留层级编号
-
-        summary = (
-            f"共 {len(chapters_spec)} 章；已按{ctx.degree.label}层次生成"
-            f"{len(chapters)} 个章节/节节点（本科章节少、博士章节深）。"
-        )
+            chapters.extend(sections)
 
         outline_result = OutlineResult(
             theme=theme,
             degree=ctx.degree,
             chapters=chapters,
-            summary=summary,
+            summary=(
+                f"共 {len(chapters_spec)} 章；已按{ctx.degree.label}层次生成"
+                f"{len(chapters)} 个章节/节节点（本科章节少、博士章节深）。"
+            ),
         )
-
-        evidence = {
-            "degree": ctx.degree.value,
-            "chapter_count": len(chapters_spec),
-            "node_count": len(chapters),
-            "degree_rule": "本科章节浅、博士章节深（模板差异化）",
-            "source_mock": "确定性 Mock（DSH 二期接入）",
-        }
-
         return ExecResult(
             output=outline_result.model_dump_json(indent=2),
             accept=True,
             fallbackTo=None,
             issues=[],
-            evidence=evidence,
+            evidence={"degree": ctx.degree.value, "source": "mock"},
         )

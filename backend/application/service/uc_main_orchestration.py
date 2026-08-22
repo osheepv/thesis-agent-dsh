@@ -54,11 +54,16 @@ class RealDocxRenderer:
     解同名。`import docx` 固定解析到 site-packages 的 python-docx 库；业务包
     使用 `backend.thesis_docx` 命名空间导入。本处惰性导入，构造时不触碰业务包，
     仅当真正执行「解析/生成」时才 import；测试注入 mock 时不会触发。
+
+    Args:
+        repository: 可选，M6 DocxRepository。提供时生成成功后注册记录，
+            供 `/api/v1/docx/files/{file_id}` 下载端点查询（与业务路由共享）。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, repository=None) -> None:
         self._parser = None
         self._generator = None
+        self._repository = repository
 
     def _ensure(self) -> None:
         if self._parser is not None and self._generator is not None:
@@ -101,6 +106,18 @@ class RealDocxRenderer:
             content=content,
             filename=meta.get("filename"),
         )
+        # 与业务 DocxService 共享仓储时注册生成记录，下载端点才能找到产物
+        if self._repository is not None:
+            self._repository.save_output(
+                {
+                    "file_id": outcome.filename,
+                    "session_id": meta.get("session_id", ""),
+                    "file_path": outcome.file_path,
+                    "filename": outcome.filename,
+                    "word_count": outcome.word_count,
+                    "template_id": template_id,
+                }
+            )
         return {
             "file_id": f"FILE-{uuid.uuid4().hex[:12].upper()}",
             "download_url": f"/api/v1/docx/files/{outcome.filename}",

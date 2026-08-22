@@ -35,8 +35,34 @@ from .controller.writer_console import router as writer_console_router
 from .health import router as health_router
 from .service.uc_main_orchestration import MainOrchestration
 from .tasks import router as tasks_router
+from thesis_docx.service import DocxService
 
 logger = logging.getLogger("thesis.application")
+
+
+def _default_orchestration() -> MainOrchestration:
+    """默认主编排：FSM 走 SQLite（连不上回退 InMemory），保障服务可起。
+
+    docx 渲染器与业务路由共享同一 DocxRepository，保证 console 生成产物
+    可被 /api/v1/docx/files/{file_id} 下载端点找到。
+    """
+    from db.session import build_fsm_repository
+    from thesis_docx.repository import DocxRepository
+    from thesis_docx.service import DocxService
+    from fsm.orchestrator import FsmOrchestrator
+    from .service.uc_main_orchestration import RealDocxRenderer
+
+    # 与 docx 业务路由共享仓储（get_docx_service 优先读 app.state.docx_service）
+    docx_service = DocxService()
+    _docx_repo = docx_service._repo  # noqa: SLF001 - 共享同一实例
+    renderer = RealDocxRenderer(repository=_docx_repo)
+    orchestration = MainOrchestration(
+        fsm=FsmOrchestrator(build_fsm_repository()),
+        docx_renderer=renderer,
+    )
+    # 挂到 app.state 供 docx router 依赖注入复用
+    orchestration._docx_service = docx_service  # noqa: SLF001
+    return orchestration
 
 
 def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
@@ -56,12 +82,24 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
     # 主编排聚合路由（/api/v1/console）
     app.include_router(writer_console_router)
 
+    # 业务模块原生路由（M1 FSM / M5+M6 docx）：
+    # 一期曾因 Result[T] 泛型与 pydantic 2 的兼容问题未挂载；pydantic 2.11.4 下
+    # 已可正常挂载（实测通过），本次补挂全部业务端点。
+    from fsm.api import build_fsm_router
+    from thesis_docx.router import router as docx_router
+
+    app.include_router(build_fsm_router())
+    app.include_router(docx_router)
+
     # 骨架原生路由（/healthz、/api/v1/tasks）
     app.include_router(health_router)
     app.include_router(tasks_router)
 
     # 应用级编排单例
-    app.state.orchestration = orchestration or MainOrchestration()
+    orchestration = orchestration or _default_orchestration()
+    app.state.orchestration = orchestration
+    # docx 业务路由（/api/v1/docx/files 等）与 console 链路共享同一服务/仓储
+    app.state.docx_service = getattr(orchestration, "_docx_service", None) or DocxService()
 
     # 异常处理器
     _register_exception_handlers(app)

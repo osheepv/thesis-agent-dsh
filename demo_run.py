@@ -36,7 +36,8 @@ print("4) 环6撰写:", st, "| code=", b.get("code"), "| msg=", b.get("msg"), "|
 
 st, b = post(f"/api/v1/console/tasks/{tid}/docx/generate?session_id=run-demo")
 print("5) 生成docx:", st, "| code=", b.get("code"), "| msg=", b.get("msg"), "| file_id=", b.get("data",{}).get("file_id"), "| url=", b.get("data",{}).get("download_url"))
-file_id = b.get("data",{}).get("file_id", "")
+# 下载端点按文件 ID（download_url 最后一段）访问，而非内部 file_id 代号
+file_id = b.get("data",{}).get("download_url", "").rsplit("/", 1)[-1]
 
 st, b = get(f"/api/v1/console/tasks/{tid}/progress?session_id=run-demo")
 print("6) 进度:", st, "| code=", b.get("code"), "| 当前环=", b.get("data",{}).get("current_ring_no"), "| 完成度=", b.get("data",{}).get("complete_percent"), "%")

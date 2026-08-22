@@ -1,26 +1,31 @@
 # -*- coding: utf-8 -*-
-"""环6 分章撰写执行体（M2 一期，确定性 Mock）。
+"""环6 分章撰写执行体（M2 二期：LLM 优先 + Mock 回退）。
 
 职责：根据大纲（``ctx.outline`` 或回退到 ``ctx.theme``）逐章节生成初稿，
 产出 ``t_chapter_draft`` 风格章节草稿（章节号 / 标题 / 正文 markdown）。
 
-DSH 二期接入点：真实实现应调用 DSH 依大纲逐步生成内容，并写入 t_chapter_draft 表。
-本期用模板生成占位章节草稿（Markdown），保证闭环可运行。
+LLM 接入（决策 D1）：
+    优先调用 DeepSeek 按大纲逐章生成；失败时按 ``LLMSettings.fallback_to_mock``
+    决定回退确定性 Mock 或抛错。
 """
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.aicoding.enums import Degree, RingType
+from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
 from executor.base import (
     ExecContext,
     ExecResult,
     RingExecutor,
     register_executor,
 )
+
+logger = logging.getLogger("thesis.ring6")
 
 
 class ChapterDraft(BaseModel):
@@ -49,6 +54,15 @@ class ChapterWriteResult(BaseModel):
     theme: str = Field(default="", description="题目")
     degree: Degree = Field(default=Degree.BACHELOR, description="学位层次")
     chapters: list[ChapterDraft] = Field(default_factory=list, description="章节草稿列表")
+    total_words: int = Field(default=0, description="总字数估算")
+
+
+class LLMChapterWriteOut(BaseModel):
+    """LLM 环6 输出模型（要求严格按此 schema 返回 JSON）。"""
+
+    theme: str = Field(default="", description="题目")
+    degree: str = Field(default="", description="学位层次 BACHELOR/MASTER/PHD")
+    chapters: list[ChapterDraft] = Field(default_factory=list, description="章节草稿")
     total_words: int = Field(default=0, description="总字数估算")
 
 
@@ -125,8 +139,84 @@ class Ring6ChapterExecutor(RingExecutor):
 
     def execute(self, ctx: ExecContext) -> ExecResult:
         theme = ctx.theme.strip() or f"基于{ctx.subject_field}的研究"
-        chapters_meta = _extract_chapters(ctx.outline)
 
+        # LLM 优先；失败按配置回退 Mock 或报错
+        settings = get_llm_settings()
+        if settings.enabled and settings.api_key:
+            try:
+                chapter_result = self._llm_generate(ctx, theme)
+                source = "deepseek"
+                if not chapter_result.chapters:
+                    raise StructuredOutputError("LLM 返回空章节")
+            except (LLMError, StructuredOutputError) as exc:
+                if settings.fallback_to_mock:
+                    logger.warning("环6 LLM 不可用，回退 Mock：%s", exc)
+                    return self._fallback_mock(ctx, theme)
+                raise
+        else:
+            return self._fallback_mock(ctx, theme)
+
+        evidence = {
+            "degree": ctx.degree.value,
+            "chapter_count": len(chapter_result.chapters),
+            "total_words": chapter_result.total_words,
+            "source": source,
+        }
+
+        return ExecResult(
+            output=chapter_result.model_dump_json(indent=2),
+            accept=True,
+            fallbackTo=None,
+            issues=[],
+            evidence=evidence,
+        )
+
+    def _llm_generate(self, ctx: ExecContext, theme: str) -> ChapterWriteResult:
+        """调用 DeepSeek 生成章节草稿（LLM 分支）。"""
+        degree_gen = {
+            Degree.BACHELOR: "本科：每章 2~3 段（约 0.8k 字/章）",
+            Degree.MASTER: "硕士：每章 3~4 段（约 1.5k 字/章）",
+            Degree.PHD: "博士：每章 5~6 段（约 2.5k 字/章）",
+        }[ctx.degree]
+        # 从 outline（JSON 或文本）提取章节标题，供 LLM 逐章生成
+        chapter_titles: list[str] = []
+        try:
+            outline_data = json.loads(ctx.outline) if ctx.outline else {}
+            for node in outline_data.get("chapters", []):
+                if node.get("level") == 1:
+                    chapter_titles.append(node.get("title", ""))
+        except Exception:  # noqa: BLE001 - 容错，outline 可能为纯文本
+            pass
+        titles_hint = "；".join(f"{i + 1}.{t}" for i, t in enumerate(chapter_titles)) if chapter_titles else (
+            f"参照{ctx.degree.label}论文常规结构"
+        )
+        prompt = (
+            f"【任务】为学位论文撰写章节初稿。题目：{theme}；学科：{ctx.subject_field}；"
+            f"学位层次：{ctx.degree.label}。{degree_gen}。章节标题：{titles_hint}。\n"
+            "【要求】每章输出 Markdown 正文（含 '## 节小节' 层级）；内容论述必须有逻辑性、"
+            "方法可复现、结论有证据支撑；严禁编造参考文献或数据来源；"
+            "chapter_title 用'第N章 标题'格式；word_count 为估算字数。\n"
+            "【输出格式】严格输出 JSON（包含 \"json\" 键），结构如下：\n"
+            '{"theme": "…", "degree": "MASTER", '
+            '"chapters": [{"chapter_no": 1, "chapter_title": "第1章 绪论", '
+            '"content": "## 1 引言\\n…", "word_count": 1500}], "total_words": 9000}\n'
+            "只输出 JSON，不要有任何额外文字。"
+        )
+        raw = get_llm_client().generate_json(
+            system="你是学位论文写作专家，能按大纲逐章撰写有证据支撑的学术初稿。",
+            prompt=prompt,
+            model_cls=LLMChapterWriteOut,
+        )
+        return ChapterWriteResult(
+            theme=raw.theme or theme,
+            degree=ctx.degree,
+            chapters=raw.chapters,
+            total_words=raw.total_words or sum(c.word_count for c in raw.chapters),
+        )
+
+    def _fallback_mock(self, ctx: ExecContext, theme: str) -> ExecResult:
+        """确定性 Mock 回退：按段落基准数逐章生成模板文本。"""
+        chapters_meta = _extract_chapters(ctx.outline)
         drafts: list[ChapterDraft] = []
         for chapter_no, (num, raw_title) in enumerate(chapters_meta, start=1):
             content = _render_chapter_content(chapter_no, raw_title, ctx.degree)
@@ -138,7 +228,6 @@ class Ring6ChapterExecutor(RingExecutor):
                     word_count=_count_words(content),
                 )
             )
-
         total_words = sum(d.word_count for d in drafts)
         chapter_result = ChapterWriteResult(
             theme=theme,
@@ -146,19 +235,16 @@ class Ring6ChapterExecutor(RingExecutor):
             chapters=drafts,
             total_words=total_words,
         )
-
-        evidence = {
-            "degree": ctx.degree.value,
-            "chapter_count": len(drafts),
-            "total_words": total_words,
-            "paragraphs_per_chapter": _DEGREE_PARAGRAPHS[ctx.degree],
-            "source_mock": "确定性 Mock（DSH 二期接入，t_chapter_draft 落库）",
-        }
-
         return ExecResult(
             output=chapter_result.model_dump_json(indent=2),
             accept=True,
             fallbackTo=None,
             issues=[],
-            evidence=evidence,
+            evidence={
+                "degree": ctx.degree.value,
+                "chapter_count": len(drafts),
+                "total_words": total_words,
+                "paragraphs_per_chapter": _DEGREE_PARAGRAPHS[ctx.degree],
+                "source": "mock",
+            },
         )

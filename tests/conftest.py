@@ -12,8 +12,13 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+# 测试环境禁用 LLM（不调用 DeepSeek API，执行体自动回退确定性 Mock），
+# 环境变量优先于 .env 文件，须在导入业务模块前设置。
+os.environ.setdefault("THESIS_DEEPSEEK_ENABLED", "false")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_DIR = PROJECT_ROOT / "backend"

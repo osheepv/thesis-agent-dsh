@@ -8,6 +8,9 @@ fastapi==0.115.12
 uvicorn[standard]==0.34.2
 starlette==0.46.1
 
+# ---- LLM（DeepSeek 直调，二期决策 D1；OpenAI 兼容接口）----
+openai>=1.40,<2
+
 # ---- 数据校验 / 序列化 ----
 pydantic==2.11.4
 pydantic-settings==2.9.1

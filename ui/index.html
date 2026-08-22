@@ -3668,17 +3668,30 @@ function escapeHtml2(s) {
 function renderRingResult(ringNo, data) {
   const name = RING_NAMES[ringNo] || ('环' + ringNo);
   if (ringNo === 1) {
-    // 选题：候选题目卡
+    // 选题：候选题目卡（可点选）
     const cands = (data && data.candidates) || [];
     const rec = data && data.recommendation ? `<p style="color:var(--text-subtle);font-size:13px;">${escapeHtml2(data.recommendation)}</p>` : '';
-    appendAIMsg(`<p><strong>环1 选题完成</strong>，生成以下候选题目：</p>` +
-      cands.map((c, i) => `<p style="margin:6px 0;">${i+1}. <strong>${escapeHtml2(c.title)}</strong><br><span style="color:var(--text-subtle);font-size:13px;">创新点：${escapeHtml2(c.innovation)}</span></p>`).join('') + rec,
+    appendAIMsg(`<p><strong>环1 选题完成</strong>，生成以下候选题目（点击选中）：</p>` +
+      cands.map((c, i) => `<div class="cand-item" data-title="${escapeHtml2(c.title)}" role="button" style="margin:6px 0;padding:8px 10px;border:1px solid var(--border-divider);border-radius:8px;cursor:pointer;transition:border-color .15s,background .15s;"><div><strong>${i+1}. ${escapeHtml2(c.title)}</strong></div><div style="color:var(--text-subtle);font-size:13px;">创新点：${escapeHtml2(c.innovation)}</div></div>`).join('') + rec,
       `${name} · 已完成`);
+    // 绑定点选
+    document.querySelectorAll('.cand-item').forEach(el => {
+      el.addEventListener('click', () => {
+        document.querySelectorAll('.cand-item').forEach(x => x.style.borderColor = 'var(--border-divider)');
+        el.style.borderColor = 'var(--claude)';
+        el.style.background = 'var(--claude-soft)';
+        if (currentSession) {
+          // 记录选中（localStorage 持久化，后续环5/6 用）
+          localStorage.setItem(`chosen-${currentSession}`, el.dataset.title);
+          toast('已选题目：' + el.dataset.title);
+        }
+      });
+    });
   } else if (ringNo === 3) {
     // 文献调研：文献卡
     const items = (data && (data.items || [])) || [];
     appendAIMsg(`<p><strong>环3 文献调研完成</strong>，检索到 <strong>${items.length}</strong> 篇文献：</p>` +
-      items.slice(0, 5).map(it => `<div class="ref-card" style="margin:8px 0;"><div class="ref-head"><div class="ref-title">${escapeHtml2(it.title)}</div><span class="badge ${it.reliability || 'matched'}">${escapeHtml2(it.reliability || 'matched')}</span></div><div class="ref-citation">${escapeHtml2(it.gbt7714 || '')}</div></div>`).join(''),
+      items.map(it => `<div class="ref-card" style="margin:8px 0;"><div class="ref-head"><div class="ref-title">${escapeHtml2(it.title)}</div><span class="badge ${it.reliability || 'matched'}">${escapeHtml2(it.reliability || 'matched')}</span></div><div class="ref-citation">${escapeHtml2(it.gbt7714 || '')}</div><div class="ref-actions"><button class="link-btn" onclick="toast('跳转下载（引导层：用户自取）')">跳转下载</button><button class="icon-btn" onclick="toast('GB/T 7714 已复制')">复制 GB/T 7714</button></div></div>`).join(''),
       `${name} · 已完成`);
   } else if (ringNo === 2 || ringNo === 4) {
     // 评审卡（新颖度/综述评审）
@@ -3706,7 +3719,9 @@ async function runRingShow(taskId, ringNo, path) {
     renderRingResult(ringNo, r.data);
     toast(r.msg || `环${ringNo} 完成`);
   } else {
-    appendAIMsg(`<p style="color:var(--error)">环${ringNo} 执行失败：${escapeHtml2(r.msg || '')}</p>`, '失败');
+    // 评审未通过：警告卡 + 回退/重新生成
+    const fb = (r.data && r.data.fallbackTo) || (r.data && r.data.fallBackTo);
+    appendAIMsg(`<div class="warn-card" style="margin:8px 0;"><div class="warn-title">环${ringNo} 评审未通过</div><div style="font-size:13px;">${escapeHtml2(r.msg || '')}</div><div class="warn-actions"><button class="btn btn-primary btn-sm" onclick="runCurrentRing()">重新生成</button>${fb ? `<button class="btn btn-secondary btn-sm" onclick="toast('已回退到环${fb}（执行环${fb} 重跑）')">回退到环${fb}</button>` : ''}</div></div>`, '评审未通过');
   }
   loadSessionDetail(taskId);
   loadSessions();

@@ -84,6 +84,32 @@ async def ring1_execute(task_id: str, session_id: str = "",
 
 
 # ---------------------------------------------------------------------
+# 环2 开题评审（新颖度）
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/rings/2/review", response_model=None)
+async def ring2_review(task_id: str, session_id: str = "",
+                       orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.run_ring2(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
+# 环4 综述评审（创新点包住）
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/rings/4/review", response_model=None)
+async def ring4_review(task_id: str, session_id: str = "",
+                       orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.run_ring4(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
 # 环5 大纲
 # ---------------------------------------------------------------------
 @router.post("/tasks/{task_id}/rings/5/outline", response_model=None)

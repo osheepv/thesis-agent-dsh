@@ -135,7 +135,7 @@ class TaskRecord:
     __slots__ = (
         "task_id", "title", "degree", "subject_field", "template_id",
         "session_id", "tenant_id",
-        "ring1", "ring3", "ring5", "ring6", "ring7", "docx",
+        "ring1", "ring2", "ring3", "ring4", "ring5", "ring6", "ring7", "docx",
     )
 
     def __init__(self, task_id: str, title: str, degree: str, subject_field: str,
@@ -149,7 +149,9 @@ class TaskRecord:
         self.session_id = session_id
         self.tenant_id = tenant_id
         self.ring1: Optional[Dict[str, Any]] = None
+        self.ring2: Optional[Dict[str, Any]] = None
         self.ring3: Optional[Dict[str, Any]] = None
+        self.ring4: Optional[Dict[str, Any]] = None
         self.ring5: Optional[Dict[str, Any]] = None
         self.ring6: Optional[Dict[str, Any]] = None
         self.ring7: Optional[Dict[str, Any]] = None
@@ -284,6 +286,72 @@ class MainOrchestration:
         return Result.ok(data={"candidates": candidates, "chosen": chosen_title,
                                "recommendation": data.get("recommendation", "")},
                          msg="环1选题完成")
+
+    # ------------------------------------------------------------------
+    # 步骤 3.5：环2 开题评审（UC-02 延续）
+    # ------------------------------------------------------------------
+    def run_ring2(self, task_id: str) -> Result[Dict[str, Any]]:
+        """执行环2开题评审：真实检索相似研究 → 新颖度判定（LOW 回退环1）。"""
+        rec = self._require(task_id)
+        chosen = (rec.ring1 or {}).get("chosen", rec.title)
+        ctx = ExecContext(
+            subject_field=rec.subject_field,
+            degree=Degree(rec.degree),
+            theme=chosen,
+            session_id=rec.session_id,
+            tenant_id=rec.tenant_id,
+        )
+        res = get_executor(2).execute(ctx)
+        data = json.loads(res.output)
+        rec.ring2 = data
+        if res.accept:
+            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R2", accept=True,
+                              artifact_uri=res.output)
+            self._advance_to(task_id, f"{task_id}-R2", target_ring_no=3)  # 自动过环2 → 环3
+        else:
+            # LOW：回退环1 重新选题（保留候选/评审记录，供人工换题）
+            try:
+                self._fsm.rollback(task_id, 1)
+            except Exception:  # noqa: BLE001 - 回退栈空/状态异常不阻塞
+                pass
+        return Result.ok(data={
+            "novelty_level": data.get("novelty_level", ""),
+            "similar_count": data.get("similar_count", 0),
+            "differ_from_prior": data.get("differ_from_prior", ""),
+            "recommendation": data.get("recommendation", ""),
+            "fallbackTo": None if res.accept else 1,
+        }, msg=f"环2开题评审完成：{data.get('novelty_level', '')}" if res.accept else f"环2评审未通过：{data.get('recommendation', '')}")
+
+    # ------------------------------------------------------------------
+    # 步骤 3.75：环4 综述评审（UC-03 前哨）
+    # ------------------------------------------------------------------
+    def run_ring4(self, task_id: str) -> Result[Dict[str, Any]]:
+        """执行环4综述评审：池内竞争度 + 创新点包住检查（需重评估回退环2）。"""
+        rec = self._require(task_id)
+        chosen = (rec.ring1 or {}).get("chosen", rec.title)
+        pool = self._ensure_literature(rec, chosen)
+        ctx = ExecContext(
+            subject_field=rec.subject_field,
+            degree=Degree(rec.degree),
+            theme=chosen,
+            literature=pool,
+            session_id=rec.session_id,
+            tenant_id=rec.tenant_id,
+        )
+        res = get_executor(4).execute(ctx)
+        data = json.loads(res.output)
+        rec.ring4 = data
+        if res.accept:
+            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R4", accept=True,
+                              artifact_uri=res.output)
+            self._advance_to(task_id, f"{task_id}-R4", target_ring_no=5)  # 自动过环4 → 环5
+        return Result.ok(data={
+            "verdict": data.get("verdict", ""),
+            "pool_count": data.get("pool_count", 0),
+            "relevant_count": data.get("relevant_count", 0),
+            "overlap_count": data.get("overlap_count", 0),
+            "recommendation": data.get("recommendation", ""),
+        }, msg=f"环4综述评审完成：{data.get('verdict', '')}" if res.accept else f"环4评审未通过：{data.get('recommendation', '')}")
 
     # ------------------------------------------------------------------
     # 步骤 4：环5 大纲（UC-03）

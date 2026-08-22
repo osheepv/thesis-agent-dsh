@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import Any, Dict, List
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -33,6 +34,9 @@ from executor.base import (
 )
 
 logger = logging.getLogger("thesis.ring8")
+
+#: 环境开关：false 时跳过真实检索（离线/测试）
+_LIT_ENABLED = os.environ.get("THESIS_LIT_ENABLED", "true").lower() not in ("0", "false", "no")
 
 #: 标题相似度阈值（≥ 判 matched）
 _MATCH_THRESHOLD = 0.6
@@ -114,6 +118,29 @@ class Ring8ComplianceExecutor(RingExecutor):
                 fallbackTo=None,
                 issues=["未提供引用列表，请补全后重新校验"],
                 evidence={"checked": 0},
+            )
+
+        if not _LIT_ENABLED:
+            # 离线/测试：跳过真实网络校验，全部标记"待人工复核"
+            items = [
+                GbtCheckItem(
+                    ref_title=ref.get("title", ""), ref_doi=ref.get("doi", ""),
+                    ok=False, reliability="uncertain",
+                    evidence={"reason": "THESIS_LIT_ENABLED=false，未联网核验"},
+                    note="文献检索禁用，请人工/订阅源复核",
+                )
+                for ref in refs
+            ]
+            result = CitationCheckResult(
+                total=len(items), passed=0, uncertain=len(items), failed=0,
+                items=items,
+                summary=f"文献检索禁用（THESIS_LIT_ENABLED=false），{len(items)} 条全部待人工复核。",
+            )
+            return ExecResult(
+                output=result.model_dump_json(indent=2),
+                accept=False, fallbackTo=None,
+                issues=["文献检索禁用，引用校验未完成，需人工复核"],
+                evidence={"checked": len(items), "note": "THESIS_LIT_ENABLED=false"},
             )
 
         svc = get_lit_service()

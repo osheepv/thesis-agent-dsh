@@ -15,6 +15,7 @@ import logging
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.aicoding.enums import Degree, RingType
+from common.lit import lit_pool_block
 from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
 from executor.base import (
     ExecContext,
@@ -117,8 +118,14 @@ def _llm_generate(ctx: ExecContext) -> OutlineResult:
     prompt = (
         f"【任务】为学位论文生成大纲。题目：{ctx.theme}；学科：{ctx.subject_field}；"
         f"学位层次：{ctx.degree.label}。{degree_gen}。\n"
+        + lit_pool_block(
+            [it if isinstance(it, dict) else it.to_dict() for it in ctx.literature]
+            if ctx.literature else []
+        )
+        + "\n"
         "【要求】章节结构遵循'提出问题→论证→解决→总结'闭环；每章要点（points）说明"
-        "该章服务于哪个研究贡献；输出平铺节点（level=1 章，level=2 节，level=3 要点），"
+        "该章服务于哪个研究贡献；引用文献池时用 [L序号] 标注（仅限池内，禁止虚构）；"
+        "输出平铺节点（level=1 章，level=2 节，level=3 要点），"
         "number 形如'第1章'/'1.1'/'1.1.1'；summary 为大纲整体说明。\n"
         "【输出格式】严格输出 JSON（包含 \"json\" 键），结构如下：\n"
         '{"theme": "…", "degree": "MASTER", '

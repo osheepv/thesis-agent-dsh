@@ -17,6 +17,7 @@ import re
 from pydantic import BaseModel, ConfigDict, Field
 
 from common.aicoding.enums import Degree, RingType
+from common.lit import lit_pool_block
 from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
 from executor.base import (
     ExecContext,
@@ -55,6 +56,7 @@ class ChapterWriteResult(BaseModel):
     degree: Degree = Field(default=Degree.BACHELOR, description="学位层次")
     chapters: list[ChapterDraft] = Field(default_factory=list, description="章节草稿列表")
     total_words: int = Field(default=0, description="总字数估算")
+    used_refs: list[str] = Field(default_factory=list, description="实际引用的文献池编号 [L1] 等")
 
 
 class LLMChapterWriteOut(BaseModel):
@@ -161,6 +163,7 @@ class Ring6ChapterExecutor(RingExecutor):
             "chapter_count": len(chapter_result.chapters),
             "total_words": chapter_result.total_words,
             "source": source,
+            "used_refs": chapter_result.used_refs if source == "deepseek" else [],
         }
 
         return ExecResult(
@@ -190,11 +193,18 @@ class Ring6ChapterExecutor(RingExecutor):
         titles_hint = "；".join(f"{i + 1}.{t}" for i, t in enumerate(chapter_titles)) if chapter_titles else (
             f"参照{ctx.degree.label}论文常规结构"
         )
+        # 文献池注入（仅可引用池内条目，防止 AI 编造引文）
+        pool_block = lit_pool_block(
+            [it if isinstance(it, dict) else it.to_dict() for it in ctx.literature]
+            if ctx.literature else []
+        )
         prompt = (
             f"【任务】为学位论文撰写章节初稿。题目：{theme}；学科：{ctx.subject_field}；"
             f"学位层次：{ctx.degree.label}。{degree_gen}。章节标题：{titles_hint}。\n"
+            f"{pool_block}\n"
             "【要求】每章输出 Markdown 正文（含 '## 节小节' 层级）；内容论述必须有逻辑性、"
-            "方法可复现、结论有证据支撑；严禁编造参考文献或数据来源；"
+            "方法可复现、结论有证据支撑；引用文献时必须用 [L序号] 标注且仅限文献池内条目，"
+            "**禁止引用池外/虚构任何文献**；文献池为空时不要写任何『参考文献/张三等 提出』这类表述；"
             "chapter_title 用'第N章 标题'格式；word_count 为估算字数。\n"
             "【输出格式】严格输出 JSON（包含 \"json\" 键），结构如下：\n"
             '{"theme": "…", "degree": "MASTER", '
@@ -207,11 +217,16 @@ class Ring6ChapterExecutor(RingExecutor):
             prompt=prompt,
             model_cls=LLMChapterWriteOut,
         )
+        # 从正文提取实际引用的文献池编号 [L1] 等（用于审计/后续引文生成）
+        used_refs: list[str] = []
+        for ch in raw.chapters:
+            used_refs.extend(re.findall(r"\[L\d+\]", ch.content))
         return ChapterWriteResult(
             theme=raw.theme or theme,
             degree=ctx.degree,
             chapters=raw.chapters,
             total_words=raw.total_words or sum(c.word_count for c in raw.chapters),
+            used_refs=used_refs,
         )
 
     def _fallback_mock(self, ctx: ExecContext, theme: str) -> ExecResult:

@@ -135,7 +135,7 @@ class TaskRecord:
     __slots__ = (
         "task_id", "title", "degree", "subject_field", "template_id",
         "session_id", "tenant_id",
-        "ring1", "ring5", "ring6", "docx",
+        "ring1", "ring3", "ring5", "ring6", "docx",
     )
 
     def __init__(self, task_id: str, title: str, degree: str, subject_field: str,
@@ -149,6 +149,7 @@ class TaskRecord:
         self.session_id = session_id
         self.tenant_id = tenant_id
         self.ring1: Optional[Dict[str, Any]] = None
+        self.ring3: Optional[Dict[str, Any]] = None
         self.ring5: Optional[Dict[str, Any]] = None
         self.ring6: Optional[Dict[str, Any]] = None
         self.docx: Optional[Dict[str, Any]] = None
@@ -290,10 +291,12 @@ class MainOrchestration:
         """执行环5大纲：基于选题生成章节结构，并推进 FSM。"""
         rec = self._require(task_id)
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
+        pool = self._ensure_literature(rec, chosen)
         ctx = ExecContext(
             subject_field=rec.subject_field,
             degree=Degree(rec.degree),
             theme=chosen,
+            literature=pool,
             session_id=rec.session_id,
             tenant_id=rec.tenant_id,
         )
@@ -322,11 +325,13 @@ class MainOrchestration:
         rec = self._require(task_id)
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
         outline_text = (rec.ring5 or {}).get("outline", "")
+        pool = self._ensure_literature(rec, chosen)
         ctx = ExecContext(
             subject_field=rec.subject_field,
             degree=Degree(rec.degree),
             theme=chosen,
             outline=outline_text,
+            literature=pool,
             session_id=rec.session_id,
             tenant_id=rec.tenant_id,
         )
@@ -420,6 +425,30 @@ class MainOrchestration:
         if rec is None:
             raise BizException(ErrorCode.TASK_NOT_FOUND, msg=f"任务不存在: {task_id}")
         return rec
+
+    def _ensure_literature(self, rec: TaskRecord, theme: str) -> List[Dict[str, Any]]:
+        """确保文献池已构建（执行环3 并缓存），返回池条目列表。
+
+        环3 离线/无文献源时返回空池（环5/6 prompt 会提示"禁止引用"）。
+        """
+        if rec.ring3 is not None:
+            return rec.ring3.get("items", [])
+        try:
+            res = get_executor(3).execute(
+                ExecContext(
+                    subject_field=rec.subject_field,
+                    degree=Degree(rec.degree),
+                    theme=theme,
+                    session_id=rec.session_id,
+                    tenant_id=rec.tenant_id,
+                )
+            )
+            data = json.loads(res.output)
+            rec.ring3 = data
+            # 环3 真实执行会推进 FSM（文献调研是自动环节）；若未推进则补一次推进
+            return data.get("items", [])
+        except Exception:  # noqa: BLE001 - 检索失败不阻塞大纲/撰写流程
+            return []
 
     def _advance_to(self, task_id: str, biz_req_no: str, target_ring_no: int) -> None:
         """把 FSM 推进到目标环节号（含跨过 HITL 敏感环节）。

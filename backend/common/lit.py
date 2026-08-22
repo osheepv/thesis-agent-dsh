@@ -411,6 +411,30 @@ def _extract_abstract(inverted: Dict[str, List[int]]) -> str:
     return " ".join(w for _, w in positions)
 
 
+def lit_pool_block(items: List[Dict[str, Any]], max_items: int = 15) -> str:
+    """把文献池转成给 LLM 的注入文本块（编号 + 题录，供环5/6 引用）。
+
+    Args:
+        items: 文献池条目（LitItem.to_dict() 或环3 产物 dict）。
+        max_items: 最多注入条数（上下文省钱；多余的不提供，防 LLM 引用池外）。
+    Returns:
+        注入 prompt 的文本块；池空返回"（文献池为空，禁止引用）"。
+    """
+    if not items:
+        return "（文献池为空：禁止表述任何引文来源）"
+    lines = ["【可用文献池】（仅可引用池内条目，引用时用 [L序号] 标记，禁止引用池外文献）"]
+    for i, it in enumerate(items[:max_items], start=1):
+        title = it.get("title", "") or ""
+        authors = it.get("authors") or []
+        year = it.get("year") or ""
+        venue = it.get("venue", "") or ""
+        doi = it.get("doi", "") or ""
+        auth = ", ".join(authors[:2]) if authors else ""
+        lines.append(f"[L{i}] {title} | 作者: {auth} | {year} | {venue} | DOI: {doi}")
+    lines.append("（超过上表范围的一律视为不存在，不要引用）")
+    return "\n".join(lines)
+
+
 #: 模块级单例
 _service: Optional[LiteratureService] = None
 

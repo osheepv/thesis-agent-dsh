@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import List
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,6 +33,9 @@ from executor.base import (
 )
 
 logger = logging.getLogger("thesis.ring3")
+
+#: 环境开关：false 时环3/环8 跳过真实检索（离线/测试），默认 true
+_LIT_ENABLED = os.environ.get("THESIS_LIT_ENABLED", "true").lower() not in ("0", "false", "no")
 
 #: 学位分级目标文献数（免费 API 单次演示检索的上限）
 _DEGREE_TARGETS: dict[Degree, int] = {
@@ -158,6 +162,19 @@ class Ring3LiteratureReviewExecutor(RingExecutor):
         queries = _llm_expand_queries(ctx.subject_field, theme)
         if not queries:
             queries = [theme, ctx.subject_field, f"{ctx.subject_field} {theme}"]
+
+        # 环境开关：离线/测试直接返回空池（不阻塞闭环）
+        if not _LIT_ENABLED:
+            result = LiteraturePoolResult(
+                theme=theme, subject_field=ctx.subject_field, degree=ctx.degree,
+                items=[], total=0, target_count=_DEGREE_TARGETS[ctx.degree],
+                summary="文献检索已禁用（THESIS_LIT_ENABLED=false），池为空；环5/6 须禁止引用。",
+            )
+            return ExecResult(
+                output=result.model_dump_json(indent=2),
+                accept=True, fallbackTo=None, issues=["文献检索禁用，池空"],
+                evidence={"sources": [], "fetched": 0, "note": "THESIS_LIT_ENABLED=false"},
+            )
 
         # 逐检索词真实检索（去重合并）
         seen_doi: set[str] = set()

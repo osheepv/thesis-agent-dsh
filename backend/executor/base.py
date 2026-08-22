@@ -61,6 +61,10 @@ class ExecContext(BaseModel):
     degree: Degree = Field(default=Degree.BACHELOR, description="学位层次")
     theme: str = Field(default="", description="题目（环1/5 输出，环6 引用）")
     outline: str = Field(default="", description="大纲提要（环5 输出，环6 引用）")
+    literature: list[dict] = Field(
+        default_factory=list,
+        description="文献池（环3 输出，环5/6 引用来源；引用只能取自池内，禁编造）",
+    )
     trace_id: Optional[str] = Field(default=None, description="追踪 ID")
     session_id: str = Field(default="", description="会话 ID（M9 隔离预留）")
     tenant_id: str = Field(default="default", description="租户 ID")

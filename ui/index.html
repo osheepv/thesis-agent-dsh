@@ -2521,6 +2521,7 @@ a:hover { text-decoration: underline; }
 .form-field-row .form-field { flex: 1; }
 
 </style>
+<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
 </head>
 <body>
 
@@ -2768,55 +2769,16 @@ a:hover { text-decoration: underline; }
         <div class="kb-pane" data-pane="graph">
           <div class="kb-section-title">
             <span>概念图谱</span>
-            <span class="count">23 节点</span>
+            <span class="count" id="graph-count">0 节点</span>
           </div>
-          <div class="graph-wrap">
-            <svg viewBox="0 0 300 320" xmlns="http://www.w3.org/2000/svg">
-              <!-- 连线 -->
-              <g stroke="rgba(215,119,87,0.35)" stroke-width="1">
-                <line x1="150" y1="160" x2="80" y2="80"/>
-                <line x1="150" y1="160" x2="220" y2="80"/>
-                <line x1="150" y1="160" x2="80" y2="240"/>
-                <line x1="150" y1="160" x2="220" y2="240"/>
-                <line x1="150" y1="160" x2="150" y2="40"/>
-                <line x1="150" y1="160" x2="150" y2="280"/>
-                <line x1="80" y1="80" x2="40" y2="120"/>
-                <line x1="220" y1="80" x2="260" y2="120"/>
-                <line x1="80" y1="240" x2="40" y2="200"/>
-                <line x1="220" y1="240" x2="260" y2="200"/>
-              </g>
-              <!-- 中心节点 -->
-              <circle cx="150" cy="160" r="14" fill="rgb(215,119,87)" filter="drop-shadow(0 0 8px rgba(215,119,87,0.8))"/>
-              <text x="150" y="164" text-anchor="middle" fill="#fff" font-size="10" font-weight="600">核心</text>
-              <!-- 主题节点（橙） -->
-              <circle cx="80" cy="80" r="9" fill="rgb(215,119,87)" filter="drop-shadow(0 0 6px rgba(215,119,87,0.6))"/>
-              <text x="80" y="68" text-anchor="middle" fill="#fff" font-size="9">认知依赖</text>
-              <circle cx="220" cy="80" r="9" fill="rgb(215,119,87)" filter="drop-shadow(0 0 6px rgba(215,119,87,0.6))"/>
-              <text x="220" y="68" text-anchor="middle" fill="#fff" font-size="9">规范漂移</text>
-              <circle cx="150" cy="40" r="9" fill="rgb(215,119,87)" filter="drop-shadow(0 0 6px rgba(215,119,87,0.6))"/>
-              <text x="150" y="28" text-anchor="middle" fill="#fff" font-size="9">评价滞后</text>
-              <!-- 方法节点（绿） -->
-              <circle cx="80" cy="240" r="8" fill="rgb(44,122,57)" filter="drop-shadow(0 0 6px rgba(44,122,57,0.6))"/>
-              <text x="80" y="262" text-anchor="middle" fill="#fff" font-size="9">访谈法</text>
-              <circle cx="220" cy="240" r="8" fill="rgb(44,122,57)" filter="drop-shadow(0 0 6px rgba(44,122,57,0.6))"/>
-              <text x="220" y="262" text-anchor="middle" fill="#fff" font-size="9">问卷法</text>
-              <!-- 数据节点（蓝） -->
-              <circle cx="150" cy="280" r="8" fill="#6FB7FF" filter="drop-shadow(0 0 6px rgba(111,183,255,0.6))"/>
-              <text x="150" y="302" text-anchor="middle" fill="#fff" font-size="9">案例数据</text>
-              <!-- 边缘节点 -->
-              <circle cx="40" cy="120" r="5" fill="rgba(255,255,255,0.4)"/>
-              <circle cx="260" cy="120" r="5" fill="rgba(255,255,255,0.4)"/>
-              <circle cx="40" cy="200" r="5" fill="rgba(255,255,255,0.4)"/>
-              <circle cx="260" cy="200" r="5" fill="rgba(255,255,255,0.4)"/>
-            </svg>
-            <div class="graph-legend">
-              <span class="lg theme">主题</span>
-              <span class="lg method">方法</span>
-              <span class="lg data">数据</span>
-            </div>
+          <div id="kb-graph" style="width:100%;height:380px;background:#1F1F1F;border-radius:12px;"></div>
+          <div class="graph-legend" style="margin-top:8px;display:flex;gap:14px;font-size:11px;color:var(--text-subtle);">
+            <span class="lg"><span class="lg-dot" style="background:var(--claude);display:inline-block;width:8px;height:8px;border-radius:50%;"></span> 笔记/概念</span>
+            <span class="lg"><span class="lg-dot" style="background:#6FB7FF;display:inline-block;width:8px;height:8px;border-radius:50%;"></span> 文献</span>
+            <span class="lg"><span class="lg-dot" style="background:#22c55e;display:inline-block;width:8px;height:8px;border-radius:50%;"></span> 双链</span>
           </div>
           <p style="font-size:11px; color: var(--text-inactive); margin-top: 8px; line-height:1.5;">
-            力导向布局，节点发光强度反映与核心主题的关联度。点击节点可在笔记中跳转。
+            力导向布局（Cytoscape）：节点=笔记/概念/文献，边=[[双链]]关系。点击节点查看详情。
           </p>
         </div>
       </div>
@@ -4647,6 +4609,45 @@ applyI18n();
 
 // —— 启动初始化：加载会话列表 + 绑定新建按钮 ——
 
+
+/* ============================================================
+   知识图谱（Cytoscape.js 真实渲染）
+   ============================================================ */
+let cyGraph = null;
+async function renderGraph(sessionId) {
+  const apiGraph = await apiGet(`/api/v1/kb/${encodeURIComponent(sessionId || 'default')}/graph`);
+  const data = apiGraph.code === 0 ? (apiGraph.data || { nodes: [], links: [] }) : { nodes: [], links: [] };
+  const count = document.getElementById('graph-count');
+  if (count) count.textContent = (data.stats?.node_count || data.nodes?.length || 0) + ' 节点';
+  const el = document.getElementById('kb-graph');
+  if (!el || typeof cytoscape === 'undefined') return;
+  if (cyGraph) { cyGraph.destroy(); cyGraph = null; }
+  const elements = [
+    ...(data.nodes || []).map(n => ({ data: { id: n.id, label: n.label, type: n.type } })),
+    ...(data.links || []).map(l => ({ data: { source: l.source, target: l.target } })),
+  ];
+  if (!elements.length) {
+    el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888;font-size:12px;">暂无图谱数据（在笔记中用 [[双链]] 关联）</div>';
+    return;
+  }
+  cyGraph = cytoscape({
+    container: el,
+    elements,
+    style: [
+      { selector: 'node', style: {
+          'background-color': '#22c55e', 'label': 'data(label)', 'color': '#fff',
+          'font-size': '9px', 'text-valign': 'bottom', 'text-wrap': 'wrap',
+          'text-max-width': '60px', 'width': 'mapData(degree, 0, 8, 22, 38)',
+          'height': 'mapData(degree, 0, 8, 22, 38)',
+      }},
+      { selector: 'node[type = "concept"]', style: { 'background-color': 'var(--claude)' } },
+      { selector: 'node[type = "paper"]', style: { 'background-color': '#6FB7FF' } },
+      { selector: 'edge', style: { 'width': 1, 'line-color': 'rgba(255,255,255,0.3)', 'curve-style': 'bezier' } },
+    ],
+    layout: { name: 'cose', animate: true, padding: 20, nodeRepulsion: () => 8000, idealEdgeLength: () => 70 },
+  });
+  cyGraph.on('tap', 'node', evt => toast(evt.target.data('label') + '（图谱节点）'));
+}
 
 /* ============================================================
    知识库面板（对接 /api/v1/kb/{session}/files）

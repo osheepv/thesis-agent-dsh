@@ -89,6 +89,16 @@ async def delete_file(session_id: str, file_id: str, store=Depends(_store)) -> R
     return Result.ok(msg="已删除")
 
 
+@router.get("/{session_id}/graph", response_model=None)
+async def get_graph(session_id: str, store=Depends(_store)) -> Result:
+    """知识图谱数据：笔记/文献节点 + 双链边（供 Cytoscape 渲染）。"""
+    try:
+        data = store.graph_data(session_id)
+        return Result.ok(data=data, msg="图谱数据")
+    except Exception as exc:  # noqa: BLE001
+        return Result.fail(code=1, msg=f"图谱生成失败: {exc}")
+
+
 @router.get("/{session_id}/path", response_model=None)
 async def session_path(session_id: str, store=Depends(_store)) -> Result:
     """会话知识库文件夹路径（给用户展示"下载到这里"）。"""

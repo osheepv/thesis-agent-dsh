@@ -147,6 +147,84 @@ class KnowledgeStore:
         (notes_dir / fname).write_text(content, encoding="utf-8")
         return {"file_name": fname, "path": str(notes_dir / fname)}
 
+    def list_notes(self, session_id: str) -> List[Dict[str, Any]]:
+        """列出会话笔记（含内容，供图谱解析双链）。"""
+        notes_dir = _session_dir(session_id) / "notes"
+        result = []
+        if not notes_dir.exists():
+            return result
+        for f in sorted(notes_dir.glob("*.md")):
+            result.append({
+                "note_id": f.stem,
+                "file_name": f.name,
+                "title": f.stem.split("_", 1)[-1] if "_" in f.stem else f.stem,
+                "content": f.read_text(encoding="utf-8", errors="ignore"),
+                "path": str(f),
+            })
+        return result
+
+    def graph_data(self, session_id: str) -> Dict[str, Any]:
+        """知识图谱数据：笔记/文献节点 + 双链/关联边（供前端 Cytoscape 渲染）。
+
+        节点：note（笔记，绿）/ paper（文献，蓝）/ concept（概念，橙，从笔记标题提）。
+        边：link（[[双链]]）/ paper_note（笔记引用文献）。
+        """
+        nodes: List[Dict[str, Any]] = []
+        links: List[Dict[str, Any]] = []
+        node_ids = set()
+
+        def add_node(nid, label, ntype, meta=None):
+            if nid in node_ids:
+                return
+            node_ids.add(nid)
+            nodes.append({"id": nid, "label": label, "type": ntype, **(meta or {})})
+
+        def add_link(src, dst, kind):
+            if src != dst:
+                links.append({"source": src, "target": dst, "type": kind})
+
+        # 文献节点
+        docs = self.list_documents(session_id)
+        for d in docs:
+            title = d.get("metadata", {}).get("title") or d.get("file_name", "")
+            if title:
+                add_node(f"paper:{d['file_id']}", title, "paper")
+
+        # 笔记节点 + 双链
+        notes = self.list_notes(session_id)
+        for n in notes:
+            nid = f"note:{n['note_id']}"
+            add_node(nid, n["title"], "note")
+            # 解析 [[链接]]（含别名 [[T|别名]]）
+            import re as _re
+            for m in _re.finditer(r"!?\[\[([^\]|#^]+)(?:\|[^\]]+)?(?:#[^\]]+)?\]\]", n["content"]):
+                target = m.group(1).strip()
+                if not target:
+                    continue
+                # 找到匹配的笔记/文献
+                target_note = next((nn for nn in notes if target in nn["title"] or nn["title"] in target), None)
+                if target_note:
+                    tid = f"note:{target_note['note_id']}"
+                    add_node(tid, target_note["title"], "note")
+                    add_link(nid, tid, "link")
+                else:
+                    # 不存在的目标 → 概念节点（虚线标记）
+                    cid = f"concept:{target}"
+                    add_node(cid, target, "concept", {"pending": True})
+                    add_link(nid, cid, "link")
+            # 笔记引用文献（标题匹配）
+            for d in docs:
+                dtitle = d.get("metadata", {}).get("title") or ""
+                if dtitle and dtitle in n["content"]:
+                    add_link(nid, f"paper:{d['file_id']}", "paper_note")
+
+        return {"nodes": nodes, "links": links, "stats": {
+            "node_count": len(nodes), "link_count": len(links),
+            "note_count": len(notes), "paper_count": len(docs),
+        }}
+
+
+
     # ------------------------------------------------------------------
     # 索引
     # ------------------------------------------------------------------

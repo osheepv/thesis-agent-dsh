@@ -56,8 +56,13 @@ def _default_orchestration() -> MainOrchestration:
     docx_service = DocxService()
     _docx_repo = docx_service._repo  # noqa: SLF001 - 共享同一实例
     renderer = RealDocxRenderer(repository=_docx_repo)
+    fsm_inst = FsmOrchestrator(build_fsm_repository())
+    # 注册进 fsm.di 全局单例：fsm.api 的 advance/hitl/rollback 与 console 共享同一 FSM 实例
+    import fsm.di as _fsm_di
+
+    _fsm_di._orchestrator = fsm_inst
     orchestration = MainOrchestration(
-        fsm=FsmOrchestrator(build_fsm_repository()),
+        fsm=fsm_inst,
         docx_renderer=renderer,
     )
     # 挂到 app.state 供 docx router 依赖注入复用
@@ -96,11 +101,18 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
     # 业务模块原生路由（M1 FSM / M5+M6 docx / M9 知识库）：
     # 一期曾因 Result[T] 泛型与 pydantic 2 的兼容问题未挂载；pydantic 2.11.4 下
     # 已可正常挂载（实测通过），本次补挂全部业务端点。
-    from fsm.api import build_fsm_router
     from knowledge.router import router as kb_router
     from thesis_docx.router import router as docx_router
 
-    app.include_router(build_fsm_router())
+    # fsm 动作路由（闸门/回退）：advance/hitl/rollback，不挂 tasks CRUD（application/tasks 已有）
+    from fsm.api import build_fsm_router
+
+    action = build_fsm_router(prefix="/api/v1")
+    # 只保留 advance/hitl/rollback/progress 动作路由；tasks CRUD 交给 application/tasks 与 console
+    for route in list(action.routes):
+        if route.path in ("/api/v1/tasks", "/api/v1/tasks/{task_id}", "/api/v1/tasks/{task_id}/route"):
+            action.routes.remove(route)
+    app.include_router(action)
     app.include_router(docx_router)
     app.include_router(kb_router)
 

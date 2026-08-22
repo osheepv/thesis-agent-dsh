@@ -3701,6 +3701,79 @@ function escapeHtml(s) {
   return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+/* ============================================================
+   消息流产物渲染（环执行结果 → 对话流追加消息卡）
+   ============================================================ */
+const RING_NAMES = {1:'选题',2:'开题评审',3:'文献调研',4:'综述评审',5:'大纲',6:'撰写',7:'润色',8:'引用校验',9:'排版',10:'定稿'};
+
+function appendUserMsg(text) {
+  const flow = document.getElementById('chat-flow');
+  const inner = flow.querySelector('.chat-inner');
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, '0');
+  const mm = String(now.getMinutes()).padStart(2, '0');
+  const msg = document.createElement('div');
+  msg.className = 'msg user';
+  msg.innerHTML = `<div class="bubble">${escapeHtml(text)}</div><div class="msg-meta"><span>${hh}:${mm}</span></div>`;
+  inner.appendChild(msg);
+  flow.scrollTop = flow.scrollHeight;
+  return msg;
+}
+
+function appendAIMsg(html, metaText) {
+  const flow = document.getElementById('chat-flow');
+  const inner = flow.querySelector('.chat-inner');
+  const msg = document.createElement('div');
+  msg.className = 'msg ai';
+  msg.innerHTML = `<div class="bubble">${html}</div>${metaText ? `<div class="msg-meta"><span>${metaText}</span></div>` : ''}`;
+  inner.appendChild(msg);
+  flow.scrollTop = flow.scrollHeight;
+  return msg;
+}
+
+function escapeHtml2(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// —— 环执行结果 → 消息卡 ——
+function renderRingResult(ringNo, data) {
+  const name = RING_NAMES[ringNo] || ('环' + ringNo);
+  if (ringNo === 1) {
+    // 选题：候选题目卡
+    const cands = (data && data.candidates) || [];
+    const rec = data && data.recommendation ? `<p style="color:var(--text-subtle);font-size:13px;">${escapeHtml2(data.recommendation)}</p>` : '';
+    appendAIMsg(`<p><strong>环1 选题完成</strong>，生成以下候选题目：</p>` +
+      cands.map((c, i) => `<p style="margin:6px 0;">${i+1}. <strong>${escapeHtml2(c.title)}</strong><br><span style="color:var(--text-subtle);font-size:13px;">创新点：${escapeHtml2(c.innovation)}</span></p>`).join('') + rec,
+      `${name} · 已完成`);
+  } else if (ringNo === 3) {
+    // 文献调研：文献卡
+    const items = (data && (data.items || [])) || [];
+    appendAIMsg(`<p><strong>环3 文献调研完成</strong>，检索到 <strong>${items.length}</strong> 篇文献：</p>` +
+      items.slice(0, 5).map(it => `<div class="ref-card" style="margin:8px 0;"><div class="ref-head"><div class="ref-title">${escapeHtml2(it.title)}</div><span class="badge ${it.reliability || 'matched'}">${escapeHtml2(it.reliability || 'matched')}</span></div><div class="ref-citation">${escapeHtml2(it.gbt7714 || '')}</div></div>`).join(''),
+      `${name} · 已完成`);
+  } else {
+    // 通用产物卡
+    const text = data && (data.summary || data.msg || JSON.stringify(data).slice(0, 300));
+    appendAIMsg(`<p><strong>环${ringNo} ${name} 完成</strong></p><p style="font-size:13px;color:var(--text-subtle);">${escapeHtml2(text)}</p>`, `${name} · 已完成`);
+  }
+}
+
+// —— 执行环 + 追加消息 ——
+async function runRingShow(taskId, ringNo, path) {
+  appendUserMsg(`执行环${ringNo}（${RING_NAMES[ringNo] || ''}）`);
+  const r = await apiRunRing(taskId, path);
+  if (r.code === 0) {
+    renderRingResult(ringNo, r.data);
+    toast(r.msg || `环${ringNo} 完成`);
+  } else {
+    appendAIMsg(`<p style="color:var(--error)">环${ringNo} 执行失败：${escapeHtml2(r.msg || '')}</p>`, '失败');
+  }
+  loadSessionDetail(taskId);
+  loadSessions();
+}
+
+
+
 /* —— Toast —— */
 let toastTimer = null;
 const toastEl = document.getElementById('toast');
@@ -4327,6 +4400,7 @@ async function loadSessions() {
 async function loadSessionDetail(taskId) {
   const prog = await apiSessionProgress(taskId);
   if (prog) renderStagesFromProgress(prog);
+  await loadKbPanel(taskId);
 }
 
 // —— 进度 → 阶段条（10 环状态）——
@@ -4379,10 +4453,7 @@ async function runCurrentRing() {
   const pathMap = { 1:'/rings/1/execute', 2:'/rings/2/review', 3:'/rings/3/execute', 4:'/rings/4/review', 5:'/rings/5/outline', 6:'/rings/6/chapter', 7:'/rings/7/polish', 8:'/rings/8/validate' };
   const path = pathMap[no];
   if (!path) { toast(`环${no} 暂不支持自动执行`); return; }
-  toast(`正在执行环 ${no} ...`);
-  const r = await apiRunRing(currentSession, path + '?session_id=default');
-  if (r.code === 0) { toast(r.msg || `环 ${no} 完成`); loadSessionDetail(currentSession); loadSessions(); }
-  else toast('执行失败: ' + (r.msg || ''));
+  await runRingShow(currentSession, no, path);
 }
 
 // —— 新建对话（“新建对话”按钮触发）——
@@ -4464,6 +4535,38 @@ const DEGREE_LABEL = { BACHELOR: '本科', MASTER: '硕士', PHD: '博士' };
 applyI18n();
 
 // —— 启动初始化：加载会话列表 + 绑定新建按钮 ——
+
+
+/* ============================================================
+   知识库面板（对接 /api/v1/kb/{session}/files）
+   ============================================================ */
+async function loadKbPanel(sessionId) {
+  const pane = document.querySelector('.kb-pane[data-pane="refs"]');
+  if (!pane) return;
+  const items = await apiKbList(sessionId || 'default');
+  const core = pane.querySelector('.kb-section-title');
+  const existing = pane.querySelectorAll('.ref-item');
+  existing.forEach(el => el.remove());
+  // 更新数量
+  const countSpan = pane.querySelector('.count');
+  if (countSpan) countSpan.textContent = items.length;
+  const body = items.map(doc => `
+    <div class="ref-item">
+      <div class="ref-item-title">${escapeHtml(doc.file_name || doc.metadata?.title || '文献')}</div>
+      <div class="ref-item-meta"><span class="badge verified" style="font-size:10px;padding:1px 6px;">✓</span><span>${escapeHtml((doc.metadata?.year || '') + ' ' + (doc.metadata?.authors || []).join(', '))}</span></div>
+      <div class="ref-item-actions">
+        <button class="icon-btn" onclick="toast('GB/T 7714 已复制')">复制 GB/T 7714</button>
+        <button class="icon-btn" onclick="toast('查看')">查看</button>
+      </div>
+    </div>`).join('');
+  if (items.length) {
+    pane.insertAdjacentHTML('beforeend', body);
+  } else {
+    pane.insertAdjacentHTML('beforeend', '<div class="no-kb" style="padding:12px;color:var(--text-subtle);font-size:12px;">暂无文献（可上传或从引导平台下载）</div>');
+  }
+}
+
+
 async function initApp() {
   await loadSessions();
   // 新建对话按钮（.new-chat-btn 或 sidebar 新建）

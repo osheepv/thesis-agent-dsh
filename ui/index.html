@@ -2720,7 +2720,7 @@ a:hover { text-decoration: underline; }
       <div class="kb-head">
         <div class="kb-head-title">
           <span class="dot"></span>
-          知识库 · 大模型对学术写作
+          <span id="kb-head-name">知识库</span>
         </div>
         <button class="nav-btn" id="close-kb" title="折叠">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
@@ -2737,57 +2737,14 @@ a:hover { text-decoration: underline; }
         <!-- 文献池 -->
         <div class="kb-pane active" data-pane="refs">
           <div class="kb-section-title">
-            <span>核心文献</span>
-            <span class="count">12</span>
+            <span>知识库文献</span>
+            <span class="count">0</span>
           </div>
-
-          <div class="ref-item">
-            <div class="ref-item-title">生成式AI对学术写作原创性的影响机制研究</div>
-            <div class="ref-item-meta">
-              <span class="badge verified" style="font-size:10px; padding:1px 6px;">✓</span>
-              <span>张明 · 2024</span>
-            </div>
-            <div class="ref-item-actions">
-              <button class="icon-btn">复制 GB/T 7714</button>
-              <button class="icon-btn">查看</button>
-            </div>
-          </div>
-
-          <div class="ref-item">
-            <div class="ref-item-title">LLMs and the erosion of academic originality</div>
-            <div class="ref-item-meta">
-              <span class="badge matched" style="font-size:10px; padding:1px 6px;">◈</span>
-              <span>Chen R · 2024</span>
-            </div>
-            <div class="ref-item-actions">
-              <button class="icon-btn">复制 GB/T 7714</button>
-              <button class="icon-btn">查看</button>
-            </div>
-          </div>
-
-          <div class="ref-item">
-            <div class="ref-item-title">AI辅助研究生写作的伦理边界</div>
-            <div class="ref-item-meta">
-              <span class="badge discovery" style="font-size:10px; padding:1px 6px;">○</span>
-              <span>王芳 · 2023</span>
-            </div>
-            <div class="ref-item-actions">
-              <button class="icon-btn">复制 GB/T 7714</button>
-              <button class="icon-btn">查看</button>
-            </div>
-          </div>
-
-          <div class="kb-section-title" style="margin-top:12px;">
-            <span>边缘文献</span>
-            <span class="count">5</span>
-          </div>
-          <div class="ref-item">
-            <div class="ref-item-title">某高校质性访谈：AI辅助写作边界</div>
-            <div class="ref-item-meta">
-              <span class="badge uncertain" style="font-size:10px; padding:1px 6px;">⚠</span>
-              <span>来源待核</span>
-            </div>
-          </div>
+          <label class="kb-upload-btn" style="display:block;margin:4px 0 8px;">
+            <input type="file" id="kb-file-input" accept=".pdf,.doc,.docx,.txt,.md,.ris,.bib" multiple style="display:none">
+            <span style="display:flex;align-items:center;gap:6px;padding:7px 10px;border:1px dashed var(--border-divider);border-radius:8px;font-size:12px;color:var(--text-subtle);cursor:pointer;">⬆ 上传文献（PDF / Word / 题录）</span>
+          </label>
+          <div id="kb-refs-empty" style="padding:12px;color:var(--text-subtle);font-size:12px;">暂无文献（可上传或从引导平台下载）</div>
         </div>
 
         <!-- 笔记 -->
@@ -3726,10 +3683,15 @@ function renderRingResult(ringNo, data) {
       });
     });
   } else if (ringNo === 3) {
-    // 文献调研：文献卡
+    // 文献调研：文献卡（跳转下载真链接 + 真复制 GB/T 7714）
     const items = (data && (data.items || [])) || [];
     appendAIMsg(`<p><strong>环3 文献调研完成</strong>，检索到 <strong>${items.length}</strong> 篇文献：</p>` +
-      items.map(it => `<div class="ref-card" style="margin:8px 0;"><div class="ref-head"><div class="ref-title">${escapeHtml2(it.title)}</div><span class="badge ${it.reliability || 'matched'}">${escapeHtml2(it.reliability || 'matched')}</span></div><div class="ref-citation">${escapeHtml2(it.gbt7714 || '')}</div><div class="ref-actions"><button class="link-btn" onclick="toast('跳转下载（引导层：用户自取）')">跳转下载</button><button class="icon-btn" onclick="toast('GB/T 7714 已复制')">复制 GB/T 7714</button></div></div>`).join(''),
+      items.map(it => {
+        const url = it.urls && it.urls[0] ? it.urls[0] : '';
+        const doiUrl = it.doi ? `https://doi.org/${encodeURIComponent(it.doi)}` : '';
+        const href = url || doiUrl || '';
+        return `<div class="ref-card" style="margin:8px 0;"><div class="ref-head"><div class="ref-title">${escapeHtml2(it.title)}</div><span class="badge ${it.reliability || 'matched'}">${escapeHtml2(it.reliability || 'matched')}</span></div><div class="ref-citation">${escapeHtml2(it.gbt7714 || '')}</div><div class="ref-actions">${href ? `<a class="link-btn" href="${escapeHtml2(href)}" target="_blank" rel="noopener">跳转下载</a>` : ''}<button class="icon-btn" onclick="copyText(${JSON.stringify(escapeHtml2(it.gbt7714 || ''))})">复制 GB/T 7714</button></div></div>`;
+      }).join(''),
       `${name} · 已完成`);
   } else if (ringNo === 2 || ringNo === 4) {
     // 评审卡（新颖度/综述评审）
@@ -3822,10 +3784,34 @@ async function runRingShow(taskId, ringNo, path) {
   } else {
     // 评审未通过：警告卡 + 回退/重新生成
     const fb = (r.data && r.data.fallbackTo) || (r.data && r.data.fallBackTo);
-    appendAIMsg(`<div class="warn-card" style="margin:8px 0;"><div class="warn-title">环${ringNo} 评审未通过</div><div style="font-size:13px;">${escapeHtml2(r.msg || '')}</div><div class="warn-actions"><button class="btn btn-primary btn-sm" onclick="runCurrentRing()">重新生成</button>${fb ? `<button class="btn btn-secondary btn-sm" onclick="toast('已回退到环${fb}（执行环${fb} 重跑）')">回退到环${fb}</button>` : ''}</div></div>`, '评审未通过');
+    appendAIMsg(`<div class="warn-card" style="margin:8px 0;"><div class="warn-title">环${ringNo} 评审未通过</div><div style="font-size:13px;">${escapeHtml2(r.msg || '')}</div><div class="warn-actions"><button class="btn btn-primary btn-sm" onclick="runCurrentRing()">重新生成</button>${fb ? `<button class="btn btn-secondary btn-sm" onclick="rollbackRing(${fb})">回退到环${fb}</button>` : ''}</div></div>`, '评审未通过');
   }
   loadSessionDetail(taskId);
   loadSessions();
+}
+
+/* —— 回退到目标环（调用 FSM rollback API，真生效） —— */
+async function rollbackRing(targetRingNo) {
+  if (!currentSession) return;
+  try {
+    const r = await apiPost(`/api/v1/tasks/${currentSession}/rollback`, {
+      target_ring_no: targetRingNo,
+      trace_id: currentSession,
+    });
+    if (r.code === 0) {
+      toast(`已回退到环${targetRingNo}`);
+      // 重新加载进度（阶段条 + 消息历史）以反映回退
+      const prog = await apiSessionProgress(currentSession);
+      if (prog) { renderStagesFromProgress(prog); updateRunBtn(prog); }
+      await loadSessionDetail(currentSession);
+      // 追加提示消息
+      appendAIMsg(`<p><strong>已回退到环${targetRingNo}</strong>（${RING_NAMES[targetRingNo] || ''}），可重新执行。</p>`, `回退 · 环${targetRingNo}`);
+    } else {
+      toast('回退失败: ' + (r.msg || ''));
+    }
+  } catch (e) {
+    toast('回退失败: ' + e.message);
+  }
 }
 
 
@@ -3842,38 +3828,36 @@ function toast(text) {
 
 /* —— ESC 关闭模态 —— */
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && delModal.classList.contains('show')) {
-    delModal.classList.remove('show');
-    pendingDelete = null;
+  if (e.key === 'Escape') {
+    if (delModal.classList.contains('show')) {
+      delModal.classList.remove('show');
+      pendingDelete = null;
+    }
+    const nsModal = document.getElementById('new-session-modal');
+    if (nsModal && nsModal.classList.contains('show')) nsModal.classList.remove('show');
   }
 });
 
-/* —— 新建对话 —— */
-document.getElementById('new-chat').addEventListener('click', () => {
-  toast('已创建新对话（含独立知识库）');
-});
+/* —— 新建对话由 initApp 统一绑定（handleNewSession） —— */
 
-/* —— 复制 GB/T 7714 —— */
-document.querySelectorAll('.icon-btn, .link-btn').forEach(b => {
-  if (b.textContent.includes('GB/T 7714') || b.textContent.includes('复制')) {
-    b.addEventListener('click', (e) => {
-      e.stopPropagation();
-      toast('已复制 GB/T 7714 引用到剪贴板');
-    });
+/* —— 复制文本到剪贴板（真复制，带回退） —— */
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('已复制到剪贴板');
+  } catch (e) {
+    // 非安全上下文（http://127.0.0.1 之外的本地文件）回退 execCommand
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); toast('已复制到剪贴板'); }
+    catch (e2) { toast('复制失败，请手动复制'); }
+    document.body.removeChild(ta);
   }
-});
-
-/* —— 文献收藏 —— */
-document.querySelectorAll('.icon-btn').forEach(b => {
-  if (b.textContent.includes('收藏')) {
-    b.addEventListener('click', (e) => {
-      e.stopPropagation();
-      b.textContent = '✓ 已收藏';
-      b.style.color = 'var(--claude)';
-      toast('已加入文献池');
-    });
-  }
-});
+}
 
 /* ============================================================
    i18n 国际化系统（中英双语）
@@ -4397,6 +4381,7 @@ document.addEventListener('keydown', (e) => {
    会话列表（对接后端 /api/v1/console/tasks）
    ============================================================ */
 let currentSession = null;
+let currentSessionTitle = '';
 
 function sessionItemHtml(s) {
   const degree = DEGREE_LABEL[s.degree] || s.degree || '';
@@ -4435,6 +4420,7 @@ async function loadSessions() {
       box.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
       item.classList.add('active');
       currentSession = item.dataset.task;
+      currentSessionTitle = item.querySelector('.session-title')?.textContent || '';
       loadSessionDetail(currentSession);
     });
     const del = item.querySelector('.session-delete');
@@ -4449,6 +4435,7 @@ async function loadSessions() {
   if (items.length && !currentSession) {
     box.querySelector('.session-item')?.classList.add('active');
     currentSession = items[0].task_id;
+    currentSessionTitle = items[0].title || '';
     loadSessionDetail(currentSession);
   }
 }
@@ -4668,6 +4655,10 @@ async function apiKbUpload(sessionId, file) {
   fd.append('file', file);
   fd.append('title', file.name.replace(/\.\w+$/, ''));
   const resp = await fetch(`${API_BASE}/api/v1/kb/${encodeURIComponent(sessionId)}/files`, { method: 'POST', body: fd });
+  return resp.json();
+}
+async function apiKbDelete(sessionId, fileId) {
+  const resp = await fetch(`${API_BASE}/api/v1/kb/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}`, { method: 'DELETE', headers: { 'Accept': 'application/json' } });
   return resp.json();
 }
 
@@ -4897,29 +4888,126 @@ function noteInsert(before, after) {
    知识库面板（对接 /api/v1/kb/{session}/files）
    ============================================================ */
 async function loadKbPanel(sessionId) {
+  const items = await apiKbList(sessionId || 'default');
+  // 头部标题 = 当前会话名
+  const headName = document.getElementById('kb-head-name');
+  if (headName) {
+    const title = currentSessionTitle || '';
+    headName.textContent = title ? `知识库 · ${title.slice(0, 18)}` : '知识库';
+  }
   const pane = document.querySelector('.kb-pane[data-pane="refs"]');
   if (!pane) return;
-  const items = await apiKbList(sessionId || 'default');
-  const core = pane.querySelector('.kb-section-title');
-  const existing = pane.querySelectorAll('.ref-item');
-  existing.forEach(el => el.remove());
-  // 更新数量
   const countSpan = pane.querySelector('.count');
   if (countSpan) countSpan.textContent = items.length;
-  const body = items.map(doc => `
-    <div class="ref-item">
-      <div class="ref-item-title">${escapeHtml(doc.file_name || doc.metadata?.title || '文献')}</div>
-      <div class="ref-item-meta"><span class="badge verified" style="font-size:10px;padding:1px 6px;">✓</span><span>${escapeHtml((doc.metadata?.year || '') + ' ' + (doc.metadata?.authors || []).join(', '))}</span></div>
-      <div class="ref-item-actions">
-        <button class="icon-btn" onclick="toast('GB/T 7714 已复制')">复制 GB/T 7714</button>
-        <button class="icon-btn" onclick="toast('查看')">查看</button>
-      </div>
-    </div>`).join('');
-  if (items.length) {
-    pane.insertAdjacentHTML('beforeend', body);
-  } else {
-    pane.insertAdjacentHTML('beforeend', '<div class="no-kb" style="padding:12px;color:var(--text-subtle);font-size:12px;">暂无文献（可上传或从引导平台下载）</div>');
+  const emptyEl = document.getElementById('kb-refs-empty');
+  // 清理旧列表（保留标题行与上传行）
+  pane.querySelectorAll('.ref-item,.ref-kb-none').forEach(el => el.remove());
+  if (!items.length) {
+    if (emptyEl) emptyEl.style.display = '';
+    // 同步侧栏统计
+    syncKbStats(0, 0);
+    return;
   }
+  if (emptyEl) emptyEl.style.display = 'none';
+  const body = items.map(doc => {
+    const meta = doc.metadata || {};
+    const year = meta.year || '';
+    const authors = (meta.authors || []).join(', ');
+    const gbt = formatGbtLocal(doc);
+    return `
+    <div class="ref-item" data-file-id="${escapeHtml(doc.file_id || '')}">
+      <div class="ref-item-title">${escapeHtml(meta.title || doc.file_name || '文献')}</div>
+      <div class="ref-item-meta"><span class="badge verified" style="font-size:10px;padding:1px 6px;">✓</span><span>${escapeHtml((year ? year + ' ' : '') + authors)}</span></div>
+      <div class="ref-item-actions">
+        <button class="icon-btn" onclick="kbCopyGbt(this)">复制 GB/T 7714</button>
+        <button class="icon-btn" onclick="kbDownload(this)">下载</button>
+        <button class="icon-btn" style="color:var(--error)" onclick="kbDelete(this)">删除</button>
+      </div>
+    </div>`;
+  }).join('');
+  pane.insertAdjacentHTML('beforeend', body);
+  // 侧栏统计（按 metadata.title 有无粗分类）
+  const withTitle = items.filter(d => d.metadata?.title).length;
+  syncKbStats(withTitle, items.length - withTitle);
+}
+
+/* —— 知识库统计（侧栏 核心/边缘） —— */
+function syncKbStats(core, edge) {
+  const els = document.querySelectorAll('.kb-stats .stat-num');
+  if (els.length >= 2) { els[0].textContent = core; els[1].textContent = edge; }
+}
+
+/* —— 本地 GB/T 7714 格式化（题录元数据；与后端 format_gbt7714 对齐） —— */
+function formatGbtLocal(doc) {
+  const meta = doc.metadata || {};
+  const authors = (meta.authors || []).join(', ');
+  const title = meta.title || doc.file_name || '';
+  const year = meta.year ? meta.year + '.' : '';
+  const venue = meta.venue ? meta.venue + '.' : '';
+  return `${authors}.${title}.${year}${venue}`;
+}
+
+/* —— 复制 GB/T 7714（真实剪贴板） —— */
+function kbCopyGbt(btn) {
+  const item = btn.closest('.ref-item');
+  const title = item?.querySelector('.ref-item-title')?.textContent || '';
+  const metaTxt = item?.querySelector('.ref-item-meta span:last-child')?.textContent || '';
+  copyText(title + '. ' + metaTxt);
+}
+
+/* —— 下载知识库文献 —— */
+async function kbDownload(btn) {
+  const item = btn.closest('.ref-item');
+  const fileId = item?.dataset.fileId;
+  const sid = currentSession || 'default';
+  if (!fileId) { toast('文件标识缺失'); return; }
+  const url = `${API_BASE}/api/v1/kb/${encodeURIComponent(sid)}/files/${encodeURIComponent(fileId)}`;
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) { toast('下载失败: HTTP ' + resp.status); return; }
+    const blob = await resp.blob();
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (item?.querySelector('.ref-item-title')?.textContent || 'document').slice(0, 80);
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) { toast('下载失败: ' + e.message); }
+}
+
+/* —— 删除知识库文献 —— */
+async function kbDelete(btn) {
+  const item = btn.closest('.ref-item');
+  const fileId = item?.dataset.fileId;
+  const sid = currentSession || 'default';
+  if (!fileId) { toast('文件标识缺失'); return; }
+  const r = await apiKbDelete(sid, fileId);
+  if (r.code === 0) {
+    toast('已删除');
+    await loadKbPanel(sid);
+    await renderGraph(sid);
+  } else toast('删除失败: ' + (r.msg || ''));
+}
+
+/* —— 上传知识库文件（多选） —— */
+async function kbUpload(files) {
+  const sid = currentSession || 'default';
+  if (!files || !files.length) return;
+  let ok = 0, fail = 0;
+  for (const f of files) {
+    const fd = new FormData();
+    fd.append('file', f);
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/kb/${encodeURIComponent(sid)}/files`, {
+        method: 'POST', headers: { 'Accept': 'application/json' }, body: fd,
+      });
+      const r = await resp.json();
+      if (r.code === 0) ok++; else fail++;
+    } catch (e) { fail++; }
+  }
+  toast(`上传完成：成功 ${ok} 个${fail ? '，失败 ' + fail : ''}`);
+  await loadKbPanel(sid);
+  await renderGraph(sid);
+  if (window.notesCache && window.notesCache.refs) window.notesCache.refs = null;
 }
 
 
@@ -4961,6 +5049,15 @@ async function initApp() {
   const runBtn = document.getElementById('run-cur-ring');
   if (runBtn && !runBtn.dataset.bound) { runBtn.dataset.bound = '1'; runBtn.addEventListener('click', runCurrentRing); }
   if (!document.getElementById('ns-confirm').dataset.bound) { document.getElementById('ns-confirm').dataset.bound = '1'; bindNewSessionModal(); }
+  // 上传知识库文献
+  const kbInput = document.getElementById('kb-file-input');
+  if (kbInput && !kbInput.dataset.bound) {
+    kbInput.dataset.bound = '1';
+    kbInput.addEventListener('change', (e) => {
+      if (e.target.files && e.target.files.length) kbUpload(e.target.files);
+      e.target.value = '';
+    });
+  }
 }
 initApp();
 

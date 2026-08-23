@@ -575,6 +575,59 @@ async def review_result_ledger(task_id: str, artifact_id: str, req: Dict[str, An
 
 
 # ---------------------------------------------------------------------
+# 持久化后台作业（长耗时环执行/分节生成/DOCX）
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/jobs", response_model=None)
+async def enqueue_job(task_id: str, req: Dict[str, Any], session_id: str = "",
+                      orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.enqueue_job(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/jobs", response_model=None)
+async def list_jobs(task_id: str, session_id: str = "", limit: int = 100,
+                    orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_jobs(task_id, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/jobs/{job_id}", response_model=None)
+async def get_job(task_id: str, job_id: str, session_id: str = "",
+                  orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.get_job(task_id, job_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/jobs/{job_id}/cancel", response_model=None)
+async def cancel_job(task_id: str, job_id: str, session_id: str = "",
+                     orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.cancel_job(task_id, job_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/jobs/{job_id}/retry", response_model=None)
+async def retry_job(task_id: str, job_id: str, session_id: str = "",
+                    orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.retry_job(task_id, job_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
 # 当前环产物确认（执行和推进分离）
 # ---------------------------------------------------------------------
 @router.post("/tasks/{task_id}/rings/{ring_no}/confirm", response_model=None)

@@ -65,6 +65,13 @@ from writing import (
     SectionDraftRegistryError,
     SectionDraftStatus,
 )
+from jobs import (
+    JobRegistry,
+    JobRegistryError,
+    PermanentJobError,
+    Pricing,
+    get_current_job_id,
+)
 
 from executor import ExecContext, get_executor
 from fsm.orchestrator import FsmOrchestrator
@@ -364,6 +371,8 @@ class MainOrchestration:
         store: 任务暂存（默认进程内实例）。
     """
 
+    _JOB_OPERATIONS = {"ring.execute", "section.generate", "docx.generate"}
+
     def __init__(
         self,
         fsm: Optional[FsmOrchestrator] = None,
@@ -374,6 +383,7 @@ class MainOrchestration:
         research_registry: Optional[ResearchExecutionRegistry] = None,
         section_registry: Optional[SectionDraftRegistry] = None,
         section_generator: Optional[SectionDraftGenerator] = None,
+        job_registry: Optional[JobRegistry] = None,
     ) -> None:
         self._fsm = fsm or FsmOrchestrator(InMemoryFsmRepository())
         self._docx = docx_renderer or RealDocxRenderer()
@@ -420,6 +430,16 @@ class MainOrchestration:
                 section_registry = SectionDraftRegistry(section_path)
         self._sections = section_registry
         self._section_generator = section_generator or SectionDraftGenerator()
+        if job_registry is None:
+            if os.getenv("THESIS_TASK_STORE_MEMORY", "").lower() == "true":
+                job_registry = JobRegistry()
+            else:
+                job_path = os.getenv(
+                    "THESIS_JOB_DB",
+                    os.path.join(os.path.dirname(_TaskStore._default_path()), "jobs.db"),
+                )
+                job_registry = JobRegistry(job_path)
+        self._jobs = job_registry
 
     def delete_task(self, task_id: str) -> Result[Dict[str, Any]]:
         """删除会话（连带知识库）。"""
@@ -431,6 +451,7 @@ class MainOrchestration:
         self._evidence.delete_task(task_id)
         self._research.delete_task(task_id)
         self._sections.delete_task(task_id)
+        self._jobs.delete_task(task_id)
         try:
             self._fsm.delete_task(task_id)
         except Exception:  # noqa: BLE001 - FSM 无该任务不阻塞
@@ -492,6 +513,138 @@ class MainOrchestration:
                 "created_at": "",
             })
         return Result.ok(data=items, msg="会话列表")
+
+    # ------------------------------------------------------------------
+    # 持久化后台作业与预算
+    # ------------------------------------------------------------------
+    def enqueue_job(self, task_id: str, value: Dict[str, Any]) -> Result[Dict[str, Any]]:
+        rec = self._require(task_id)
+        operation = str(value.get("operation", "")).strip()
+        if operation not in self._JOB_OPERATIONS:
+            raise JobRegistryError(f"不支持的后台作业 operation: {operation}")
+        cost_budget = float(value.get("cost_budget", 0) or 0)
+        pricing = Pricing.from_env()
+        if cost_budget > 0 and (
+            pricing.input_per_million <= 0 or pricing.output_per_million <= 0
+        ):
+            raise JobRegistryError(
+                "设置费用预算前必须配置 THESIS_LLM_INPUT_COST_PER_MILLION 和 "
+                "THESIS_LLM_OUTPUT_COST_PER_MILLION"
+            )
+        job = self._jobs.create(
+            task_id=task_id,
+            session_id=rec.session_id,
+            operation=operation,
+            payload=dict(value.get("payload", {}) or {}),
+            idempotency_key=str(value.get("idempotency_key", "")),
+            max_attempts=int(value.get("max_attempts", 3) or 3),
+            priority=int(value.get("priority", 0) or 0),
+            token_budget=int(value.get("token_budget", 0) or 0),
+            cost_budget=cost_budget,
+        )
+        return Result.ok(data=job.to_dict(), msg="后台作业已入队")
+
+    def list_jobs(self, task_id: str, limit: int = 100) -> Result[List[Dict[str, Any]]]:
+        self._require(task_id)
+        return Result.ok(
+            data=[job.to_dict() for job in self._jobs.list_task(task_id, limit=limit)],
+            msg="后台作业列表",
+        )
+
+    def get_job(self, task_id: str, job_id: str) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        return Result.ok(data=self._jobs.get(task_id, job_id).to_dict(), msg="后台作业详情")
+
+    def cancel_job(self, task_id: str, job_id: str) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        job = self._jobs.request_cancel(task_id, job_id)
+        return Result.ok(data=job.to_dict(), msg="取消请求已记录")
+
+    def retry_job(self, task_id: str, job_id: str) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        job = self._jobs.retry(task_id, job_id)
+        return Result.ok(data=job.to_dict(), msg="后台作业已重新入队")
+
+    def job_handlers(self) -> Dict[str, Any]:
+        return {
+            "ring.execute": self._job_execute_ring,
+            "section.generate": self._job_generate_section,
+            "docx.generate": self._job_generate_docx,
+        }
+
+    def _job_execute_ring(self, job) -> Dict[str, Any]:
+        ring_no = int(job.payload.get("ring_no", 0) or 0)
+        runners = {
+            1: self.run_ring1,
+            2: self.run_ring2,
+            3: self.run_ring3,
+            4: self.run_ring4,
+            5: self.run_ring5,
+            6: self.run_ring6,
+            7: self.run_ring7,
+            8: self.run_ring8,
+            9: self.run_ring9,
+            10: self.run_ring10,
+        }
+        if ring_no not in runners:
+            raise PermanentJobError("ring_no 必须在 1..10")
+        rec = self._require(job.task_id)
+        state = self._fsm.get_task(job.task_id)
+        existing = getattr(rec, f"ring{ring_no}", None)
+        if existing is not None and (
+            state.current_ring_no > ring_no
+            or (
+                state.current_ring_no == ring_no
+                and state.phase_state == PhaseState.WAITING_APPROVAL
+            )
+            or state.phase_state == PhaseState.PASSED
+        ):
+            return {
+                "code": 0,
+                "msg": "作业重放时发现环产物已落库，已幂等恢复",
+                "data": existing,
+                "recovered": True,
+            }
+        result = runners[ring_no](job.task_id)
+        if not result.is_ok:
+            raise PermanentJobError(result.msg)
+        rec = self._require(job.task_id)
+        payload = getattr(rec, f"ring{ring_no}", None)
+        if isinstance(payload, dict):
+            payload["_job_id"] = job.job_id
+            self._store.put(rec)
+        return result.model_dump()
+
+    def _job_generate_section(self, job) -> Dict[str, Any]:
+        for draft in self._sections.list_task(job.task_id):
+            if draft.context_manifest.get("job_id") == job.job_id:
+                return {
+                    "code": 0,
+                    "msg": "作业重放时发现分节版本已落库，已幂等恢复",
+                    "data": draft.to_dict(),
+                    "recovered": True,
+                }
+        result = self.generate_section_draft(job.task_id, dict(job.payload))
+        if not result.is_ok:
+            raise PermanentJobError(result.msg)
+        return result.model_dump()
+
+    def _job_generate_docx(self, job) -> Dict[str, Any]:
+        rec = self._require(job.task_id)
+        if rec.docx:
+            return {
+                "code": 0,
+                "msg": "作业重放时发现 DOCX 已生成，已幂等恢复",
+                "data": rec.docx,
+                "recovered": True,
+            }
+        result = self.generate_docx(
+            job.task_id,
+            template_id=str(job.payload.get("template_id", "")) or None,
+        )
+        if not result.is_ok:
+            raise PermanentJobError(result.msg)
+        return result.model_dump()
 
     def create_task(self, title: str, degree: Degree, subject_field: str,
                     template_id: Optional[str] = None, session_id: str = "",
@@ -1366,11 +1519,24 @@ class MainOrchestration:
                 if outline is None:
                     raise ResearchRegistryError("环6产物缺少有效大纲依赖")
                 dependency_ids = (outline.artifact_id, result_ledger.artifact_id)
+        job_id = str(payload.get("_job_id", "")) if isinstance(payload, dict) else ""
+        job_usage = None
+        if job_id:
+            try:
+                job_usage = self._jobs.get(task_id, job_id)
+            except JobRegistryError:
+                job_usage = None
         context_manifest = ContextManifest(
             prompt_id=f"ring{ring_no}",
             prompt_version="legacy-v1",
             model=str(payload.get("source", "")) if isinstance(payload, dict) else "",
             input_artifact_ids=dependency_ids,
+            job_id=job_id,
+            token_budget=job_usage.token_budget if job_usage else 0,
+            input_tokens=job_usage.input_tokens if job_usage else 0,
+            output_tokens=job_usage.output_tokens if job_usage else 0,
+            cost_budget=job_usage.cost_budget if job_usage else 0.0,
+            cost_used=job_usage.cost_used if job_usage else 0.0,
         )
         artifact_event = {
             "event_id": event_id,
@@ -1451,6 +1617,7 @@ class MainOrchestration:
                     "payload": artifact.payload,
                     "content_hash": artifact.content_hash,
                     "dependency_ids": list(artifact.dependency_ids),
+                    "context_manifest": artifact.context_manifest.to_dict(),
                     "stale_reason": artifact.stale_reason,
                     "source_event_id": artifact.source_event_id,
                     "created_at": artifact.created_at,
@@ -1715,12 +1882,21 @@ class MainOrchestration:
                     f"结果 {result_id} 缺少原生交叉引用目标 BOOKMARK:{target}"
                 )
 
+        current_job_id = get_current_job_id()
+        current_job = self._jobs.get(task_id, current_job_id) if current_job_id else None
         manifest = ContextManifest(
             prompt_id="section_draft",
             prompt_version="v1",
             input_artifact_ids=tuple(upstream),
             evidence_ids=tuple(sorted(used_evidence_ids)),
+            job_id=current_job_id,
+            token_budget=current_job.token_budget if current_job else 0,
+            input_tokens=current_job.input_tokens if current_job else 0,
+            output_tokens=current_job.output_tokens if current_job else 0,
+            cost_budget=current_job.cost_budget if current_job else 0.0,
+            cost_used=current_job.cost_used if current_job else 0.0,
         )
+        manifest_data = manifest.to_dict()
         draft = self._sections.create_version(
             task_id=task_id,
             section_id=section_id,
@@ -1730,7 +1906,7 @@ class MainOrchestration:
             evidence_ids=tuple(sorted(used_evidence_ids)),
             result_ids=tuple(sorted(used_result_ids)),
             upstream_artifact_ids=tuple(upstream),
-            context_manifest=manifest.to_dict(),
+            context_manifest=manifest_data,
         )
         draft = self._sections.submit_auto_gate(
             task_id,

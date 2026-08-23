@@ -26,13 +26,14 @@
 - 环6支持按节最小上下文生成、独立版本、自动验收、逐节审批和完整性汇编；上游失效会使相关分节过期。
 - 新分节链路的环8会审计正文证据/结果标记，生成稳定引文编号、GB/T 7714参考文献和结果交叉引用清单。
 - DOCX 生成器会把明确的 `BOOKMARK/REF` 标记转换为 Word 原生书签与 `REF` 域，并在交付前验证目标完整性；内置模板已修复为严格 OOXML 校验通过。
+- 长耗时环执行、分节生成和 DOCX 生成可进入持久化 JobRun；支持幂等入队、Worker 租约/心跳、崩溃恢复、协作取消、失败重试及 Token/费用预算。
 - 前端支持十环进度、执行状态、人工确认闸门及刷新后的闸门恢复。
 - `demo_run.py` 提供最小严格流程冒烟；`demo_full_10.py` 按真实闸门协议运行，任一环失败即停止。
 
 当前关键缺口：
 
-- 可视化分节编辑/版本差异、后台可恢复作业、Token/费用预算和生产级权限仍待完成。
-- UI 仍是单文件原型；后台作业、取消恢复、桌面打包与生产级权限尚未完成。
+- 可视化分节编辑/版本差异、生产级独立 Worker 部署、身份权限和系统化模型评测仍待完成。
+- UI 仍是单文件原型；桌面打包、独立 Worker 运维和生产级权限尚未完成。
 - 现有后端已具备分节版本与逐节审批，但前端尚未把证据侧栏、论证图和实验工作台完整呈现出来。
 
 ## 模块映射（对齐系统设计 M1~M9 落地状态）
@@ -47,6 +48,7 @@
 | M7 | 查重 | — | 预留（OOS：只提醒人工自建查重） |
 | M8 | Guardrail | `backend/common/`、`backend/evidence/`、`backend/research/` | ✅ 来源/摘录/论断、结果血缘、环8强制审计和 DOCX 域验证 |
 | M9 | 知识库 | `backend/knowledge/` | ✅ 已实现（文件池/笔记双链/图谱 API + RAG 检索） |
+| 执行治理 | JobRun/预算 | `backend/jobs/` | ✅ 持久化队列、租约恢复、取消重试、Token/费用登记 |
 | 公共 | 公共模块 | `backend/common/` | ✅ 已实现（LLM 客户端 / 文献服务 / 引用格式化 / 提示词仓库） |
 
 ## 环境准备
@@ -82,7 +84,7 @@ python -m http.server 8787
 
 ## 运行测试
 
-当前回归基线：**168 项 pytest 全部通过**。
+当前回归基线：**176 项 pytest 全部通过**。
 
 ```bash
 # 项目根执行（conftest 自动注入路径）
@@ -114,7 +116,9 @@ Cytoscape.js 3.30.2（知识图谱）· pytest 8.3.5
 `THESIS_DEEPSEEK_API_KEY` / `THESIS_DEEPSEEK_FALLBACK_TO_MOCK` / `THESIS_DB_URL` / `THESIS_LIT_ENABLED` / `THESIS_LIT_SCOPE` /
 `THESIS_METASO_ENABLED`（默认 false，省钱）/ `THESIS_RAG_ENABLED` / `THESIS_CORS_ORIGINS` /
 `THESIS_TASK_STORE_MEMORY`（测试用）/ `THESIS_ARTIFACT_DB` / `THESIS_EVIDENCE_DB` /
-`THESIS_RESEARCH_DB` / `THESIS_SECTION_DB`。
+`THESIS_RESEARCH_DB` / `THESIS_SECTION_DB` / `THESIS_JOB_DB` /
+`THESIS_JOB_WORKER_ENABLED` / `THESIS_LLM_INPUT_COST_PER_MILLION` /
+`THESIS_LLM_OUTPUT_COST_PER_MILLION`。
 
 ## API 示例
 

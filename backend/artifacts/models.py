@@ -59,6 +59,9 @@ class ContextManifest:
     input_tokens: int = 0
     output_tokens: int = 0
     retrieval_query_hash: str = ""
+    job_id: str = ""
+    cost_budget: float = 0.0
+    cost_used: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -76,6 +79,9 @@ class ContextManifest:
             input_tokens=int(value.get("input_tokens", 0) or 0),
             output_tokens=int(value.get("output_tokens", 0) or 0),
             retrieval_query_hash=str(value.get("retrieval_query_hash", "")),
+            job_id=str(value.get("job_id", "")),
+            cost_budget=float(value.get("cost_budget", 0) or 0),
+            cost_used=float(value.get("cost_used", 0) or 0),
         )
 
 

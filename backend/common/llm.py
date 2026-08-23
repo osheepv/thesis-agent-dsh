@@ -136,18 +136,22 @@ class LLMClient:
             try:
                 text = self._chat(system=system, prompt=prompt, temperature=temperature)
                 return self._parse_json(text, model_cls)
-            except StructuredOutputError as exc:
-                last_err = exc
-                # 结构化失败可重试（改温度或重发）；网络类由 _chat 内部重试
-                if attempt < retry_n:
-                    logger.warning("LLM 结构化解析失败第 %s 次: %s", attempt + 1, exc)
-                    continue
-            except LLMError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-                if attempt < retry_n:
-                    continue
+            except Exception as exc:  # cooperative cancellation/budget must not be retried
+                from jobs.registry import JobBudgetExceededError, JobCancelledError
+
+                if isinstance(exc, (JobBudgetExceededError, JobCancelledError)):
+                    raise
+                if isinstance(exc, StructuredOutputError):
+                    last_err = exc
+                    if attempt < retry_n:
+                        logger.warning("LLM 结构化解析失败第 %s 次: %s", attempt + 1, exc)
+                        continue
+                elif isinstance(exc, LLMError):
+                    raise
+                else:
+                    last_err = exc
+                    if attempt < retry_n:
+                        continue
         raise StructuredOutputError(f"LLM 返回多次无法解析: {last_err}")
 
     # ------------------------------------------------------------------
@@ -155,6 +159,14 @@ class LLMClient:
     # ------------------------------------------------------------------
     def _chat(self, system: str, prompt: str, temperature: float) -> str:
         """单次 chat 调用（带网络层重试）。"""
+        from jobs.runtime import get_current_job_runtime
+        from jobs.registry import JobBudgetExceededError, JobCancelledError
+
+        runtime = get_current_job_runtime()
+        estimated_input_tokens = max(1, (len(system) + len(prompt) + 3) // 4)
+        max_output_tokens = 4096
+        if runtime is not None:
+            runtime.before_llm(estimated_input_tokens, max_output_tokens)
         if self._client is None:
             from openai import OpenAI
 
@@ -176,12 +188,24 @@ class LLMClient:
                     ],
                     response_format={"type": "json_object"},
                     temperature=temperature,
-                    max_tokens=4096,
+                    max_tokens=max_output_tokens,
                 )
                 content = resp.choices[0].message.content
                 if not content:
                     raise LLMError("LLM 返回空内容")
+                if runtime is not None:
+                    usage = getattr(resp, "usage", None)
+                    input_tokens = int(
+                        getattr(usage, "prompt_tokens", 0) or estimated_input_tokens
+                    )
+                    output_tokens = int(
+                        getattr(usage, "completion_tokens", 0)
+                        or max(1, (len(content) + 3) // 4)
+                    )
+                    runtime.record_llm_usage(input_tokens, output_tokens)
                 return content
+            except (JobBudgetExceededError, JobCancelledError):
+                raise
             except Exception as exc:  # noqa: BLE001
                 last_exc = exc
                 logger.warning("LLM 调用失败（重试前）: %s", exc)

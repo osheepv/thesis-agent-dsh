@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, Request
@@ -37,6 +38,7 @@ from .health import router as health_router
 from .service.uc_main_orchestration import MainOrchestration
 from .tasks import router as tasks_router
 from thesis_docx.service import DocxService
+from jobs import JobWorker
 
 logger = logging.getLogger("thesis.application")
 
@@ -79,10 +81,28 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
     Returns:
         FastAPI app。
     """
+    orchestration = orchestration or _default_orchestration()
+    job_worker = JobWorker(
+        orchestration._jobs,  # noqa: SLF001 - 应用生命周期托管同一持久化注册表
+        orchestration.job_handlers(),
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        if os.getenv("THESIS_JOB_WORKER_ENABLED", "true").lower() not in (
+            "0", "false", "no"
+        ):
+            job_worker.start()
+        try:
+            yield
+        finally:
+            job_worker.stop()
+
     app = FastAPI(
         title="thesis-agent-dsh",
         description="基于 DSH 的学位论文全流程写作 Agent（一期最小可运行闭环）",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     # CORS（本地 UI 预览：http://localhost:8787 等前端端口）
@@ -125,10 +145,10 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
     app.include_router(tasks_router)
 
     # 应用级编排单例
-    orchestration = orchestration or _default_orchestration()
     app.state.orchestration = orchestration
     # docx 业务路由（/api/v1/docx/files 等）与 console 链路共享同一服务/仓储
     app.state.docx_service = getattr(orchestration, "_docx_service", None) or DocxService()
+    app.state.job_worker = job_worker
 
     # 异常处理器
     _register_exception_handlers(app)

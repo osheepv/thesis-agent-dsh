@@ -222,3 +222,34 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/console/tasks/TASK_ID/rings/1/confi
 结果对象应使用 `[[BOOKMARK:TABLE-4-1|表4-1 实验结果]]` 定义目标；正文使用
 `[[REF:TABLE-4-1|表4-1]]` 引用。环8和 DOCX 生成器会分别检查业务血缘与 OOXML 域，
 生成响应中的 `cross_references` 返回书签数量、REF 数量、目标映射及未解决项。
+
+## 12. 后台作业 API
+
+长耗时操作可以入队：
+
+```http
+POST /api/v1/console/tasks/{task_id}/jobs
+Content-Type: application/json
+
+{
+  "operation": "ring.execute",
+  "payload": {"ring_no": 3},
+  "idempotency_key": "ring-3-corpus-v1",
+  "max_attempts": 3,
+  "token_budget": 20000,
+  "cost_budget": 1.5
+}
+```
+
+支持的 `operation`：`ring.execute`、`section.generate`、`docx.generate`。
+
+| 动作 | 方法与路径 |
+|---|---|
+| 入队 | `POST /jobs` |
+| 作业列表 | `GET /jobs` |
+| 作业详情/预算用量 | `GET /jobs/{job_id}` |
+| 协作取消 | `POST /jobs/{job_id}/cancel` |
+| 人工重新入队 | `POST /jobs/{job_id}/retry` |
+
+只有配置当前模型的每百万输入/输出 Token 单价后，API 才接受 `cost_budget`；
+`token_budget=0` 或 `cost_budget=0` 表示该维度不限制。

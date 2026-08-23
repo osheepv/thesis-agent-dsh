@@ -174,3 +174,18 @@ class TestKnowledgeStore:
         store = KnowledgeStore(root=tmp_path / "kb")
         p = store.session_path("sess-x")
         assert os.path.isdir(p)
+
+    def test_experiment_files_and_size_limit(self, tmp_path, monkeypatch):
+        from backend.knowledge import store as store_module
+
+        store = store_module.KnowledgeStore(root=tmp_path / "kb")
+        rec = store.save_document(
+            "experiment",
+            "raw-data.csv",
+            b"metric,value\naccuracy,0.93\n",
+            metadata={"kind": "raw_data"},
+        )
+        assert rec["metadata"]["kind"] == "raw_data"
+        monkeypatch.setattr(store_module, "_MAX_FILE_SIZE", 4)
+        with pytest.raises(ValueError, match="大小上限"):
+            store.save_document("experiment", "too-large.log", b"12345")

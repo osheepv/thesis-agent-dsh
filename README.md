@@ -28,11 +28,12 @@
 - DOCX 生成器会把明确的 `BOOKMARK/REF` 标记转换为 Word 原生书签与 `REF` 域，并在交付前验证目标完整性；内置模板已修复为严格 OOXML 校验通过。
 - 长耗时环执行、分节生成和 DOCX 生成可进入持久化 JobRun；支持幂等入队、Worker 租约/心跳、崩溃恢复、协作取消、失败重试及 Token/费用预算。
 - 前端支持十环进度、人工确认闸门、后台作业与预算、证据/论证审计、分节生成/修订/审批，以及刷新后的状态恢复。
+- 研究工作台可视化创建并审批研究协议/论证图，上传实验材料、原始数据、代码和日志，推进实验状态、登记/核验结果及批准结果账本。
 - `demo_run.py` 提供最小严格流程冒烟；`demo_full_10.py` 按真实闸门协议运行，任一环失败即停止。
 
 当前关键缺口：
 
-- 分节双栏版本差异、研究协议/论证图可视化构建器和实验材料上传向导仍待完成。
+- 分节双栏版本差异、结构化表格/图片编辑器和学校模板映射向导仍待完成。
 - UI 仍是单文件原型；桌面打包、独立 Worker 运维和生产级权限尚未完成。
 - 需要补充系统化模型评测、提示词回归和真实长论文压力测试。
 
@@ -84,7 +85,7 @@ python -m http.server 8787
 
 ## 运行测试
 
-当前回归基线：**179 项 pytest 全部通过**。
+当前回归基线：**180 项 pytest 全部通过**。
 
 ```bash
 # 项目根执行（conftest 自动注入路径）
@@ -118,7 +119,7 @@ Cytoscape.js 3.30.2（知识图谱）· pytest 8.3.5
 `THESIS_TASK_STORE_MEMORY`（测试用）/ `THESIS_ARTIFACT_DB` / `THESIS_EVIDENCE_DB` /
 `THESIS_RESEARCH_DB` / `THESIS_SECTION_DB` / `THESIS_JOB_DB` /
 `THESIS_JOB_WORKER_ENABLED` / `THESIS_LLM_INPUT_COST_PER_MILLION` /
-`THESIS_LLM_OUTPUT_COST_PER_MILLION`。
+`THESIS_LLM_OUTPUT_COST_PER_MILLION` / `THESIS_KB_MAX_FILE_MB`。
 
 ## API 示例
 

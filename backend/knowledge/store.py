@@ -31,7 +31,15 @@ logger = logging.getLogger("thesis.kb")
 _KB_ROOT = Path(os.getenv("THESIS_KB_ROOT", str(Path(__file__).resolve().parent.parent / "storage" / "kb")))
 
 #: 允许的知识库文件类型
-_ALLOWED_EXTS: set[str] = {".pdf", ".doc", ".docx", ".txt", ".md", ".ris", ".bib"}
+_ALLOWED_EXTS: set[str] = {
+    ".pdf", ".doc", ".docx", ".txt", ".md", ".ris", ".bib",
+    ".csv", ".tsv", ".xlsx", ".xls", ".json", ".jsonl",
+    ".py", ".r", ".m", ".ipynb", ".log", ".zip",
+    ".sav", ".dta", ".rds", ".mat",
+    ".png", ".jpg", ".jpeg", ".svg",
+}
+_MAX_FILE_SIZE = int(os.getenv("THESIS_KB_MAX_FILE_MB", "100")) * 1024 * 1024
+MAX_FILE_SIZE_BYTES = _MAX_FILE_SIZE
 
 
 def _session_dir(session_id: str) -> Path:
@@ -67,9 +75,14 @@ class KnowledgeStore:
         ext = Path(file_name).suffix.lower()
         if ext not in _ALLOWED_EXTS:
             raise ValueError(f"不支持的文件类型 {ext}（仅 {', '.join(sorted(_ALLOWED_EXTS))}）")
+        if len(content) > _MAX_FILE_SIZE:
+            raise ValueError(
+                f"文件超过知识库大小上限 {int(_MAX_FILE_SIZE / 1024 / 1024)} MB"
+            )
 
         # 重命名落盘（uuid 防覆盖）
-        safe_name = f"{uuid.uuid4().hex[:12]}_{re.sub(r'[^A-Za-z0-9._\\-]', '_', file_name)}"
+        sanitized_name = re.sub(r"[^A-Za-z0-9._-]", "_", file_name)
+        safe_name = f"{uuid.uuid4().hex[:12]}_{sanitized_name}"
         target = files_dir / safe_name
         target.write_bytes(content)
 

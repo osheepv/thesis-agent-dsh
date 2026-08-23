@@ -206,6 +206,10 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/console/tasks/TASK_ID/rings/1/confi
 实证类标准顺序是：环5创建并批准协议 → 确认环5 → 创建运行 → 材料就绪 → 运行中 →
 完成并提交真实性确认 → 登记并核验结果 → 生成并批准结果账本 → 执行环6。
 
+实验文件先上传到 `/api/v1/kb/{session_id}/files`，multipart 字段 `kind` 可取
+`material`、`raw_data`、`code`、`log`、`figure` 或 `other`。实验运行和结果记录
+只能引用当前论文任务知识库中仍然存在的 `file_id`。
+
 ## 11. 分节写作 API
 
 | 动作 | 方法与路径 |

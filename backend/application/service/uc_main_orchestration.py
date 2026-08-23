@@ -384,6 +384,7 @@ class MainOrchestration:
         section_registry: Optional[SectionDraftRegistry] = None,
         section_generator: Optional[SectionDraftGenerator] = None,
         job_registry: Optional[JobRegistry] = None,
+        knowledge_store: Any = None,
     ) -> None:
         self._fsm = fsm or FsmOrchestrator(InMemoryFsmRepository())
         self._docx = docx_renderer or RealDocxRenderer()
@@ -440,6 +441,7 @@ class MainOrchestration:
                 )
                 job_registry = JobRegistry(job_path)
         self._jobs = job_registry
+        self._knowledge_store = knowledge_store
 
     def delete_task(self, task_id: str) -> Result[Dict[str, Any]]:
         """删除会话（连带知识库）。"""
@@ -2355,12 +2357,21 @@ class MainOrchestration:
     def update_experiment_run(
         self, task_id: str, run_id: str, value: Dict[str, Any]
     ) -> Result[Dict[str, Any]]:
-        self._require(task_id)
+        rec = self._require(task_id)
         status_value = str(value.get("status", ""))
         try:
             status = ExperimentStatus(status_value)
         except ValueError as exc:
             raise ResearchRegistryError(f"非法实验状态: {status_value}") from exc
+        submitted_file_ids = {
+            str(file_id)
+            for key in (
+                "material_file_ids", "raw_data_file_ids", "code_file_ids", "log_file_ids"
+            )
+            for file_id in (value.get(key) or [])
+            if str(file_id)
+        }
+        self._validate_knowledge_file_ids(rec, submitted_file_ids)
         run = self._research.update_run(
             task_id=task_id,
             run_id=run_id,
@@ -2384,13 +2395,15 @@ class MainOrchestration:
     def add_result_record(
         self, task_id: str, run_id: str, value: Dict[str, Any]
     ) -> Result[Dict[str, Any]]:
-        self._require(task_id)
+        rec = self._require(task_id)
+        source_file_id = str(value.get("source_file_id", ""))
+        self._validate_knowledge_file_ids(rec, {source_file_id} if source_file_id else set())
         result = self._research.add_result(
             task_id=task_id,
             run_id=run_id,
             metric=str(value.get("metric", "")),
             value=str(value.get("value", "")),
-            source_file_id=str(value.get("source_file_id", "")),
+            source_file_id=source_file_id,
             computation=str(value.get("computation", "")),
             unit=str(value.get("unit", "")),
             table_or_figure_id=str(value.get("table_or_figure_id", "")),
@@ -2417,7 +2430,7 @@ class MainOrchestration:
         )
 
     def audit_research(self, task_id: str) -> Result[Dict[str, Any]]:
-        self._require(task_id)
+        rec = self._require(task_id)
         protocol = self._active_research_protocol(task_id)
         if protocol is None:
             return Result.ok(
@@ -2437,15 +2450,57 @@ class MainOrchestration:
             blockers.append("缺少用户确认完成的实验/研究运行")
         if requires_execution and data["verified_result_count"] == 0:
             blockers.append("缺少经用户核验、可追溯到原始文件的结果记录")
+        referenced_file_ids = {
+            str(file_id)
+            for run in data.get("runs", [])
+            for key in (
+                "material_file_ids", "raw_data_file_ids", "code_file_ids", "log_file_ids"
+            )
+            for file_id in (run.get(key, []) or [])
+        }
+        referenced_file_ids.update(
+            str(result.get("source_file_id", ""))
+            for result in data.get("results", [])
+            if str(result.get("source_file_id", ""))
+        )
+        missing_file_ids = sorted(
+            referenced_file_ids - self._available_knowledge_file_ids(rec)
+        )
+        if missing_file_ids:
+            blockers.append(f"实验/结果引用的知识库文件已缺失: {missing_file_ids}")
         data.update(
             {
                 "method": str(protocol.payload.get("method", "")),
                 "requires_execution": requires_execution,
                 "can_write_results": not blockers,
                 "blocking_items": blockers,
+                "missing_file_ids": missing_file_ids,
             }
         )
         return Result.ok(data=data, msg="研究实施审计完成")
+
+    def _available_knowledge_file_ids(self, rec: TaskRecord) -> set[str]:
+        store = self._knowledge_store
+        if store is None:
+            from knowledge.store import get_kb_store
+
+            store = get_kb_store()
+        return {
+            str(item.get("file_id", ""))
+            for item in store.list_documents(rec.session_id)
+            if str(item.get("file_id", ""))
+        }
+
+    def _validate_knowledge_file_ids(
+        self, rec: TaskRecord, file_ids: set[str]
+    ) -> None:
+        if not file_ids:
+            return
+        missing = sorted(file_ids - self._available_knowledge_file_ids(rec))
+        if missing:
+            raise ResearchRegistryError(
+                f"实验文件不属于当前任务知识库或已被删除: {missing}"
+            )
 
     def create_result_ledger(self, task_id: str) -> Result[Dict[str, Any]]:
         self._require(task_id)

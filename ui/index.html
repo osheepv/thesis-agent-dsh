@@ -2662,6 +2662,43 @@ a:hover { text-decoration: underline; }
   font-size: 16px;
   padding: 8px;
 }
+.wb-field select, .wb-field textarea {
+  width: 100%;
+  border: 1px solid var(--border-divider);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 16px;
+  padding: 8px;
+}
+.wb-field textarea { min-height: 76px; resize: vertical; line-height: 1.5; }
+.wb-form { display: grid; gap: 10px; margin-top: 10px; }
+.wb-form-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.claim-builder-row {
+  display: grid;
+  grid-template-columns: minmax(70px, .7fr) minmax(70px, .7fr) minmax(0, 1fr);
+  gap: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border-divider);
+  border-radius: 8px;
+}
+.claim-builder-row .claim-text, .claim-builder-row .claim-evidence { grid-column: 1 / -1; }
+.file-choice-list { display: grid; gap: 5px; margin-top: 8px; }
+.file-choice {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  padding: 6px;
+  border-radius: 7px;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.file-choice:hover { background: var(--bg-hover); }
+.file-choice input { margin-top: 2px; }
+.research-steps { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0; }
+.research-step { padding: 3px 7px; border-radius: var(--r-pill); font-size: 10px; background: var(--bg-code-block); color: var(--text-inactive); }
+.research-step.current { background: var(--permission-soft); color: var(--permission); font-weight: 600; }
 .section-editor { min-height: 180px; resize: vertical; line-height: 1.6; font-family: var(--font-sans); }
 .section-preview {
   margin-top: 8px;
@@ -2838,6 +2875,7 @@ a:hover { text-decoration: underline; }
       <div class="kb-tabs" role="tablist" aria-label="项目工作台">
         <button class="kb-tab active" id="wb-tab-refs" data-tab="refs" role="tab" aria-selected="true" aria-controls="wb-pane-refs">文献</button>
         <button class="kb-tab" id="wb-tab-evidence" data-tab="evidence" role="tab" aria-selected="false" aria-controls="wb-pane-evidence">证据</button>
+        <button class="kb-tab" id="wb-tab-research" data-tab="research" role="tab" aria-selected="false" aria-controls="wb-pane-research">研究</button>
         <button class="kb-tab" id="wb-tab-writing" data-tab="writing" role="tab" aria-selected="false" aria-controls="wb-pane-writing">分节</button>
         <button class="kb-tab" id="wb-tab-jobs" data-tab="jobs" role="tab" aria-selected="false" aria-controls="wb-pane-jobs">作业</button>
         <button class="kb-tab" id="wb-tab-notes" data-tab="notes" role="tab" aria-selected="false" aria-controls="wb-pane-notes">笔记</button>
@@ -2868,6 +2906,57 @@ a:hover { text-decoration: underline; }
           <div id="argument-map-list"></div>
           <div id="claim-audit-list"><div class="wb-empty">选择论文任务后查看论断覆盖。</div></div>
           <div id="source-ledger-list"></div>
+        </div>
+
+        <!-- 研究设计与实验实施 -->
+        <div class="kb-pane" id="wb-pane-research" data-pane="research" role="tabpanel" aria-labelledby="wb-tab-research" hidden>
+          <div class="wb-toolbar">
+            <h3>研究设计与实验</h3>
+            <button class="btn btn-secondary btn-sm" id="research-refresh">刷新</button>
+          </div>
+          <div id="research-live" class="wb-live" role="status" aria-live="polite"></div>
+          <div id="research-audit" class="wb-empty">进入环5后创建研究协议。</div>
+
+          <details class="wb-card" id="protocol-builder">
+            <summary class="wb-card-title">创建研究协议</summary>
+            <form class="wb-form" id="protocol-form" novalidate>
+              <div class="wb-field"><label for="protocol-title">协议名称</label><input id="protocol-title" maxlength="200" required></div>
+              <div class="wb-field"><label for="protocol-method">研究方法</label><select id="protocol-method"><option value="QUANTITATIVE">定量研究</option><option value="QUALITATIVE">质性研究</option><option value="MIXED">混合研究</option><option value="THEORETICAL">理论研究</option><option value="SYSTEM_BUILD">系统构建</option><option value="LITERATURE_REVIEW">文献综述</option></select></div>
+              <div class="wb-field"><label for="protocol-rq">研究问题（每行一个）</label><textarea id="protocol-rq" required></textarea></div>
+              <div class="wb-field"><label for="protocol-steps">实施步骤（每行一个）</label><textarea id="protocol-steps" required></textarea></div>
+              <div class="wb-field"><label for="protocol-analysis">分析计划（每行一个）</label><textarea id="protocol-analysis" required></textarea></div>
+              <div class="wb-field"><label for="protocol-outputs">必须产物（每行一个）</label><textarea id="protocol-outputs" required></textarea></div>
+              <div class="wb-field"><label for="protocol-hypotheses">假设（可选，每行一个）</label><textarea id="protocol-hypotheses"></textarea></div>
+              <div class="wb-field"><label for="protocol-materials">材料与伦理要求（每行一个）</label><textarea id="protocol-materials"></textarea></div>
+              <div id="protocol-error" class="wb-card-meta" style="color:var(--error)" role="alert"></div>
+              <button class="btn btn-primary btn-sm" type="submit">生成协议版本</button>
+            </form>
+          </details>
+          <div id="protocol-list"></div>
+
+          <details class="wb-card" id="argument-builder">
+            <summary class="wb-card-title">创建论证图</summary>
+            <form class="wb-form" id="argument-form" novalidate>
+              <div class="wb-field"><label for="argument-title">论证图名称</label><input id="argument-title" maxlength="200" required></div>
+              <div class="wb-field"><label for="argument-rq">研究问题（每行一个）</label><textarea id="argument-rq" required></textarea></div>
+              <div id="argument-claim-rows"></div>
+              <button class="btn btn-secondary btn-sm" type="button" id="argument-add-claim">添加论断</button>
+              <div id="argument-error" class="wb-card-meta" style="color:var(--error)" role="alert"></div>
+              <button class="btn btn-primary btn-sm" type="submit">生成论证图版本</button>
+            </form>
+          </details>
+          <div id="research-map-list"></div>
+
+          <div class="wb-card">
+            <div class="wb-card-title">实验材料与产物</div>
+            <div class="wb-form-row" style="margin-top:8px;">
+              <div class="wb-field"><label for="research-file-kind">文件分类</label><select id="research-file-kind"><option value="material">实验材料</option><option value="raw_data">原始数据</option><option value="code">代码/脚本</option><option value="log">运行日志</option><option value="figure">图表</option><option value="other">其他</option></select></div>
+              <div class="wb-field"><label for="research-file-input">选择文件</label><input id="research-file-input" type="file" multiple accept=".csv,.tsv,.xlsx,.xls,.json,.jsonl,.py,.r,.m,.ipynb,.log,.zip,.sav,.dta,.rds,.mat,.png,.jpg,.jpeg,.svg,.txt,.md,.pdf,.docx"></div>
+            </div>
+            <div id="research-file-list" class="file-choice-list"></div>
+          </div>
+          <div id="experiment-run-list"></div>
+          <div id="research-result-list"></div>
         </div>
 
         <!-- 分节写作 -->
@@ -3676,6 +3765,7 @@ function activateWorkbenchTab(target) {
   if (target === 'notes') loadNotes(sid);
   if (target === 'graph') renderGraph(sid);
   if (target === 'evidence') loadEvidencePanel();
+  if (target === 'research') loadResearchPanel();
   if (target === 'writing') loadSectionsPanel();
   if (target === 'jobs') loadJobsPanel();
 }
@@ -5050,6 +5140,58 @@ async function apiCancelJob(taskId, jobId) {
 async function apiRetryJob(taskId, jobId) {
   return apiPost(`/api/v1/console/tasks/${taskId}/jobs/${jobId}/retry`);
 }
+async function apiResearchProtocols(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/research/protocols`);
+}
+async function apiCreateProtocol(taskId, payload) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/research/protocols`, payload);
+}
+async function apiReviewProtocol(taskId, artifactId, approved, reason = '') {
+  return apiPost(`/api/v1/console/tasks/${taskId}/research/protocols/${artifactId}/review`, { approved, reason });
+}
+async function apiCreateArgumentMap(taskId, payload) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/research/argument-maps`, payload);
+}
+async function apiReviewArgumentMap(taskId, artifactId, approved, reason = '') {
+  return apiPost(`/api/v1/console/tasks/${taskId}/research/argument-maps/${artifactId}/review`, { approved, reason });
+}
+async function apiResearchRuns(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/research/runs`);
+}
+async function apiCreateResearchRun(taskId, notes = '') {
+  return apiPost(`/api/v1/console/tasks/${taskId}/research/runs`, { notes });
+}
+async function apiTransitionResearchRun(taskId, runId, payload) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/research/runs/${runId}/transition`, payload);
+}
+async function apiResearchResults(taskId, runId = '') {
+  return apiGet(`/api/v1/console/tasks/${taskId}/research/results`, runId ? { run_id: runId } : null);
+}
+async function apiAddResearchResult(taskId, runId, payload) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/research/runs/${runId}/results`, payload);
+}
+async function apiReviewResearchResult(taskId, resultId, verified) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/research/results/${resultId}/review`, { verified_by_user: verified });
+}
+async function apiResearchAudit(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/research/audit`);
+}
+async function apiCreateResultLedger(taskId) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/research/result-ledgers`);
+}
+async function apiReviewResultLedger(taskId, artifactId, approved, reason = '') {
+  return apiPost(`/api/v1/console/tasks/${taskId}/research/result-ledgers/${artifactId}/review`, { approved, reason });
+}
+async function apiTaskArtifacts(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/artifacts`);
+}
+async function apiUploadResearchFile(sessionId, file, kind) {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('title', file.name.replace(/\.[^.]+$/, ''));
+  form.append('kind', kind);
+  return apiRequest(`/api/v1/kb/${encodeURIComponent(sessionId)}/files`, { method: 'POST', body: form }, 120000);
+}
 
 // ---- 知识库 ----
 async function apiKbList(sessionId) {
@@ -5282,6 +5424,314 @@ async function loadEvidencePanel() {
   document.getElementById('evidence-live').textContent = `证据审计与 ${sources.length} 个来源已更新`;
 }
 
+let researchFiles = [];
+let researchRuns = [];
+let researchResults = [];
+let claimRowCounter = 0;
+
+function valueLines(id) {
+  return (document.getElementById(id)?.value || '').split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+}
+
+function addArgumentClaimRow(seed = {}) {
+  const host = document.getElementById('argument-claim-rows');
+  if (!host) return;
+  const rowId = `claim-row-${++claimRowCounter}`;
+  const row = document.createElement('fieldset');
+  row.className = 'claim-builder-row';
+  row.dataset.claimRow = rowId;
+  row.innerHTML = `<legend class="sr-only">论断 ${claimRowCounter}</legend>
+    <div class="wb-field"><label for="${rowId}-key">键</label><input id="${rowId}-key" data-claim="key" maxlength="40" value="${escapeHtml2(seed.claim_key || (claimRowCounter === 1 ? 'ROOT' : `C${claimRowCounter - 1}`))}" required></div>
+    <div class="wb-field"><label for="${rowId}-section">章节</label><input id="${rowId}-section" data-claim="section" maxlength="40" value="${escapeHtml2(seed.section_id || '1.1')}" required></div>
+    <div class="wb-field"><label for="${rowId}-role">角色</label><select id="${rowId}-role" data-claim="role"><option value="THESIS">核心论断</option><option value="CLAIM">子论断</option><option value="COUNTERCLAIM">反论断</option><option value="LIMITATION">局限</option></select></div>
+    <div class="wb-field"><label for="${rowId}-type">类型</label><select id="${rowId}-type" data-claim="type"><option value="FACTUAL">事实</option><option value="NUMERIC">数字</option><option value="METHOD">方法</option><option value="INTERPRETIVE">解释</option><option value="CONTRIBUTION">贡献</option></select></div>
+    <div class="wb-field"><label for="${rowId}-parents">父论断键（逗号分隔）</label><input id="${rowId}-parents" data-claim="parents" value="${escapeHtml2((seed.parent_keys || []).join(','))}"></div>
+    <div class="wb-field"><span class="wb-card-meta">操作</span><button id="${rowId}-remove" aria-label="删除论断 ${claimRowCounter}" class="btn btn-secondary btn-sm" type="button" data-remove-claim>删除</button></div>
+    <div class="wb-field claim-text"><label for="${rowId}-text">论断文本</label><textarea id="${rowId}-text" data-claim="text" required>${escapeHtml2(seed.text || '')}</textarea></div>
+    <div class="wb-field claim-evidence"><label for="${rowId}-evidence">证据需求（逗号分隔）</label><input id="${rowId}-evidence" data-claim="evidence" value="${escapeHtml2((seed.evidence_requirements || []).join(','))}"></div>`;
+  row.querySelector('[data-claim="role"]').value = seed.role || (claimRowCounter === 1 ? 'THESIS' : 'CLAIM');
+  row.querySelector('[data-claim="type"]').value = seed.claim_type || 'FACTUAL';
+  row.querySelector('[data-remove-claim]').addEventListener('click', () => {
+    if (host.querySelectorAll('[data-claim-row]').length <= 1) {
+      document.getElementById('argument-error').textContent = '论证图至少需要一个核心论断。';
+      return;
+    }
+    row.remove();
+  });
+  host.appendChild(row);
+}
+
+function researchFileLabel(fileId) {
+  const file = researchFiles.find(item => item.file_id === fileId);
+  return file?.file_name || fileId;
+}
+
+function renderResearchFileChoices(run, kinds) {
+  const selected = new Set([
+    ...(run.material_file_ids || []), ...(run.raw_data_file_ids || []),
+    ...(run.code_file_ids || []), ...(run.log_file_ids || []),
+  ]);
+  const files = researchFiles.filter(file => kinds.includes(file.metadata?.kind || 'other'));
+  if (!files.length) return '<div class="wb-empty">请先在上方上传对应分类的文件。</div>';
+  return `<div class="file-choice-list">${files.map(file => `<label class="file-choice">
+    <input type="checkbox" data-run-file value="${escapeHtml2(file.file_id)}" data-kind="${escapeHtml2(file.metadata?.kind || 'other')}" ${selected.has(file.file_id) ? 'checked' : ''}>
+    <span>${escapeHtml2(file.file_name)}<span class="wb-card-meta" style="display:block">${escapeHtml2(file.metadata?.kind || 'other')} · ${formatCount(file.file_size)} bytes</span></span>
+  </label>`).join('')}</div>`;
+}
+
+async function loadResearchPanel() {
+  const auditBox = document.getElementById('research-audit');
+  const protocolBox = document.getElementById('protocol-list');
+  const mapBox = document.getElementById('research-map-list');
+  const runBox = document.getElementById('experiment-run-list');
+  const resultBox = document.getElementById('research-result-list');
+  if (!auditBox || !protocolBox || !mapBox || !runBox || !resultBox) return;
+  if (!currentSession) {
+    auditBox.className = 'wb-empty';
+    auditBox.textContent = '选择论文任务后设计研究。';
+    protocolBox.innerHTML = mapBox.innerHTML = runBox.innerHTML = resultBox.innerHTML = '';
+    return;
+  }
+  const taskId = currentSession;
+  auditBox.setAttribute('aria-busy', 'true');
+  const [protocolResponse, mapResponse, runResponse, resultResponse, auditResponse, artifactResponse, progress, files] = await Promise.all([
+    apiResearchProtocols(taskId), apiArgumentMaps(taskId), apiResearchRuns(taskId),
+    apiResearchResults(taskId), apiResearchAudit(taskId), apiTaskArtifacts(taskId),
+    apiSessionProgress(taskId), apiKbList(currentKnowledgeSession || taskId),
+  ]);
+  if (taskId !== currentSession) return;
+  auditBox.removeAttribute('aria-busy');
+  const responses = [protocolResponse, mapResponse, runResponse, resultResponse, auditResponse, artifactResponse];
+  const failed = responses.find(response => response.code !== 0);
+  if (failed) {
+    auditBox.className = 'wb-error';
+    auditBox.innerHTML = `${escapeHtml2(failed.msg)}<div class="wb-card-actions"><button class="btn btn-secondary btn-sm" onclick="loadResearchPanel()">重试</button></div>`;
+    return;
+  }
+  const protocols = protocolResponse.data || [];
+  const maps = mapResponse.data || [];
+  researchRuns = runResponse.data || [];
+  researchResults = resultResponse.data || [];
+  researchFiles = files || [];
+  const audit = auditResponse.data || {};
+  const artifacts = artifactResponse.data || [];
+  const currentRing = progress?.current_ring_no || 1;
+  const activeProtocol = protocols.find(item => item.status === 'APPROVED');
+  const activeMap = maps.find(item => item.status === 'APPROVED');
+  const activeLedger = artifacts.find(item => item.kind === 'RESULT_LEDGER' && item.status === 'APPROVED');
+
+  const steps = [
+    ['协议', !!activeProtocol], ['论证图', !!activeMap],
+    ['实验运行', researchRuns.some(run => run.status === 'COMPLETED')],
+    ['结果核验', researchResults.some(result => result.verified_by_user)],
+    ['结果账本', !!activeLedger],
+  ];
+  auditBox.className = 'wb-card';
+  auditBox.innerHTML = `<div class="wb-card-title">研究实施 Gate · 当前环${currentRing}</div>
+    <div class="research-steps">${steps.map(([label, done], index) => `<span class="research-step ${done ? 'current' : ''}">${done ? '✓ ' : `${index + 1}. `}${label}</span>`).join('')}</div>
+    <div class="wb-card-meta">${(audit.blocking_items || []).length ? escapeHtml2((audit.blocking_items || []).join('；')) : '研究材料满足当前写作门禁。'}</div>
+    <div class="wb-card-actions">
+      ${activeProtocol && !researchRuns.length ? '<button class="btn btn-primary btn-sm" data-research-action="create-run">创建实验运行</button>' : ''}
+      ${audit.can_write_results && currentRing === 6 && !activeLedger ? '<button class="btn btn-primary btn-sm" data-research-action="create-ledger">生成结果账本</button>' : ''}
+    </div>`;
+
+  protocolBox.innerHTML = `<div class="kb-section-title"><span>研究协议版本</span><span class="count">${protocols.length}</span></div>` +
+    (protocols.length ? protocols.map(protocol => `<article class="wb-card" data-artifact-id="${escapeHtml2(protocol.artifact_id)}">
+      <div style="display:flex;justify-content:space-between;gap:8px"><div class="wb-card-title">v${protocol.version} ${escapeHtml2(protocol.payload?.title || '研究协议')}</div><span class="wb-status ${wbStatusClass(protocol.status)}">${escapeHtml2(protocol.status)}</span></div>
+      <div class="wb-card-meta">${escapeHtml2(protocol.payload?.method || '')} · ${(protocol.payload?.research_questions || []).length} 个研究问题 · ${(protocol.payload?.procedure_steps || []).length} 个步骤</div>
+      ${protocol.status === 'WAITING_APPROVAL' ? '<div class="wb-card-actions"><button class="btn btn-primary btn-sm" data-research-action="approve-protocol">批准</button><button class="btn btn-secondary btn-sm" data-research-action="reject-protocol">驳回</button></div>' : ''}
+    </article>`).join('') : '<div class="wb-empty">环5创建研究协议后，才能开展实验。</div>');
+
+  mapBox.innerHTML = `<div class="kb-section-title"><span>论证图版本</span><span class="count">${maps.length}</span></div>` +
+    (maps.length ? maps.map(map => `<article class="wb-card" data-artifact-id="${escapeHtml2(map.artifact_id)}">
+      <div style="display:flex;justify-content:space-between;gap:8px"><div class="wb-card-title">v${map.version} ${escapeHtml2(map.payload?.title || '论证图')}</div><span class="wb-status ${wbStatusClass(map.status)}">${escapeHtml2(map.status)}</span></div>
+      <div class="wb-card-meta">${(map.payload?.claims || []).length} 个论断 · ${(map.payload?.research_questions || []).length} 个研究问题</div>
+      ${map.status === 'WAITING_APPROVAL' ? '<div class="wb-card-actions"><button class="btn btn-primary btn-sm" data-research-action="approve-map">批准</button><button class="btn btn-secondary btn-sm" data-research-action="reject-map">驳回</button></div>' : ''}
+    </article>`).join('') : '<div class="wb-empty">论证图会把研究问题、章节、论断与证据需求连接起来。</div>');
+
+  const experimentFiles = researchFiles.filter(file => (file.metadata?.kind || 'literature') !== 'literature');
+  document.getElementById('research-file-list').innerHTML = experimentFiles.length
+    ? experimentFiles.map(file => `<div class="wb-card-meta">${escapeHtml2(file.file_name)} · ${escapeHtml2(file.metadata?.kind || 'other')} · ${formatCount(file.file_size)} bytes</div>`).join('')
+    : '<div class="wb-empty">尚未上传实验材料、数据、代码或日志。</div>';
+
+  runBox.innerHTML = `<div class="kb-section-title"><span>实验运行</span><span class="count">${researchRuns.length}</span></div>` +
+    (researchRuns.length ? researchRuns.map(run => renderResearchRun(run)).join('') : '<div class="wb-empty">批准研究协议后创建实验运行。</div>');
+
+  resultBox.innerHTML = `<div class="kb-section-title"><span>结果记录</span><span class="count">${researchResults.length}</span></div>` +
+    (researchResults.length ? researchResults.map(result => `<article class="wb-card" data-result-id="${escapeHtml2(result.result_id)}">
+      <div style="display:flex;justify-content:space-between;gap:8px"><div class="wb-card-title">${escapeHtml2(result.metric)} = ${escapeHtml2(result.value)} ${escapeHtml2(result.unit || '')}</div><span class="wb-status ${result.verified_by_user ? 'ok' : 'warn'}">${result.verified_by_user ? '已核验' : '待核验'}</span></div>
+      <div class="wb-card-meta">来源：${escapeHtml2(researchFileLabel(result.source_file_id))} · ${escapeHtml2(result.computation)}</div>
+      ${!result.verified_by_user ? '<div class="wb-card-actions"><button class="btn btn-primary btn-sm" data-research-action="verify-result">确认结果真实</button><button class="btn btn-secondary btn-sm" data-research-action="reject-result">撤销核验</button></div>' : ''}
+    </article>`).join('') : '<div class="wb-empty">完成实验运行后登记可复算结果。</div>') +
+    (activeLedger ? `<article class="wb-card" data-artifact-id="${escapeHtml2(activeLedger.artifact_id)}"><div class="wb-card-title">结果账本 v${activeLedger.version}</div><div class="wb-card-meta">已批准，可供环6分节写作引用。</div></article>` :
+      artifacts.filter(item => item.kind === 'RESULT_LEDGER' && item.status === 'WAITING_APPROVAL').map(item => `<article class="wb-card" data-artifact-id="${escapeHtml2(item.artifact_id)}"><div class="wb-card-title">结果账本 v${item.version}</div><div class="wb-card-actions"><button class="btn btn-primary btn-sm" data-research-action="approve-ledger">批准结果账本</button><button class="btn btn-secondary btn-sm" data-research-action="reject-ledger">驳回</button></div></article>`).join(''));
+
+  document.querySelectorAll('[data-research-action]').forEach(button => button.addEventListener('click', handleResearchAction));
+  document.querySelectorAll('[data-result-form]').forEach(form => form.addEventListener('submit', submitResultForm));
+  document.getElementById('research-live').textContent = `研究工作台已更新：${protocols.length} 个协议版本，${researchRuns.length} 次运行，${researchResults.length} 条结果`;
+}
+
+function renderResearchRun(run) {
+  const statusOrder = ['PLANNED', 'MATERIALS_READY', 'RUNNING', 'COMPLETED'];
+  const currentIndex = statusOrder.indexOf(run.status);
+  const next = run.status === 'PLANNED' ? 'MATERIALS_READY' : run.status === 'MATERIALS_READY' ? 'RUNNING' : run.status === 'RUNNING' ? 'COMPLETED' : '';
+  const kinds = run.status === 'PLANNED' ? ['material'] : run.status === 'MATERIALS_READY' ? ['code'] : run.status === 'RUNNING' ? ['raw_data', 'log'] : [];
+  const registered = [...(run.raw_data_file_ids || []), ...(run.log_file_ids || []), ...(run.code_file_ids || []), ...(run.material_file_ids || [])];
+  return `<article class="wb-card" data-run-id="${escapeHtml2(run.run_id)}">
+    <div style="display:flex;justify-content:space-between;gap:8px"><div class="wb-card-title">${escapeHtml2(run.run_id)}</div><span class="wb-status ${wbStatusClass(run.status)}">${escapeHtml2(run.status)}</span></div>
+    <div class="research-steps">${statusOrder.map((status, index) => `<span class="research-step ${index <= currentIndex ? 'current' : ''}">${index < currentIndex ? '✓ ' : ''}${status}</span>`).join('')}</div>
+    <div class="wb-card-meta">已登记文件 ${registered.length} 个${run.user_attested ? ' · 用户已确认真实性' : ''}</div>
+    ${next ? renderResearchFileChoices(run, kinds) : ''}
+    ${run.status === 'RUNNING' ? '<label class="file-choice"><input type="checkbox" data-run-attested> 我确认本次实验材料与运行记录真实、未伪造</label>' : ''}
+    <div class="wb-card-actions">
+      ${next ? `<button class="btn btn-primary btn-sm" data-research-action="transition-run" data-next-status="${next}">${next === 'MATERIALS_READY' ? '确认材料就绪' : next === 'RUNNING' ? '开始运行' : '确认完成实验'}</button>` : ''}
+      ${run.status === 'COMPLETED' ? '<button class="btn btn-secondary btn-sm" data-research-action="toggle-result-form">登记结果</button>' : ''}
+    </div>
+    ${run.status === 'COMPLETED' ? renderResultForm(run) : ''}
+  </article>`;
+}
+
+function renderResultForm(run) {
+  const fileIds = [...new Set([...(run.raw_data_file_ids || []), ...(run.log_file_ids || []), ...(run.code_file_ids || [])])];
+  return `<form class="wb-form result-form" data-result-form hidden>
+    <div class="wb-form-row"><div class="wb-field"><label>指标</label><input data-result="metric" aria-label="结果指标" required></div><div class="wb-field"><label>值</label><input data-result="value" aria-label="结果值" required></div></div>
+    <div class="wb-form-row"><div class="wb-field"><label>单位</label><input data-result="unit" aria-label="结果单位"></div><div class="wb-field"><label>表/图编号</label><input data-result="target" aria-label="表或图编号" placeholder="TABLE-4-1"></div></div>
+    <div class="wb-field"><label>来源文件</label><select data-result="source" aria-label="结果来源文件" required>${fileIds.map(fileId => `<option value="${escapeHtml2(fileId)}">${escapeHtml2(researchFileLabel(fileId))}</option>`).join('')}</select></div>
+    <div class="wb-field"><label>复算方法/命令</label><textarea data-result="computation" aria-label="复算方法或命令" required></textarea></div>
+    <div class="wb-card-meta" data-result-error style="color:var(--error)" role="alert"></div>
+    <button class="btn btn-primary btn-sm" type="submit">保存结果记录</button>
+  </form>`;
+}
+
+async function handleResearchAction(event) {
+  const button = event.currentTarget;
+  const action = button.dataset.researchAction;
+  const artifactId = button.closest('[data-artifact-id]')?.dataset.artifactId;
+  const runCard = button.closest('[data-run-id]');
+  const runId = runCard?.dataset.runId;
+  const resultId = button.closest('[data-result-id]')?.dataset.resultId;
+  if (!currentSession) return;
+  if (action === 'toggle-result-form') {
+    const form = runCard.querySelector('[data-result-form]');
+    form.hidden = !form.hidden;
+    if (!form.hidden) form.querySelector('input')?.focus();
+    return;
+  }
+  button.disabled = true;
+  let response;
+  if (action === 'approve-protocol' || action === 'reject-protocol') {
+    response = await apiReviewProtocol(currentSession, artifactId, action === 'approve-protocol', action === 'reject-protocol' ? '作者驳回' : '');
+  } else if (action === 'approve-map' || action === 'reject-map') {
+    response = await apiReviewArgumentMap(currentSession, artifactId, action === 'approve-map', action === 'reject-map' ? '作者驳回' : '');
+  } else if (action === 'create-run') {
+    response = await apiCreateResearchRun(currentSession, '由作者工作台创建');
+  } else if (action === 'transition-run') {
+    const next = button.dataset.nextStatus;
+    const selected = [...runCard.querySelectorAll('[data-run-file]:checked')];
+    const payload = { status: next };
+    if (next === 'MATERIALS_READY') payload.material_file_ids = selected.map(input => input.value);
+    if (next === 'RUNNING') payload.code_file_ids = selected.map(input => input.value);
+    if (next === 'COMPLETED') {
+      payload.raw_data_file_ids = selected.filter(input => input.dataset.kind === 'raw_data').map(input => input.value);
+      payload.log_file_ids = selected.filter(input => input.dataset.kind === 'log').map(input => input.value);
+      payload.user_attested = !!runCard.querySelector('[data-run-attested]')?.checked;
+    }
+    response = await apiTransitionResearchRun(currentSession, runId, payload);
+  } else if (action === 'verify-result' || action === 'reject-result') {
+    response = await apiReviewResearchResult(currentSession, resultId, action === 'verify-result');
+  } else if (action === 'create-ledger') {
+    response = await apiCreateResultLedger(currentSession);
+  } else if (action === 'approve-ledger' || action === 'reject-ledger') {
+    response = await apiReviewResultLedger(currentSession, artifactId, action === 'approve-ledger', action === 'reject-ledger' ? '作者驳回' : '');
+  }
+  toast(response?.code === 0 ? response.msg : `研究操作失败：${response?.msg || '未知错误'}`);
+  await loadResearchPanel();
+}
+
+async function submitProtocolForm(event) {
+  event.preventDefault();
+  const error = document.getElementById('protocol-error');
+  const payload = {
+    title: document.getElementById('protocol-title').value.trim(),
+    method: document.getElementById('protocol-method').value,
+    research_questions: valueLines('protocol-rq'),
+    procedure_steps: valueLines('protocol-steps'),
+    analysis_plan: valueLines('protocol-analysis'),
+    required_outputs: valueLines('protocol-outputs'),
+    hypotheses: valueLines('protocol-hypotheses'),
+    materials: valueLines('protocol-materials'),
+    ethics_requirements: ['作者确认实验材料真实、合法且符合所在机构伦理要求'],
+  };
+  const missing = !payload.title || !payload.research_questions.length || !payload.procedure_steps.length || !payload.analysis_plan.length || !payload.required_outputs.length;
+  if (missing) { error.textContent = '请填写协议名称、研究问题、实施步骤、分析计划和必须产物。'; return; }
+  error.textContent = '';
+  const response = await apiCreateProtocol(currentSession, payload);
+  if (response.code !== 0) error.textContent = response.msg;
+  else { toast(response.msg); event.currentTarget.reset(); document.getElementById('protocol-builder').open = false; await loadResearchPanel(); }
+}
+
+async function submitArgumentForm(event) {
+  event.preventDefault();
+  const error = document.getElementById('argument-error');
+  const claims = [...document.querySelectorAll('[data-claim-row]')].map(row => ({
+    claim_key: row.querySelector('[data-claim="key"]').value.trim(),
+    section_id: row.querySelector('[data-claim="section"]').value.trim(),
+    role: row.querySelector('[data-claim="role"]').value,
+    claim_type: row.querySelector('[data-claim="type"]').value,
+    parent_keys: row.querySelector('[data-claim="parents"]').value.split(',').map(value => value.trim()).filter(Boolean),
+    text: row.querySelector('[data-claim="text"]').value.trim(),
+    evidence_requirements: row.querySelector('[data-claim="evidence"]').value.split(',').map(value => value.trim()).filter(Boolean),
+  }));
+  const payload = {
+    title: document.getElementById('argument-title').value.trim(),
+    research_questions: valueLines('argument-rq'),
+    claims,
+  };
+  if (!payload.title || !payload.research_questions.length || claims.some(claim => !claim.claim_key || !claim.section_id || !claim.text) || !claims.some(claim => claim.role === 'THESIS')) {
+    error.textContent = '请填写名称、研究问题和全部论断字段，并至少保留一个核心论断。';
+    return;
+  }
+  error.textContent = '';
+  const response = await apiCreateArgumentMap(currentSession, payload);
+  if (response.code !== 0) error.textContent = response.msg;
+  else { toast(response.msg); document.getElementById('argument-builder').open = false; await loadResearchPanel(); }
+}
+
+async function uploadResearchFiles(files) {
+  if (!currentSession || !files?.length) return;
+  const kind = document.getElementById('research-file-kind').value;
+  const live = document.getElementById('research-live');
+  let succeeded = 0;
+  for (const file of files) {
+    live.textContent = `上传 ${file.name}…`;
+    const response = await apiUploadResearchFile(currentKnowledgeSession || currentSession, file, kind);
+    if (response.code === 0) succeeded += 1;
+    else toast(`上传 ${file.name} 失败：${response.msg}`);
+  }
+  live.textContent = `已上传 ${succeeded}/${files.length} 个实验文件`;
+  await loadResearchPanel();
+}
+
+async function submitResultForm(event) {
+  const form = event.target.closest('[data-result-form]');
+  if (!form) return;
+  event.preventDefault();
+  const runId = form.closest('[data-run-id]').dataset.runId;
+  const payload = {
+    metric: form.querySelector('[data-result="metric"]').value.trim(),
+    value: form.querySelector('[data-result="value"]').value.trim(),
+    unit: form.querySelector('[data-result="unit"]').value.trim(),
+    table_or_figure_id: form.querySelector('[data-result="target"]').value.trim(),
+    source_file_id: form.querySelector('[data-result="source"]').value,
+    computation: form.querySelector('[data-result="computation"]').value.trim(),
+  };
+  const error = form.querySelector('[data-result-error]');
+  if (!payload.metric || !payload.value || !payload.source_file_id || !payload.computation) { error.textContent = '请填写指标、值、来源文件和复算方法。'; return; }
+  const response = await apiAddResearchResult(currentSession, runId, payload);
+  if (response.code !== 0) error.textContent = response.msg;
+  else { toast(response.msg); await loadResearchPanel(); }
+}
+
 async function loadSectionsPanel() {
   const listBox = document.getElementById('section-list');
   const auditBox = document.getElementById('section-audit');
@@ -5388,6 +5838,7 @@ async function loadActiveWorkbenchPane() {
   const target = document.querySelector('.kb-tab.active')?.dataset.tab || 'refs';
   if (target === 'evidence') await loadEvidencePanel();
   else if (target === 'writing') await loadSectionsPanel();
+  else if (target === 'research') await loadResearchPanel();
   else if (target === 'jobs') await loadJobsPanel(false);
 }
 
@@ -5786,6 +6237,7 @@ async function initApp() {
   }
   const refreshBindings = [
     ['evidence-refresh', loadEvidencePanel],
+    ['research-refresh', loadResearchPanel],
     ['sections-refresh', loadSectionsPanel],
     ['jobs-refresh', loadJobsPanel],
   ];
@@ -5796,6 +6248,30 @@ async function initApp() {
       button.addEventListener('click', () => handler());
     }
   });
+  const protocolForm = document.getElementById('protocol-form');
+  if (protocolForm && !protocolForm.dataset.bound) {
+    protocolForm.dataset.bound = '1';
+    protocolForm.addEventListener('submit', submitProtocolForm);
+  }
+  const argumentForm = document.getElementById('argument-form');
+  if (argumentForm && !argumentForm.dataset.bound) {
+    argumentForm.dataset.bound = '1';
+    argumentForm.addEventListener('submit', submitArgumentForm);
+  }
+  const addClaim = document.getElementById('argument-add-claim');
+  if (addClaim && !addClaim.dataset.bound) {
+    addClaim.dataset.bound = '1';
+    addClaim.addEventListener('click', () => addArgumentClaimRow());
+  }
+  if (!document.querySelector('[data-claim-row]')) addArgumentClaimRow();
+  const researchFileInput = document.getElementById('research-file-input');
+  if (researchFileInput && !researchFileInput.dataset.bound) {
+    researchFileInput.dataset.bound = '1';
+    researchFileInput.addEventListener('change', event => {
+      uploadResearchFiles(event.target.files);
+      event.target.value = '';
+    });
+  }
   activateWorkbenchTab(document.querySelector('.kb-tab.active')?.dataset.tab || 'refs');
 }
 initApp();

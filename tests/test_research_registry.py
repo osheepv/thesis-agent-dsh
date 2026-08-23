@@ -123,10 +123,21 @@ def _orchestration(monkeypatch) -> MainOrchestration:
         "application.service.uc_main_orchestration.get_executor",
         lambda ring_no: _ResearchFlowExecutor(int(ring_no)),
     )
+    class _KnowledgeStore:
+        def list_documents(self, session_id):
+            return [
+                {"file_id": file_id, "metadata": {"kind": "other"}}
+                for file_id in (
+                    "FILE-TASKS", "FILE-CODE", "FILE-RAW", "FILE-LOG",
+                    "FILE-MATERIAL", "FILE-OTHER",
+                )
+            ]
+
     return MainOrchestration(
         artifact_registry=ArtifactRegistry(),
         evidence_ledger=EvidenceLedger(),
         research_registry=ResearchExecutionRegistry(),
+        knowledge_store=_KnowledgeStore(),
     )
 
 
@@ -177,6 +188,11 @@ def test_empirical_protocol_and_result_ledger_gate_ring6(monkeypatch):
     with pytest.raises(Exception, match="结果账本"):
         orchestration.run_ring6(task_id)
     run = orchestration.create_experiment_run(task_id, {"notes": "controlled run"}).data
+    with pytest.raises(Exception, match="不属于当前任务知识库"):
+        orchestration.update_experiment_run(
+            task_id, run["run_id"],
+            {"status": "MATERIALS_READY", "material_file_ids": ["FILE-MISSING"]},
+        )
     orchestration.update_experiment_run(
         task_id, run["run_id"],
         {"status": "MATERIALS_READY", "material_file_ids": ["FILE-TASKS"]},

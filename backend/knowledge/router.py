@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from common.aicoding.dto import Result
-from knowledge.store import get_kb_store
+from knowledge.store import MAX_FILE_SIZE_BYTES, get_kb_store
 
 logger = logging.getLogger("thesis.kb")
 
@@ -35,13 +35,19 @@ async def upload_file(
     title: str = Form(default=""),
     authors: str = Form(default=""),
     year: str = Form(default=""),
+    kind: str = Form(default="literature"),
     store=Depends(_store),
 ) -> Result:
     """上传文献到会话知识库（用户自行下载后存入）。"""
     try:
-        content = await file.read()
+        content = await file.read(MAX_FILE_SIZE_BYTES + 1)
         if not content:
             return Result.fail(code=2, msg="文件为空")
+        if len(content) > MAX_FILE_SIZE_BYTES:
+            return Result.fail(
+                code=2,
+                msg=f"文件超过大小上限 {int(MAX_FILE_SIZE_BYTES / 1024 / 1024)} MB",
+            )
         meta = {}
         if title:
             meta["title"] = title
@@ -49,6 +55,12 @@ async def upload_file(
             meta["authors"] = authors.split(",")
         if year:
             meta["year"] = int(year) if year.isdigit() else year
+        allowed_kinds = {
+            "literature", "material", "raw_data", "code", "log", "figure", "other"
+        }
+        if kind not in allowed_kinds:
+            return Result.fail(code=2, msg=f"非法文件分类: {kind}")
+        meta["kind"] = kind
         rec = store.save_document(session_id, file.filename or "document.pdf", content, metadata=meta)
         # 上传后自动索引 RAG（后台线程，不阻塞上传返回；不可用静默跳过）
         try:

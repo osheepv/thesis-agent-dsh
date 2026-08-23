@@ -41,6 +41,11 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         '/jobs/${jobId}/retry',
         '/evidence-audit',
         '/research/argument-maps',
+        '/research/protocols',
+        '/research/runs/${runId}/transition',
+        'id="protocol-form"',
+        'id="argument-claim-rows"',
+        'id="research-file-input"',
         'AbortController',
         'showAccessibleDialog',
     ):

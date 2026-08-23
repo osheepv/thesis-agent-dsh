@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from common.aicoding.enums import Degree, RingType
 from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
+from common import prompt_repo
 from executor.base import (
     ExecContext,
     ExecResult,
@@ -240,24 +241,15 @@ class Ring7PolishExecutor(RingExecutor):
             for ch in src_chapters
         )
         term_hint = "；".join(f"{b}→{g}" for b, g in _TERMS)
-        prompt = (
-            f"【任务】对学位论文初稿进行修改润色。题目：{getattr(ctx, 'theme', '')}；"
-            f"学位：{ctx.degree.label}。\n"
-            "【润色原则（必须遵守）】\n"
-            "1. 只改表达不改事实：不改动任何数据、结论、引用标记（[L序号] 原样保留）、"
-            "方法名称、专有名词；\n"
-            "2. 逻辑通顺、段落衔接自然、去掉口语化和绝对化表述（如'非常有效'→'有效'）；\n"
-            "3. 术语统一：优先用『" + term_hint + "』中的规范表达；\n"
-            "4. 保留原文结构（小节标题不变）；每章输出完整正文。\n"
-            f"【待润色章节】\n{chapters_text}\n"
-            "【输出格式】严格输出 JSON（含 \"json\" 键）：\n"
-            '{"chapters": [{"chapter_no": 1, "chapter_title": "第1章 绪论", "content": "润色后正文", '
-            '"word_count": 1500}], "notes": ["改了什么"]}\n'
-            "只输出 JSON，不要额外文字。"
-        )
+        tpl = prompt_repo.render("ring7_polish", {
+            "theme": getattr(ctx, "theme", ""),
+            "degree_label": ctx.degree.label,
+            "term_hint": term_hint,
+            "chapters_text": chapters_text,
+        })
         raw = get_llm_client().generate_json(
-            system="你是中文学术论文修改润色专家，只改表达不改事实。",
-            prompt=prompt,
+            system=tpl["system"],
+            prompt=tpl["prompt"],
             model_cls=LLMPolishOut,
         )
         return raw

@@ -25,6 +25,7 @@ from common.aicoding.enums import Degree, RingType
 from common.citation import format_gbt7714
 from common.lit import LiteratureService, LitItem, get_lit_service
 from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
+from common import prompt_repo
 from executor.base import (
     ExecContext,
     ExecResult,
@@ -107,14 +108,13 @@ def _llm_expand_queries(subject_field: str, theme: str) -> list[str]:
         queries: list[str]
 
     try:
+        tpl = prompt_repo.render("ring3_queries", {
+            "subject_field": subject_field,
+            "theme": theme,
+        })
         out = get_llm_client().generate_json(
-            system="你是文献检索策略专家。",
-            prompt=(
-                f"【任务】围绕学科「{subject_field}」与题目「{theme}」生成 3 组文献检索词"
-                "（中英文各一组，含核心方法与近义词），用于学术数据库检索。\n"
-                "【格式】严格输出 JSON（含 \"json\" 键）：{\"queries\": [\"中文检索词\", \"English query\", \"关键词1 关键词2\"]}\n"
-                "只输出 JSON。"
-            ),
+            system=tpl["system"],
+            prompt=tpl["prompt"],
             model_cls=QueryOut,
             temperature=0.3,
         )

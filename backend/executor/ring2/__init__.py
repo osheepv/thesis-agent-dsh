@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from common.aicoding.enums import Degree, RingType
 from common.lit import LiteratureService, get_lit_service
 from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
+from common import prompt_repo
 from executor.base import (
     ExecContext,
     ExecResult,
@@ -107,25 +108,15 @@ def _llm_judge(ctx: ExecContext, topic: str, similar: List[Dict[str, Any]]) -> L
             f"相似度 {s.get('similarity', 0):.2f}"
             for s in similar
         )
-    prompt = (
-        f"【任务】评估学位论文选题的新颖度。候选题目：{topic}；"
-        f"学科：{ctx.subject_field}；学位：{ctx.degree.label}。\n"
-        "【检索到的相似研究（真实数据源）】\n"
-        f"{sim_text}\n"
-        "【判定要求】\n"
-        "1. novelty_level 取 HIGH（未见直接研究/明显空白）/ MEDIUM（有相似但可差异化）/ "
-        "LOW（已被大量研究，无空间）；\n"
-        "2. differ_from_prior：明确说明与前人（相似研究中最近/最相关者）的最大不同；\n"
-        "3. risk_notes：列出风险（选题过泛/过窄/数据不可得/创新不足等）；\n"
-        "4. 硕士至少 1 个改进/迁移点，博士需原创贡献点。\n"
-        "【输出格式】严格输出 JSON（含 \"json\" 键）：\n"
-        '{"novelty_level": "MEDIUM", "differ_from_prior": "…", "risk_notes": ["…"], '
-        '"recommendation": "放行/回退…"}\n'
-        "只输出 JSON，不要额外文字。"
-    )
+    prompt = prompt_repo.render("ring2_review", {
+        "topic": topic,
+        "subject_field": ctx.subject_field,
+        "degree_label": ctx.degree.label,
+        "similar_text": sim_text,
+    })
     return get_llm_client().generate_json(
-        system="你是学术查新/选题评审专家，熟悉本硕博创新要求差异。",
-        prompt=prompt,
+        system=prompt["system"],
+        prompt=prompt["prompt"],
         model_cls=LLMNoveltyOut,
     )
 

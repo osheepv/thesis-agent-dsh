@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from common.aicoding.enums import Degree, RingType
 from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
+from common import prompt_repo
 from executor.base import (
     ExecContext,
     ExecResult,
@@ -124,21 +125,14 @@ def _llm_generate(ctx: ExecContext) -> TopicResult:
         Degree.MASTER: "硕士：研究型，创新点在'模型/方法改进'，候选 4 条，每条 250 字内",
         Degree.PHD: "博士：前沿深究型，创新点在'理论贡献/新框架'，候选 5 条，每条 300 字内",
     }[ctx.degree]
-    prompt = (
-        f"【任务】为学位论文选题生成候选题目。学科方向：{ctx.subject_field}；"
-        f"学位层次：{ctx.degree.label}。{degree_hint}。\n"
-        "【要求】每道题必须包含：title（题目）、innovation（创新点定位，说明与已有研究的不同）、"
-        "feasibility（可行性评估：数据可得性、工作量、研究条件）、degree_fit（与该学位层次匹配度）；"
-        "recommendation（综合推荐理由）。\n"
-        "【输出格式】严格输出 JSON（包含 \"json\" 键），结构如下：\n"
-        '{"subject_field": "…", "degree": "MASTER", '
-        '"candidates": [{"title": "…", "innovation": "…", "feasibility": "…", "degree_fit": "…"}], '
-        '"recommendation": "…"}\n'
-        "只输出 JSON，不要有任何额外文字。"
-    )
+    tpl = prompt_repo.render("ring1_topic", {
+        "subject_field": ctx.subject_field,
+        "degree_label": ctx.degree.label,
+        "degree_hint": degree_hint,
+    })
     raw = get_llm_client().generate_json(
-        system="你是学术论文选题专家，熟悉本硕博培养目标差异。",
-        prompt=prompt,
+        system=tpl["system"],
+        prompt=tpl["prompt"],
         model_cls=LLMTopicOut,
     )
     return TopicResult(

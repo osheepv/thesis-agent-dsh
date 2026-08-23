@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from common.aicoding.enums import Degree, RingType
 from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
+from common import prompt_repo
 from executor.base import (
     ExecContext,
     ExecResult,
@@ -195,21 +196,14 @@ class Ring4ReviewExecutor(RingExecutor):
                 for h in hits
             )
         pool_text = f"池共 {len(pool)} 条（直接相关 {len(hits)} 条）"
-        prompt = (
-            f"【任务】评审综述立论是否稳固、创新点是否已被池内文献包住。选题：{topic}；"
-            f"学位：{ctx.degree.label}。{pool_text}\n"
-            "【池内与选题直接相关的文献（真实检索条目）】\n"
-            f"{hit_text}\n"
-            "【评审要求】\n"
-            "1. verdict 取『顺』（综述可立论，创新点未被包住）/『需补充』（有重叠但可差异化）/"
-            "『需重评估』（创新点已被几篇池内文献覆盖，须回退环2 重评估）；\n"
-            "2. risks 列出具体风险；recommendation 给可执行建议（回退哪环/补什么）。\n"
-            "【输出格式】严格输出 JSON（含 \"json\" 键）：\n"
-            '{"verdict": "需补充", "risks": ["…"], "recommendation": "补差异化论证"}\n'
-            "只输出 JSON，不要额外文字。"
-        )
+        tpl = prompt_repo.render("ring4_review", {
+            "topic": topic,
+            "degree_label": ctx.degree.label,
+            "pool_text": pool_text,
+            "hit_text": hit_text,
+        })
         return get_llm_client().generate_json(
-            system="你是文献综述评审专家，判断创新点是否被已有工作覆盖。",
-            prompt=prompt,
+            system=tpl["system"],
+            prompt=tpl["prompt"],
             model_cls=LLMReviewOut,
         )

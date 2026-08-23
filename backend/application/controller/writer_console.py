@@ -93,6 +93,26 @@ async def upload_template(task_id: str, file: Optional[UploadFile] = File(defaul
                                          session_id=session_id)
 
 
+@router.get("/tasks/{task_id}/template", response_model=None)
+async def get_template_config(task_id: str, session_id: str = "",
+                              orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.get_template_config(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/template/mapping", response_model=None)
+async def set_template_mapping(task_id: str, req: Dict[str, Any], session_id: str = "",
+                               orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.set_template_mapping(task_id, dict(req.get("mapping", {}) or {}))
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 # ---------------------------------------------------------------------
 # 环1 选题
 # ---------------------------------------------------------------------

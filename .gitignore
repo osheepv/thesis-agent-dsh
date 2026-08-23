@@ -38,6 +38,7 @@ backend/thesis_docx/.vendor/
 
 # 运行时生成产物
 backend/thesis_docx/storage/outputs/
+backend/thesis_docx/storage/templates/
 
 # 编辑器/系统
 .idea/

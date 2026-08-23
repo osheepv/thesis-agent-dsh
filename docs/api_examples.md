@@ -153,6 +153,17 @@ POST /api/v1/console/tasks/{task_id}/docx/generate
 
 生成过早会返回非法状态。生成成功后执行环9排版检查。响应中的 `download_url` 可直接下载文档；docx 内容优先使用环7润色稿。
 
+学校模板配置：
+
+| 动作 | 方法与路径 |
+|---|---|
+| 上传并解析 `.docx` | `POST /api/v1/console/tasks/{task_id}/template` |
+| 查看模板与映射 | `GET /api/v1/console/tasks/{task_id}/template` |
+| 保存占位符映射 | `POST /api/v1/console/tasks/{task_id}/template/mapping` |
+
+映射请求示例：`{"mapping":{"学校题目":"title","学校正文":"content","学校参考文献":"references"}}`。
+中英文 Unicode 占位符均受支持；自定义模板的未映射占位符会阻断生成。
+
 ## 8. curl 最小严格流程
 
 ```bash

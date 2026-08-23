@@ -148,6 +148,7 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
     app.state.orchestration = orchestration
     # docx 业务路由（/api/v1/docx/files 等）与 console 链路共享同一服务/仓储
     app.state.docx_service = getattr(orchestration, "_docx_service", None) or DocxService()
+    orchestration._docx_service = app.state.docx_service  # noqa: SLF001 - console 模板链路共享持久化服务
     app.state.job_worker = job_worker
 
     # 异常处理器

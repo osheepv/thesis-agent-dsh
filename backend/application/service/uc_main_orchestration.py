@@ -110,17 +110,23 @@ class RealDocxRenderer:
     def __init__(self, repository=None) -> None:
         self._parser = None
         self._generator = None
+        self._validator = None
         self._repository = repository
 
     def _ensure(self) -> None:
-        if self._parser is not None and self._generator is not None:
+        if self._parser is not None and self._generator is not None and self._validator is not None:
             return
         # 业务包 backend.thesis_docx（已与 pip 的 python-docx 库解同名）。
         from thesis_docx.parser.template_parser import TemplateParser
         from thesis_docx.generator.docx_generator import DocxGenerator
+        from thesis_docx.validator.docx_validator import DocxValidator
 
-        self._parser = TemplateParser()
-        self._generator = DocxGenerator()
+        if self._parser is None:
+            self._parser = TemplateParser()
+        if self._generator is None:
+            self._generator = DocxGenerator()
+        if self._validator is None:
+            self._validator = DocxValidator(getattr(self._generator, "_config", None))
 
     def upload_template(self, file_bytes: bytes, filename: str, **meta: Any) -> Dict[str, Any]:
         self._ensure()
@@ -153,6 +159,17 @@ class RealDocxRenderer:
             content=content,
             filename=meta.get("filename"),
         )
+        validation = self._validator.validate(outcome.file_path, strict=False)
+        if not validation.is_valid:
+            try:
+                os.remove(outcome.file_path)
+            except OSError:
+                pass
+            raise BizException(
+                ErrorCode.DOCX_GENERATE_FAILED,
+                msg="生成 DOCX 未通过基础 OOXML/load/round-trip 校验",
+                detail={"errors": validation.errors[:10]},
+            )
         # 与业务 DocxService 共享仓储时注册生成记录，下载端点才能找到产物
         if self._repository is not None:
             self._repository.save_output(
@@ -173,6 +190,14 @@ class RealDocxRenderer:
             "word_count": outcome.word_count,
             "file_path": getattr(outcome, "file_path", ""),
             "cross_references": outcome.cross_reference_report,
+            "validation": {
+                "is_valid": validation.is_valid,
+                "schema_valid": validation.schema_valid,
+                "load_valid": validation.load_valid,
+                "roundtrip_valid": validation.roundtrip_valid,
+                "cross_reference_valid": validation.cross_reference_valid,
+                "error_count": validation.error_count,
+            },
         }
 
 
@@ -186,12 +211,20 @@ class TaskRecord:
 
     def __init__(self, task_id: str, title: str, degree: str, subject_field: str,
                  session_id: str = "", tenant_id: str = "default",
-                 template_id: Optional[str] = None, scope: str = "all") -> None:
+                 template_id: Optional[str] = None, scope: str = "all",
+                 template_path: str = "",
+                 template_name: str = "",
+                 template_placeholders: Optional[List[str]] = None,
+                 template_mapping: Optional[Dict[str, str]] = None) -> None:
         self.task_id = task_id
         self.title = title
         self.degree = degree
         self.subject_field = subject_field
         self.template_id = template_id
+        self.template_path = template_path
+        self.template_name = template_name
+        self.template_placeholders = list(template_placeholders or [])
+        self.template_mapping = dict(template_mapping or {})
         self.session_id = session_id
         self.tenant_id = tenant_id
         self.scope = scope
@@ -222,6 +255,10 @@ class TaskRecord:
             "degree": self.degree,
             "subject_field": self.subject_field,
             "template_id": self.template_id or "",
+            "template_path": self.template_path,
+            "template_name": self.template_name,
+            "template_placeholders": list(self.template_placeholders),
+            "template_mapping": dict(self.template_mapping),
             "session_id": self.session_id,
             "tenant_id": self.tenant_id,
             "scope": getattr(self, "scope", "all"),
@@ -254,6 +291,10 @@ class TaskRecord:
             tenant_id=data.get("tenant_id", "default"),
             template_id=data.get("template_id") or None,
             scope=data.get("scope", "all"),
+            template_path=str(data.get("template_path", "")),
+            template_name=str(data.get("template_name", "")),
+            template_placeholders=list(data.get("template_placeholders", []) or []),
+            template_mapping=dict(data.get("template_mapping", {}) or {}),
         )
         for f in cls.RING_FIELDS:
             setattr(rec, f, _load(data.get(f)))
@@ -454,6 +495,26 @@ class MainOrchestration:
         self._research.delete_task(task_id)
         self._sections.delete_task(task_id)
         self._jobs.delete_task(task_id)
+        template_deleted = False
+        if rec.template_id:
+            try:
+                service = getattr(self, "_docx_service", None)
+                if service is not None:
+                    service._repo.soft_delete_template(rec.template_id)  # noqa: SLF001
+                if rec.template_path:
+                    from pathlib import Path as _Path
+                    from thesis_docx.config import DocxConfig
+
+                    target = _Path(rec.template_path).resolve()
+                    config = getattr(service, "_config", None) if service is not None else None
+                    upload_root = _Path(
+                        config.UPLOAD_DIR if config is not None else DocxConfig.UPLOAD_DIR
+                    ).resolve()
+                    if target.is_relative_to(upload_root) and target.is_file():
+                        target.unlink()
+                        template_deleted = True
+            except Exception:  # noqa: BLE001 - 模板清理失败不破坏任务删除
+                logger.warning("任务 %s 的模板文件清理失败", task_id, exc_info=True)
         try:
             self._fsm.delete_task(task_id)
         except Exception:  # noqa: BLE001 - FSM 无该任务不阻塞
@@ -481,6 +542,7 @@ class MainOrchestration:
             data={
                 "task_id": task_id,
                 "knowledge_deleted": bool(rec.session_id and not knowledge_is_shared),
+                "template_deleted": template_deleted,
             },
             msg=(
                 "会话已删除（含知识库）"
@@ -713,12 +775,32 @@ class MainOrchestration:
         """解析已上传模板的占位符，返回模板信息（可选步骤）。"""
         rec = self._require(task_id)
         try:
-            info = self._docx.upload_template(
-                file_bytes, filename, template_id=f"TPL-{uuid.uuid4().hex[:12].upper()}",
-                task_id=task_id, session_id=session_id,
-            )
+            docx_service = getattr(self, "_docx_service", None)
+            if docx_service is not None:
+                uploaded = docx_service.upload_template(
+                    file_bytes,
+                    filename,
+                    session_id=rec.session_id,
+                    task_id=task_id,
+                )
+                info = uploaded.model_dump()
+                stored = docx_service._repo.get_template(  # noqa: SLF001 - 同一应用内持久化路径
+                    uploaded.template_id
+                )
+                rec.template_path = str((stored or {}).get("file_path", ""))
+            else:
+                info = self._docx.upload_template(
+                    file_bytes, filename, template_id=f"TPL-{uuid.uuid4().hex[:12].upper()}",
+                    task_id=task_id, session_id=session_id,
+                )
             rec.template_id = info.get("template_id")
+            rec.template_name = str(info.get("template_name") or info.get("filename") or filename)
+            rec.template_placeholders = list(info.get("placeholders", []) or [])
+            rec.template_mapping = self._suggest_template_mapping(
+                rec.template_placeholders
+            )
             self._store.put(rec)
+            info["mapping"] = dict(rec.template_mapping)
             return Result.ok(data=info, msg="模板解析成功")
         except BizException:
             raise
@@ -1407,11 +1489,38 @@ class MainOrchestration:
             "outline": (rec.ring5 or {}).get("outline", ""),
             "chapter": rendered_content or draft.get("content", ""),
             "content": rendered_content or draft.get("content", ""),
+            "abstract": str(draft.get("abstract", "")) or (
+                (rendered_content or draft.get("content", ""))[:800]
+            ),
             "degree": rec.degree,
             "subject_field": rec.subject_field,
+            "references": "\n".join(
+                f"[{item.get('number')}] {item.get('gbt7714')}"
+                for item in ((rec.ring8 or {}).get("items", []) if isinstance(rec.ring8, dict) else [])
+            ),
         }
+        for placeholder, source_key in rec.template_mapping.items():
+            if source_key in content:
+                content[placeholder] = content[source_key]
+        unresolved = sorted(
+            placeholder
+            for placeholder in rec.template_placeholders
+            if placeholder not in content
+        )
+        if rec.template_path and unresolved:
+            raise BizException(
+                ErrorCode.DOCX_GENERATE_FAILED,
+                msg="学校模板仍有未映射占位符",
+                detail={"unresolved_placeholders": unresolved},
+            )
         try:
-            gen = self._docx.generate(tid, content=content, task_id=task_id)
+            gen = self._docx.generate(
+                tid,
+                content=content,
+                task_id=task_id,
+                session_id=rec.session_id,
+                template_path=rec.template_path,
+            )
         except BizException:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -1419,7 +1528,8 @@ class MainOrchestration:
                 ErrorCode.DOCX_GENERATE_FAILED, msg=f"docx 生成失败: {exc}", detail=str(exc)
             ) from exc
         rec.docx = {"file_id": gen.get("file_id"), "download_url": gen.get("download_url"),
-                    "filename": gen.get("filename", ""), "file_path": gen.get("file_path", "")}
+                    "filename": gen.get("filename", ""), "file_path": gen.get("file_path", ""),
+                    "template_id": tid, "cross_references": gen.get("cross_references", {})}
         self._store.put(rec)
         return Result.ok(data=gen, msg="docx 生成完成")
 
@@ -1446,6 +1556,81 @@ class MainOrchestration:
             raise BizException(
                 ErrorCode.STATE_READ_FAILED, msg=f"进度查询失败: {exc}", detail=str(exc)
             ) from exc
+
+    def get_template_config(self, task_id: str) -> Result[Dict[str, Any]]:
+        rec = self._require(task_id)
+        return Result.ok(
+            data={
+                "template_id": rec.template_id,
+                "template_name": rec.template_name or (
+                    os.path.basename(rec.template_path) if rec.template_path else ""
+                ),
+                "placeholders": list(rec.template_placeholders),
+                "mapping": dict(rec.template_mapping),
+                "is_custom": bool(rec.template_id and rec.template_path),
+            },
+            msg="论文模板配置",
+        )
+
+    def set_template_mapping(
+        self, task_id: str, mapping: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        rec = self._require(task_id)
+        if not rec.template_id or not rec.template_path:
+            raise BizException(ErrorCode.TEMPLATE_NOT_FOUND, msg="请先上传学校 DOCX 模板")
+        allowed_sources = {
+            "topic", "title", "outline", "chapter", "content",
+            "abstract", "degree", "subject_field", "references",
+        }
+        cleaned = {str(key): str(value) for key, value in mapping.items()}
+        unknown_targets = sorted(set(cleaned) - set(rec.template_placeholders))
+        unknown_sources = sorted(set(cleaned.values()) - allowed_sources)
+        if unknown_targets:
+            raise BizException(
+                ErrorCode.INVALID_PARAM,
+                msg=f"映射包含模板中不存在的占位符: {unknown_targets}",
+            )
+        if unknown_sources:
+            raise BizException(
+                ErrorCode.INVALID_PARAM,
+                msg=f"映射包含不支持的内容源: {unknown_sources}",
+            )
+        rec.template_mapping = cleaned
+        self._store.put(rec)
+        return Result.ok(
+            data={
+                "placeholders": list(rec.template_placeholders),
+                "mapping": dict(rec.template_mapping),
+            },
+            msg="模板占位符映射已保存",
+        )
+
+    @staticmethod
+    def _suggest_template_mapping(placeholders: List[str]) -> Dict[str, str]:
+        exact = {
+            "topic", "title", "outline", "chapter", "content",
+            "abstract", "degree", "subject_field", "references",
+        }
+        suggestions: Dict[str, str] = {}
+        for placeholder in placeholders:
+            low = placeholder.strip().lower()
+            if low in exact:
+                suggestions[placeholder] = low
+            elif any(token in placeholder for token in ("题目", "标题")):
+                suggestions[placeholder] = "title"
+            elif "大纲" in placeholder or "目录" in placeholder:
+                suggestions[placeholder] = "outline"
+            elif any(token in placeholder for token in ("正文", "内容", "章节")):
+                suggestions[placeholder] = "content"
+            elif "摘要" in placeholder:
+                suggestions[placeholder] = "abstract"
+            elif "参考文献" in placeholder:
+                suggestions[placeholder] = "references"
+            elif "学位" in placeholder:
+                suggestions[placeholder] = "degree"
+            elif any(token in placeholder for token in ("学科", "专业")):
+                suggestions[placeholder] = "subject_field"
+        return suggestions
 
     def confirm_ring(
         self,

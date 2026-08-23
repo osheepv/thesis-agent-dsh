@@ -27,8 +27,10 @@ from common.aicoding.exception import BizException, ErrorCode
 from ..config import DocxConfig
 from ..dto.base import SectionSkeleton, TemplateParseVO
 
-#: Jinja2 占位符正则：{{ identifier }} / {{ identifier.filter }}
-_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z_][\w\.]*)\s*\}\}")
+#: Jinja2 占位符正则：支持英文/中文 Unicode 标识符与点路径。
+_PLACEHOLDER_RE = re.compile(
+    r"\{\{\s*([A-Za-z_\u3400-\u9FFF][\w\u3400-\u9FFF\.]*)\s*\}\}"
+)
 
 #: 标题样式名映射到级别（兼容英文 Heading 与中文标题）
 _HEADING_STYLE_MAP: dict[str, int] = {

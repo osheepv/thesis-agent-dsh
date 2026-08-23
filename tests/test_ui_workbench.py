@@ -46,6 +46,9 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         'id="protocol-form"',
         'id="argument-claim-rows"',
         'id="research-file-input"',
+        '/template/mapping',
+        'data-section-action="compare"',
+        'computeLineDiff',
         'AbortController',
         'showAccessibleDialog',
     ):

@@ -2711,6 +2711,14 @@ a:hover { text-decoration: underline; }
   background: var(--bg-code-block);
   font: 12px/1.6 var(--font-mono);
 }
+.section-diff-controls { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) auto; gap: 6px; margin-top: 8px; }
+.section-diff-controls select { min-width: 0; padding: 6px; border: 1px solid var(--border-divider); border-radius: 7px; background: var(--bg-input); color: var(--text-primary); }
+.section-diff-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.diff-column { min-width: 0; max-height: 260px; overflow: auto; border: 1px solid var(--border-divider); border-radius: 8px; background: var(--bg-code-block); }
+.diff-column h4 { position: sticky; top: 0; padding: 6px 8px; background: var(--bg-sidebar); border-bottom: 1px solid var(--border-divider); font-size: 11px; z-index: 1; }
+.diff-line { min-height: 20px; padding: 2px 7px; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/16px var(--font-mono); }
+.diff-line.added { background: var(--success-soft); color: var(--success); }
+.diff-line.removed { background: var(--error-soft); color: var(--error); }
 .wb-live { min-height: 18px; font-size: 11px; color: var(--text-subtle); }
 .sr-only {
   position: absolute;
@@ -2722,6 +2730,10 @@ a:hover { text-decoration: underline; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+@media (max-width: 1080px) {
+  .section-diff-grid, .wb-form-row { grid-template-columns: 1fr; }
+  .section-diff-controls { grid-template-columns: 1fr; }
 }
 
 </style>
@@ -2966,6 +2978,13 @@ a:hover { text-decoration: underline; }
             <button class="btn btn-secondary btn-sm" id="sections-refresh">刷新</button>
           </div>
           <div id="sections-live" class="wb-live" role="status" aria-live="polite"></div>
+          <details class="wb-card" id="template-mapping-panel">
+            <summary class="wb-card-title">学校 DOCX 模板</summary>
+            <div class="wb-form">
+              <div class="wb-field"><label for="task-template-file">上传学校模板</label><input id="task-template-file" type="file" accept=".docx"></div>
+              <div id="template-config"><div class="wb-card-meta">未上传时使用内置论文模板。</div></div>
+            </div>
+          </details>
           <div id="section-audit" class="wb-empty">进入环6后显示大纲分节。</div>
           <div id="section-list"></div>
         </div>
@@ -5125,6 +5144,17 @@ async function apiReviewSection(taskId, draftId, approved, reason = '') {
 async function apiReviseSection(taskId, draftId, content, title = '') {
   return apiPost(`/api/v1/console/tasks/${taskId}/writing/sections/${draftId}/revise`, { content, title, actor: 'author' });
 }
+async function apiTemplateConfig(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/template`);
+}
+async function apiUploadTaskTemplate(taskId, file) {
+  const form = new FormData();
+  form.append('file', file);
+  return apiRequest(`/api/v1/console/tasks/${taskId}/template`, { method: 'POST', body: form }, 120000);
+}
+async function apiSaveTemplateMapping(taskId, mapping) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/template/mapping`, { mapping });
+}
 async function apiListJobs(taskId) {
   return apiGet(`/api/v1/console/tasks/${taskId}/jobs`, { limit: 100 });
 }
@@ -5732,6 +5762,7 @@ async function submitResultForm(event) {
   else { toast(response.msg); await loadResearchPanel(); }
 }
 
+let sectionDraftCache = new Map();
 async function loadSectionsPanel() {
   const listBox = document.getElementById('section-list');
   const auditBox = document.getElementById('section-audit');
@@ -5744,8 +5775,8 @@ async function loadSectionsPanel() {
   }
   const taskId = currentSession;
   listBox.setAttribute('aria-busy', 'true');
-  const [auditResponse, draftResponse] = await Promise.all([
-    apiSectionAudit(taskId), apiSectionDrafts(taskId),
+  const [auditResponse, draftResponse, templateResponse] = await Promise.all([
+    apiSectionAudit(taskId), apiSectionDrafts(taskId), apiTemplateConfig(taskId),
   ]);
   if (taskId !== currentSession) return;
   listBox.removeAttribute('aria-busy');
@@ -5758,13 +5789,18 @@ async function loadSectionsPanel() {
   }
   const audit = auditResponse.data || {};
   const drafts = draftResponse.data || [];
+  renderTemplateConfig(templateResponse);
+  sectionDraftCache = new Map(drafts.map(draft => [draft.section_draft_id, draft]));
   auditBox.className = 'wb-card';
   auditBox.innerHTML = `<div class="wb-card-title">已批准 ${(audit.approved_section_ids || []).length}/${(audit.expected_section_ids || []).length} 节</div>
     <div class="wb-card-meta">${audit.can_assemble ? '全部分节已就绪，可以汇编环6初稿。' : `待完成：${escapeHtml2((audit.missing_section_ids || []).join('、') || '等待大纲')}`}</div>
     <div class="wb-card-actions">${audit.can_assemble ? '<button class="btn btn-primary btn-sm" id="assemble-sections">汇编环6初稿</button>' : ''}</div>`;
   document.getElementById('assemble-sections')?.addEventListener('click', assembleSectionsFromPanel);
   const latestBySection = new Map();
+  const versionsBySection = new Map();
   drafts.forEach(draft => {
+    if (!versionsBySection.has(draft.section_id)) versionsBySection.set(draft.section_id, []);
+    versionsBySection.get(draft.section_id).push(draft);
     const current = latestBySection.get(draft.section_id);
     if (!current || draft.version > current.version) latestBySection.set(draft.section_id, draft);
   });
@@ -5772,10 +5808,14 @@ async function loadSectionsPanel() {
     <div class="wb-card-title">${escapeHtml2(sectionId)}</div><div class="wb-card-meta">尚未生成草稿</div>
     <div class="wb-card-actions"><button class="btn btn-primary btn-sm" data-section-action="generate">生成本节</button></div>
   </article>`);
-  const draftCards = [...latestBySection.values()].sort((a, b) => a.section_id.localeCompare(b.section_id, undefined, { numeric: true })).map(draft => `<article class="wb-card" data-draft-id="${escapeHtml2(draft.section_draft_id)}" data-section-id="${escapeHtml2(draft.section_id)}">
+  const draftCards = [...latestBySection.values()].sort((a, b) => a.section_id.localeCompare(b.section_id, undefined, { numeric: true })).map(draft => {
+    const versions = (versionsBySection.get(draft.section_id) || []).sort((a, b) => b.version - a.version);
+    const versionOptions = versions.map(version => `<option value="${escapeHtml2(version.section_draft_id)}">v${version.version} ${escapeHtml2(version.status)}</option>`).join('');
+    return `<article class="wb-card" data-draft-id="${escapeHtml2(draft.section_draft_id)}" data-section-id="${escapeHtml2(draft.section_id)}">
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:start;"><div class="wb-card-title">${escapeHtml2(draft.section_id)} ${escapeHtml2(draft.title)}</div><span class="wb-status ${wbStatusClass(draft.status)}">v${draft.version} ${escapeHtml2(draft.status)}</span></div>
-    <div class="wb-card-meta">证据 ${(draft.evidence_ids || []).length} · 结果 ${(draft.result_ids || []).length} · 审批 ${(draft.approvals || []).length}</div>
+    <div class="wb-card-meta">${versions.length} 个版本 · 证据 ${(draft.evidence_ids || []).length} · 结果 ${(draft.result_ids || []).length} · 审批 ${(draft.approvals || []).length}</div>
     <details><summary class="wb-card-meta">查看正文</summary><pre class="section-preview">${escapeHtml2(draft.content)}</pre></details>
+    ${versions.length > 1 ? `<div class="section-diff-controls"><select data-diff-left aria-label="较早版本">${versionOptions}</select><select data-diff-right aria-label="较新版本">${versionOptions}</select><button class="btn btn-secondary btn-sm" data-section-action="compare">比较</button></div><div class="section-diff-host" hidden></div>` : ''}
     <div class="wb-card-actions">
       ${draft.status === 'WAITING_APPROVAL' ? '<button class="btn btn-primary btn-sm" data-section-action="approve">批准</button><button class="btn btn-secondary btn-sm" data-section-action="reject">驳回</button>' : ''}
       ${draft.status !== 'STALE' ? '<button class="btn btn-secondary btn-sm" data-section-action="edit">修订为新版本</button>' : ''}
@@ -5786,10 +5826,65 @@ async function loadSectionsPanel() {
       <textarea class="section-editor" id="editor-${escapeHtml2(draft.section_draft_id)}">${escapeHtml2(draft.content)}</textarea>
       <div class="wb-card-actions"><button class="btn btn-primary btn-sm" data-section-action="save">保存新版本</button><button class="btn btn-secondary btn-sm" data-section-action="cancel-edit">取消</button></div>
     </div>
-  </article>`);
+  </article>`;
+  });
   listBox.innerHTML = [...missingCards, ...draftCards].join('') || '<div class="wb-empty">进入环6并批准大纲后，这里会显示可写分节。</div>';
+  listBox.querySelectorAll('[data-diff-left]').forEach(select => {
+    if (select.options.length > 1) select.selectedIndex = 1;
+  });
   listBox.querySelectorAll('[data-section-action]').forEach(button => button.addEventListener('click', handleSectionAction));
   document.getElementById('sections-live').textContent = `已加载 ${drafts.length} 个分节版本`;
+}
+
+function renderTemplateConfig(response) {
+  const box = document.getElementById('template-config');
+  if (!box) return;
+  if (!response || response.code !== 0) {
+    box.innerHTML = `<div class="wb-error">${escapeHtml2(response?.msg || '模板配置读取失败')}</div>`;
+    return;
+  }
+  const config = response.data || {};
+  const placeholders = config.placeholders || [];
+  if (!config.is_custom) {
+    box.innerHTML = '<div class="wb-card-meta">当前使用内置论文模板。上传学校 DOCX 后可映射占位符。</div>';
+    return;
+  }
+  const sourceOptions = [
+    ['','请选择内容源'], ['title','论文题目'], ['abstract','摘要'], ['content','完整正文'], ['outline','论文大纲'],
+    ['chapter','章节正文'], ['references','参考文献'], ['degree','学位层次'], ['subject_field','学科方向'],
+  ];
+  box.innerHTML = `<div class="wb-card-meta">模板：${escapeHtml2(config.template_name || config.template_id)} · ${placeholders.length} 个占位符</div>
+    <div class="wb-form" id="template-mapping-fields">${placeholders.map((placeholder, index) => `<div class="wb-field"><label for="template-map-${index}">{{ ${escapeHtml2(placeholder)} }}</label><select id="template-map-${index}" data-template-placeholder="${escapeHtml2(placeholder)}">${sourceOptions.map(([value,label]) => `<option value="${value}" ${config.mapping?.[placeholder] === value ? 'selected' : ''}>${label}</option>`).join('')}</select></div>`).join('')}</div>
+    <div id="template-mapping-error" class="wb-card-meta" style="color:var(--error)" role="alert"></div>
+    <div class="wb-card-actions"><button class="btn btn-primary btn-sm" id="save-template-mapping">保存映射</button></div>`;
+  document.getElementById('save-template-mapping')?.addEventListener('click', saveTemplateMappingFromPanel);
+}
+
+async function saveTemplateMappingFromPanel(event) {
+  event.currentTarget.disabled = true;
+  const mapping = {};
+  document.querySelectorAll('[data-template-placeholder]').forEach(select => {
+    if (select.value) mapping[select.dataset.templatePlaceholder] = select.value;
+  });
+  const response = await apiSaveTemplateMapping(currentSession, mapping);
+  const error = document.getElementById('template-mapping-error');
+  if (response.code !== 0) {
+    error.textContent = response.msg;
+    event.currentTarget.disabled = false;
+  } else {
+    toast(response.msg);
+    await loadSectionsPanel();
+  }
+}
+
+async function uploadTaskTemplate(file) {
+  if (!currentSession || !file) return;
+  const live = document.getElementById('sections-live');
+  live.textContent = `正在解析学校模板 ${file.name}…`;
+  const response = await apiUploadTaskTemplate(currentSession, file);
+  if (response.code !== 0) toast(`模板上传失败：${response.msg}`);
+  else toast(`模板已解析：${(response.data?.placeholders || []).length} 个占位符`);
+  await loadSectionsPanel();
 }
 
 async function handleSectionAction(event) {
@@ -5799,6 +5894,10 @@ async function handleSectionAction(event) {
   const draftId = card?.dataset.draftId;
   const action = button.dataset.sectionAction;
   if (!currentSession || !sectionId) return;
+  if (action === 'compare') {
+    renderSectionDiff(card);
+    return;
+  }
   if (action === 'edit' || action === 'cancel-edit') {
     const area = card.querySelector('.section-edit-area');
     area.hidden = action !== 'edit';
@@ -5822,6 +5921,56 @@ async function handleSectionAction(event) {
   }
   toast(response?.code === 0 ? response.msg : `操作失败：${response?.msg || '未知错误'}`);
   await loadSectionsPanel();
+}
+
+function renderSectionDiff(card) {
+  const left = sectionDraftCache.get(card.querySelector('[data-diff-left]')?.value);
+  const right = sectionDraftCache.get(card.querySelector('[data-diff-right]')?.value);
+  const host = card.querySelector('.section-diff-host');
+  if (!left || !right || !host) return;
+  const diff = computeLineDiff(left.content, right.content);
+  host.hidden = false;
+  host.innerHTML = `<div class="section-diff-grid">
+    <section class="diff-column" tabindex="0" aria-label="v${left.version} 内容"><h4>v${left.version} · ${escapeHtml2(left.status)}</h4>${diff.left.map(line => `<div class="diff-line ${line.changed ? 'removed' : ''}">${escapeHtml2(line.text || ' ')}</div>`).join('')}</section>
+    <section class="diff-column" tabindex="0" aria-label="v${right.version} 内容"><h4>v${right.version} · ${escapeHtml2(right.status)}</h4>${diff.right.map(line => `<div class="diff-line ${line.changed ? 'added' : ''}">${escapeHtml2(line.text || ' ')}</div>`).join('')}</section>
+  </div>`;
+  host.querySelector('.diff-column')?.focus?.();
+}
+
+function computeLineDiff(leftText, rightText) {
+  const leftLines = String(leftText || '').split(/\r?\n/).slice(0, 250);
+  const rightLines = String(rightText || '').split(/\r?\n/).slice(0, 250);
+  const rows = leftLines.length + 1, cols = rightLines.length + 1;
+  const matrix = Array.from({ length: rows }, () => new Uint16Array(cols));
+  for (let i = leftLines.length - 1; i >= 0; i--) {
+    for (let j = rightLines.length - 1; j >= 0; j--) {
+      matrix[i][j] = leftLines[i] === rightLines[j]
+        ? matrix[i + 1][j + 1] + 1
+        : Math.max(matrix[i + 1][j], matrix[i][j + 1]);
+    }
+  }
+  const left = [], right = [];
+  let i = 0, j = 0;
+  while (i < leftLines.length || j < rightLines.length) {
+    if (i < leftLines.length && j < rightLines.length && leftLines[i] === rightLines[j]) {
+      left.push({ text: leftLines[i], changed: false });
+      right.push({ text: rightLines[j], changed: false });
+      i++; j++;
+    } else if (j < rightLines.length && (i >= leftLines.length || matrix[i][j + 1] >= matrix[i + 1][j])) {
+      right.push({ text: rightLines[j], changed: true });
+      left.push({ text: '', changed: true });
+      j++;
+    } else {
+      left.push({ text: leftLines[i], changed: true });
+      right.push({ text: '', changed: true });
+      i++;
+    }
+  }
+  if (String(leftText || '').split(/\r?\n/).length > 250 || String(rightText || '').split(/\r?\n/).length > 250) {
+    left.push({ text: '仅比较前 250 行', changed: true });
+    right.push({ text: '仅比较前 250 行', changed: true });
+  }
+  return { left, right };
 }
 
 async function assembleSectionsFromPanel(event) {
@@ -6269,6 +6418,14 @@ async function initApp() {
     researchFileInput.dataset.bound = '1';
     researchFileInput.addEventListener('change', event => {
       uploadResearchFiles(event.target.files);
+      event.target.value = '';
+    });
+  }
+  const templateFileInput = document.getElementById('task-template-file');
+  if (templateFileInput && !templateFileInput.dataset.bound) {
+    templateFileInput.dataset.bound = '1';
+    templateFileInput.addEventListener('change', event => {
+      uploadTaskTemplate(event.target.files?.[0]);
       event.target.value = '';
     });
   }

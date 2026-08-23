@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      # torch 先装 CPU 版（Linux 默认 pip 会拉 ~2.5GB CUDA 包；CPU 版小 10 倍）
+      - name: Install torch (CPU)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+      # 测试零外网依赖：conftest 已禁 LLM / 任务存内存 / RAG 不下载模型
+      - name: Run tests
+        run: pytest tests/ -q

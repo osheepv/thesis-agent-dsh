@@ -1939,6 +1939,77 @@ class MainOrchestration:
         data["approvals"] = self._sections.list_approvals(task_id, section_draft_id)
         return Result.ok(data=data, msg="分节审批已记录")
 
+    def revise_section_draft(
+        self, task_id: str, section_draft_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        self._require_current_ring(task_id, 6)
+        self._refresh_section_staleness(task_id)
+        parent = self._sections.get(task_id, section_draft_id)
+        if parent.status == SectionDraftStatus.STALE:
+            raise SectionDraftRegistryError("上游已变化，不能基于过期分节继续修订")
+        content = str(value.get("content", "")).strip()
+        if not content:
+            raise SectionDraftRegistryError("修订正文不能为空")
+        marked_evidence = set(re.findall(r"\[(EVD-[A-Z0-9]+)\]", content))
+        marked_results = set(re.findall(r"\[(RES-[A-Z0-9]+)\]", content))
+        expected_evidence = set(parent.evidence_ids)
+        expected_results = set(parent.result_ids)
+        expected_bookmarks = set(
+            re.findall(r"\[\[BOOKMARK:([A-Za-z][A-Za-z0-9_.-]{0,127})\|", parent.content)
+        )
+        marked_bookmarks = set(
+            re.findall(r"\[\[BOOKMARK:([A-Za-z][A-Za-z0-9_.-]{0,127})\|", content)
+        )
+        issues: list[str] = []
+        if marked_evidence != expected_evidence:
+            issues.append(
+                "证据标记集合必须保持不变: "
+                f"missing={sorted(expected_evidence - marked_evidence)}, "
+                f"extra={sorted(marked_evidence - expected_evidence)}"
+            )
+        if marked_results != expected_results:
+            issues.append(
+                "结果标记集合必须保持不变: "
+                f"missing={sorted(expected_results - marked_results)}, "
+                f"extra={sorted(marked_results - expected_results)}"
+            )
+        if not expected_bookmarks.issubset(marked_bookmarks):
+            issues.append(
+                f"丢失交叉引用目标: {sorted(expected_bookmarks - marked_bookmarks)}"
+            )
+        draft = self._sections.create_version(
+            task_id=task_id,
+            section_id=parent.section_id,
+            title=str(value.get("title", "")).strip() or parent.title,
+            content=content,
+            claim_ids=parent.claim_ids,
+            evidence_ids=parent.evidence_ids,
+            result_ids=parent.result_ids,
+            upstream_artifact_ids=parent.upstream_artifact_ids,
+            context_manifest={
+                **parent.context_manifest,
+                "revision_parent_id": parent.section_draft_id,
+                "revision_actor": str(value.get("actor", "author")),
+            },
+        )
+        draft = self._sections.submit_auto_gate(
+            task_id,
+            draft.section_draft_id,
+            passed=not issues,
+            report={
+                "issues": issues,
+                "revision_parent_id": parent.section_draft_id,
+                "citation_fingerprint": "passed" if not issues else "failed",
+            },
+        )
+        if issues:
+            return Result.fail(
+                code=101200,
+                msg="作者修订未通过事实/引用指纹 Gate",
+                data=draft.to_dict(),
+            )
+        return Result.ok(data=draft.to_dict(), msg="修订已保存为新版本，等待作者审批")
+
     def list_section_drafts(self, task_id: str) -> Result[List[Dict[str, Any]]]:
         self._require(task_id)
         self._refresh_section_staleness(task_id)

@@ -213,6 +213,7 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/console/tasks/TASK_ID/rings/1/confi
 | 为一个大纲分节生成新版本 | `POST /writing/sections/generate` |
 | 查看全部分节版本 | `GET /writing/sections` |
 | 作者批准/驳回分节 | `POST /writing/sections/{section_draft_id}/review` |
+| 作者修订并创建新版本 | `POST /writing/sections/{section_draft_id}/revise` |
 | 检查是否全部分节已批准 | `GET /writing/sections-audit` |
 | 汇编为环6正式初稿 | `POST /rings/6/assemble` |
 

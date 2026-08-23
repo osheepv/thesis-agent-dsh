@@ -385,6 +385,17 @@ async def review_section_draft(task_id: str, section_draft_id: str, req: Dict[st
         return _err(exc)
 
 
+@router.post("/tasks/{task_id}/writing/sections/{section_draft_id}/revise", response_model=None)
+async def revise_section_draft(task_id: str, section_draft_id: str, req: Dict[str, Any],
+                               session_id: str = "",
+                               orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.revise_section_draft(task_id, section_draft_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 @router.post("/tasks/{task_id}/rings/6/assemble", response_model=None)
 async def assemble_section_drafts(task_id: str, session_id: str = "",
                                   orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:

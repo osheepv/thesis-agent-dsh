@@ -85,7 +85,7 @@
   --h-titlebar: 40px;
   --w-sidebar:  280px;
   --h-statusbar: 36px;
-  --w-kb-panel: 300px;
+  --w-kb-panel: 380px;
 
   --transition-fast:   150ms ease;
   --transition-normal: 300ms ease;
@@ -311,6 +311,15 @@ a:hover { text-decoration: underline; }
   transition: background var(--transition-fast);
   display: flex; flex-direction: column; gap: 4px;
 }
+.session-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  text-align: start;
+  padding: 0;
+}
 .session-item:hover { background: var(--bg-hover); }
 .session-item.active { background: var(--bg-hover); }
 .session-item.active::before {
@@ -330,8 +339,12 @@ a:hover { text-decoration: underline; }
   color: var(--text-primary);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   flex: 1;
+  padding-inline-end: 24px;
 }
 .session-delete {
+  position: absolute;
+  inset-block-start: 10px;
+  inset-inline-end: 10px;
   opacity: 0;
   width: 20px; height: 20px;
   border-radius: 4px;
@@ -1451,7 +1464,9 @@ a:hover { text-decoration: underline; }
   display: flex; align-items: center; gap: 8px;
   font-size: var(--fs-small);
   font-weight: 600;
+  min-width: 0;
 }
+.kb-head-title > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kb-head-title .dot {
   width: 6px; height: 6px;
   border-radius: 50%;
@@ -1461,10 +1476,13 @@ a:hover { text-decoration: underline; }
   display: flex;
   padding: 0 8px;
   border-bottom: 1px solid var(--border-divider);
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 .kb-tab {
-  flex: 1;
-  padding: 10px 4px;
+  flex: 0 0 auto;
+  min-width: 58px;
+  padding: 10px 8px;
   font-size: var(--fs-small);
   color: var(--text-inactive);
   border-bottom: 2px solid transparent;
@@ -2525,7 +2543,7 @@ a:hover { text-decoration: underline; }
 /* —— 图谱节点详情抽屉 —— */
 .node-drawer {
   position: fixed;
-  right: 316px; top: 60px;
+  right: calc(var(--w-kb-panel) + 16px); top: 60px;
   width: 300px;
   background: var(--bg-card);
   border: 1px solid var(--border-divider);
@@ -2566,6 +2584,109 @@ a:hover { text-decoration: underline; }
 @keyframes flashItem { 0%, 100% { background: transparent; } 50% { background: var(--claude-soft); } }
 .ref-item.flash { animation: flashItem 1s ease 2; border-radius: 8px; }
 
+/* —— 可信写作工作台（证据 / 分节 / 作业） —— */
+.wb-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.wb-toolbar h3 { font-size: 13px; line-height: 18px; }
+.wb-card {
+  min-width: 0;
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px solid var(--border-divider);
+  border-radius: 10px;
+  background: var(--bg-card);
+}
+.wb-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.wb-card-meta {
+  margin-top: 4px;
+  color: var(--text-subtle);
+  font-size: 11px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+.wb-card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.wb-empty, .wb-error {
+  padding: 16px 10px;
+  border: 1px dashed var(--border-divider);
+  border-radius: 10px;
+  color: var(--text-subtle);
+  font-size: 12px;
+  line-height: 18px;
+  text-align: center;
+}
+.wb-error { color: var(--error); border-color: var(--error); text-align: start; }
+.wb-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: var(--r-pill);
+  font-size: 10px;
+  font-weight: 600;
+  background: var(--bg-code-block);
+  color: var(--text-inactive);
+}
+.wb-status.ok { color: var(--success); background: var(--success-soft); }
+.wb-status.warn { color: var(--warning); background: var(--warning-soft); }
+.wb-status.bad { color: var(--error); background: var(--error-soft); }
+.wb-progress {
+  height: 5px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: var(--r-pill);
+  background: var(--border-divider);
+}
+.wb-progress > span { display: block; height: 100%; background: var(--permission); }
+.wb-budget-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.wb-field label { display: block; margin-bottom: 4px; color: var(--text-subtle); font-size: 11px; }
+.wb-field input, .section-editor {
+  width: 100%;
+  border: 1px solid var(--border-divider);
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-size: 16px;
+  padding: 8px;
+}
+.section-editor { min-height: 180px; resize: vertical; line-height: 1.6; font-family: var(--font-sans); }
+.section-preview {
+  margin-top: 8px;
+  padding: 8px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border-radius: 8px;
+  background: var(--bg-code-block);
+  font: 12px/1.6 var(--font-mono);
+}
+.wb-live { min-height: 18px; font-size: 11px; color: var(--text-subtle); }
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0);
+  white-space: nowrap; border: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}
+
 </style>
 <script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
 </head>
@@ -2576,10 +2697,10 @@ a:hover { text-decoration: underline; }
   <!-- ============ Title Bar ============ -->
   <header class="titlebar">
     <div class="nav-arrows">
-      <button class="nav-btn" title="后退" disabled>
+      <button class="nav-btn" title="后退" aria-label="后退" disabled>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
-      <button class="nav-btn" title="前进" disabled>
+      <button class="nav-btn" title="前进" aria-label="前进" disabled>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
       </button>
     </div>
@@ -2595,10 +2716,10 @@ a:hover { text-decoration: underline; }
     </div>
     <div class="titlebar-spacer"></div>
     <div class="titlebar-actions">
-      <button class="nav-btn" id="toggle-kb" title="切换知识库面板">
+      <button class="nav-btn" id="toggle-kb" title="切换工作台面板" aria-label="切换右侧工作台面板" aria-expanded="true" aria-controls="kb-panel">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
       </button>
-      <button class="nav-btn" title="设置">
+      <button class="nav-btn" id="title-settings" title="设置" aria-label="打开设置">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
       </button>
     </div>
@@ -2630,7 +2751,7 @@ a:hover { text-decoration: underline; }
       <div class="session-list" id="session-list">
         <!-- Today 分组 -->
         <!-- 会话列表（JS 渲染，对接后端） -->
-        <div id="session-items"></div>
+        <div id="session-items" role="list" aria-label="论文任务"></div>
       </div>
 
       <div class="sidebar-foot">
@@ -2709,20 +2830,23 @@ a:hover { text-decoration: underline; }
           <span class="dot"></span>
           <span id="kb-head-name">知识库</span>
         </div>
-        <button class="nav-btn" id="close-kb" title="折叠">
+        <button class="nav-btn" id="close-kb" title="折叠" aria-label="折叠右侧工作台">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
         </button>
       </div>
 
-      <div class="kb-tabs">
-        <button class="kb-tab active" data-tab="refs">文献池</button>
-        <button class="kb-tab" data-tab="notes">笔记</button>
-        <button class="kb-tab" data-tab="graph">图谱</button>
+      <div class="kb-tabs" role="tablist" aria-label="项目工作台">
+        <button class="kb-tab active" id="wb-tab-refs" data-tab="refs" role="tab" aria-selected="true" aria-controls="wb-pane-refs">文献</button>
+        <button class="kb-tab" id="wb-tab-evidence" data-tab="evidence" role="tab" aria-selected="false" aria-controls="wb-pane-evidence">证据</button>
+        <button class="kb-tab" id="wb-tab-writing" data-tab="writing" role="tab" aria-selected="false" aria-controls="wb-pane-writing">分节</button>
+        <button class="kb-tab" id="wb-tab-jobs" data-tab="jobs" role="tab" aria-selected="false" aria-controls="wb-pane-jobs">作业</button>
+        <button class="kb-tab" id="wb-tab-notes" data-tab="notes" role="tab" aria-selected="false" aria-controls="wb-pane-notes">笔记</button>
+        <button class="kb-tab" id="wb-tab-graph" data-tab="graph" role="tab" aria-selected="false" aria-controls="wb-pane-graph">图谱</button>
       </div>
 
       <div class="kb-body">
         <!-- 文献池 -->
-        <div class="kb-pane active" data-pane="refs">
+        <div class="kb-pane active" id="wb-pane-refs" data-pane="refs" role="tabpanel" aria-labelledby="wb-tab-refs">
           <div class="kb-section-title">
             <span>知识库文献</span>
             <span class="count">0</span>
@@ -2734,8 +2858,52 @@ a:hover { text-decoration: underline; }
           <div id="kb-refs-empty" style="padding:12px;color:var(--text-subtle);font-size:12px;">暂无文献（可上传或从引导平台下载）</div>
         </div>
 
+        <!-- 证据与论证图 -->
+        <div class="kb-pane" id="wb-pane-evidence" data-pane="evidence" role="tabpanel" aria-labelledby="wb-tab-evidence" hidden>
+          <div class="wb-toolbar">
+            <h3>证据与论证</h3>
+            <button class="btn btn-secondary btn-sm" id="evidence-refresh">刷新</button>
+          </div>
+          <div id="evidence-live" class="wb-live" role="status" aria-live="polite"></div>
+          <div id="argument-map-list"></div>
+          <div id="claim-audit-list"><div class="wb-empty">选择论文任务后查看论断覆盖。</div></div>
+          <div id="source-ledger-list"></div>
+        </div>
+
+        <!-- 分节写作 -->
+        <div class="kb-pane" id="wb-pane-writing" data-pane="writing" role="tabpanel" aria-labelledby="wb-tab-writing" hidden>
+          <div class="wb-toolbar">
+            <h3>分节版本与审批</h3>
+            <button class="btn btn-secondary btn-sm" id="sections-refresh">刷新</button>
+          </div>
+          <div id="sections-live" class="wb-live" role="status" aria-live="polite"></div>
+          <div id="section-audit" class="wb-empty">进入环6后显示大纲分节。</div>
+          <div id="section-list"></div>
+        </div>
+
+        <!-- 后台作业 -->
+        <div class="kb-pane" id="wb-pane-jobs" data-pane="jobs" role="tabpanel" aria-labelledby="wb-tab-jobs" hidden>
+          <div class="wb-toolbar">
+            <h3>后台作业与预算</h3>
+            <button class="btn btn-secondary btn-sm" id="jobs-refresh">刷新</button>
+          </div>
+          <div class="wb-budget-grid">
+            <div class="wb-field">
+              <label for="job-token-budget">单次 Token 上限</label>
+              <input id="job-token-budget" type="number" min="0" step="1000" value="20000" inputmode="numeric" aria-describedby="job-budget-hint">
+            </div>
+            <div class="wb-field">
+              <label for="job-cost-budget">单次费用上限</label>
+              <input id="job-cost-budget" type="number" min="0" step="0.1" value="0" inputmode="decimal" aria-describedby="job-budget-hint">
+            </div>
+          </div>
+          <p id="job-budget-hint" class="wb-card-meta">0 表示该维度不限制；费用预算需要后端配置当前模型单价。</p>
+          <div id="jobs-live" class="wb-live" role="status" aria-live="polite"></div>
+          <div id="job-list"><div class="wb-empty">暂无后台作业。</div></div>
+        </div>
+
         <!-- 笔记 -->
-        <div class="kb-pane" data-pane="notes">
+        <div class="kb-pane" id="wb-pane-notes" data-pane="notes" role="tabpanel" aria-labelledby="wb-tab-notes" hidden>
           <!-- 笔记列表 -->
           <div id="notes-list" style="margin-bottom:8px;max-height:140px;overflow-y:auto;border:1px solid var(--border-divider);border-radius:8px;padding:4px;">
             <div style="padding:8px;font-size:12px;color:var(--text-subtle);">加载笔记…</div>
@@ -2757,7 +2925,7 @@ a:hover { text-decoration: underline; }
         </div>
 
         <!-- 图谱 -->
-        <div class="kb-pane" data-pane="graph">
+        <div class="kb-pane" id="wb-pane-graph" data-pane="graph" role="tabpanel" aria-labelledby="wb-tab-graph" hidden>
           <div class="kb-section-title">
             <span>概念图谱</span>
             <span class="count" id="graph-count">0 节点</span>
@@ -2767,7 +2935,6 @@ a:hover { text-decoration: underline; }
             <button class="dg-btn" data-depth="1" onclick="applyDepth(1)">1跳</button>
             <button class="dg-btn" data-depth="2" onclick="applyDepth(2)">2跳</button>
             <button class="dg-btn" data-depth="3" onclick="applyDepth(3)">3跳</button>
-          </div>
           </div>
           <div id="kb-graph" style="width:100%;height:380px;background:#1F1F1F;border-radius:12px;"></div>
           <div class="graph-legend" style="margin-top:8px;display:flex;gap:14px;font-size:11px;color:var(--text-subtle);">
@@ -2803,7 +2970,7 @@ a:hover { text-decoration: underline; }
 </div>
 
 <!-- ============ Toast ============ -->
-<div class="toast" id="toast" data-i18n="toast.clipboard">已复制到剪贴板</div>
+<div class="toast" id="toast" role="status" aria-live="polite" aria-atomic="true" data-i18n="toast.clipboard">已复制到剪贴板</div>
 
 <!-- ============ 左下角弹出菜单（仿 Claude Code） ============ -->
 <div class="foot-menu" id="foot-menu" role="menu" aria-label="用户菜单">
@@ -3008,11 +3175,11 @@ a:hover { text-decoration: underline; }
 </div>
 
 <!-- ============ 图谱节点详情抽屉 ============ -->
-<div class="node-drawer" id="node-drawer" role="dialog" aria-modal="true">
+<div class="node-drawer" id="node-drawer" role="dialog" aria-modal="true" aria-labelledby="nd-title">
   <div class="nd-head">
     <span id="nd-title" style="font-weight:600;font-size:14px;color:var(--text-primary);">节点</span>
     <span id="nd-type" class="badge" style="background:var(--claude-soft);color:var(--claude);">笔记</span>
-    <button id="nd-close" style="margin-left:auto;background:none;border:none;color:var(--text-subtle);font-size:18px;cursor:pointer;">×</button>
+    <button id="nd-close" aria-label="关闭节点详情" style="margin-left:auto;background:none;border:none;color:var(--text-subtle);font-size:18px;cursor:pointer;">×</button>
   </div>
   <div id="nd-summary" style="font-size:12px;color:var(--text-subtle);margin:8px 0;line-height:1.6;"></div>
   <div style="font-size:12px;color:var(--text-inactive);margin-bottom:4px;">关联节点（{{双链}}）</div>
@@ -3028,12 +3195,13 @@ a:hover { text-decoration: underline; }
     <div class="modal-title" id="ns-title">新建论文对话</div>
     <div class="modal-body">
       <div class="form-field">
-        <label>论文题目</label>
-        <input type="text" id="ns-title-input" placeholder="如：基于深度学习的图像识别研究" />
+        <label for="ns-title-input">论文题目</label>
+        <input type="text" id="ns-title-input" maxlength="200" required aria-required="true" aria-describedby="ns-title-error" placeholder="如：基于深度学习的图像识别研究" />
+        <div id="ns-title-error" class="wb-card-meta" style="color:var(--error)" role="alert"></div>
       </div>
       <div class="form-field-row">
         <div class="form-field">
-          <label>学位</label>
+          <label for="ns-degree">学位</label>
           <select id="ns-degree">
             <option value="BACHELOR">本科</option>
             <option value="MASTER" selected>硕士</option>
@@ -3041,7 +3209,7 @@ a:hover { text-decoration: underline; }
           </select>
         </div>
         <div class="form-field">
-          <label>检索范围</label>
+          <label for="ns-scope">检索范围</label>
           <select id="ns-scope">
             <option value="all" selected>全部（英文API+中文引导）</option>
             <option value="english">仅英文</option>
@@ -3050,8 +3218,8 @@ a:hover { text-decoration: underline; }
         </div>
       </div>
       <div class="form-field">
-        <label>学科方向</label>
-        <input type="text" id="ns-subject" placeholder="如：计算机视觉 / 自然语言处理" />
+        <label for="ns-subject">学科方向</label>
+        <input type="text" id="ns-subject" maxlength="120" placeholder="如：计算机视觉 / 自然语言处理" />
       </div>
     </div>
     <div class="modal-actions">
@@ -3063,8 +3231,8 @@ a:hover { text-decoration: underline; }
 
 <!-- ============ 推理配置占位 Modal ============ -->
 <div class="modal-mask" id="inference-modal">
-  <div class="modal" role="dialog" aria-modal="true">
-    <div class="modal-title" data-i18n="inference.title">推理配置</div>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="inference-title">
+    <div class="modal-title" id="inference-title" data-i18n="inference.title">推理配置</div>
     <div class="modal-body" data-i18n="inference.desc">
       此处将支持用户自行配置大模型（OpenAI / Anthropic / DeepSeek / 自定义端点），包含 API Key、模型选择、推理参数。后续迭代补齐。
     </div>
@@ -3475,22 +3643,51 @@ document.querySelectorAll('.tool-card-head').forEach(head => {
 /* —— 知识库面板页签 —— */
 document.querySelectorAll('.kb-tab').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('.kb-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.kb-pane').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    const target = tab.dataset.tab;
-    document.querySelector(`.kb-pane[data-pane="${target}"]`).classList.add('active');
-    const sid = currentKnowledgeSession || currentSession || 'default';
-    if (target === 'notes') loadNotes(sid);
-    if (target === 'graph') renderGraph(sid);
+    activateWorkbenchTab(tab.dataset.tab);
+  });
+  tab.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = [...document.querySelectorAll('.kb-tab')];
+    const index = tabs.indexOf(tab);
+    const nextIndex = event.key === 'Home' ? 0
+      : event.key === 'End' ? tabs.length - 1
+      : event.key === 'ArrowRight' ? (index + 1) % tabs.length
+      : (index - 1 + tabs.length) % tabs.length;
+    tabs[nextIndex].focus();
+    activateWorkbenchTab(tabs[nextIndex].dataset.tab);
   });
 });
+
+function activateWorkbenchTab(target) {
+  document.querySelectorAll('.kb-tab').forEach(tab => {
+    const active = tab.dataset.tab === target;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('.kb-pane').forEach(pane => {
+    const active = pane.dataset.pane === target;
+    pane.classList.toggle('active', active);
+    pane.hidden = !active;
+  });
+  const sid = currentKnowledgeSession || currentSession || 'default';
+  if (target === 'refs') loadKbPanel(sid);
+  if (target === 'notes') loadNotes(sid);
+  if (target === 'graph') renderGraph(sid);
+  if (target === 'evidence') loadEvidencePanel();
+  if (target === 'writing') loadSectionsPanel();
+  if (target === 'jobs') loadJobsPanel();
+}
 
 /* —— 折叠知识库面板 —— */
 const workspace = document.getElementById('workspace');
 const toggleKb = document.getElementById('toggle-kb');
 const closeKb = document.getElementById('close-kb');
-function toggleKbPanel() { workspace.classList.toggle('kb-collapsed'); }
+function toggleKbPanel() {
+  const collapsed = workspace.classList.toggle('kb-collapsed');
+  toggleKb.setAttribute('aria-expanded', String(!collapsed));
+}
 toggleKb.addEventListener('click', toggleKbPanel);
 closeKb.addEventListener('click', toggleKbPanel);
 
@@ -3513,11 +3710,11 @@ document.querySelectorAll('.session-delete').forEach(btn => {
     e.stopPropagation();
     pendingDelete = btn.closest('.session-item');
     delName.textContent = pendingDelete.querySelector('.session-title').textContent;
-    delModal.classList.add('show');
+    showAccessibleDialog(delModal, document.getElementById('del-cancel'));
   });
 });
 document.getElementById('del-cancel').addEventListener('click', () => {
-  delModal.classList.remove('show');
+  hideAccessibleDialog(delModal);
   pendingDelete = null;
 });
 document.getElementById('del-confirm').addEventListener('click', async () => {
@@ -3535,12 +3732,12 @@ document.getElementById('del-confirm').addEventListener('click', async () => {
       toast('删除失败: ' + (r.msg || ''));
     }
   }
-  delModal.classList.remove('show');
+  hideAccessibleDialog(delModal);
   pendingDelete = null;
 });
 delModal.addEventListener('click', (e) => {
   if (e.target === delModal) {
-    delModal.classList.remove('show');
+    hideAccessibleDialog(delModal);
     pendingDelete = null;
   }
 });
@@ -3704,7 +3901,7 @@ function renderRingResult(ringNo, data) {
     const cands = (data && data.candidates) || [];
     const rec = data && data.recommendation ? `<p style="color:var(--text-subtle);font-size:13px;">${escapeHtml2(data.recommendation)}</p>` : '';
     appendAIMsg(`<p><strong>环1 选题完成</strong>，生成以下候选题目（点击选中）：</p>` +
-      cands.map((c, i) => `<div class="cand-item" data-title="${escapeHtml2(c.title)}" role="button" style="margin:6px 0;padding:8px 10px;border:1px solid var(--border-divider);border-radius:8px;cursor:pointer;transition:border-color .15s,background .15s;"><div><strong>${i+1}. ${escapeHtml2(c.title)}</strong></div><div style="color:var(--text-subtle);font-size:13px;">创新点：${escapeHtml2(c.innovation)}</div></div>`).join('') + rec,
+      cands.map((c, i) => `<button class="cand-item" data-title="${escapeHtml2(c.title)}" style="display:block;width:100%;text-align:start;margin:6px 0;padding:8px 10px;border:1px solid var(--border-divider);border-radius:8px;cursor:pointer;transition:border-color .15s,background .15s;"><span style="display:block"><strong>${i+1}. ${escapeHtml2(c.title)}</strong></span><span style="display:block;color:var(--text-subtle);font-size:13px;">创新点：${escapeHtml2(c.innovation)}</span></button>`).join('') + rec,
       `${name} · 已完成`);
     // 绑定点选
     document.querySelectorAll('.cand-item').forEach(el => {
@@ -3865,15 +4062,46 @@ function toast(text) {
   toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1800);
 }
 
+const dialogReturnFocus = new WeakMap();
+function showAccessibleDialog(container, initialFocus) {
+  if (!container) return;
+  dialogReturnFocus.set(container, document.activeElement);
+  container.classList.add('show');
+  requestAnimationFrame(() => {
+    const target = initialFocus || container.querySelector('input, textarea, select, button, [tabindex]:not([tabindex="-1"])');
+    target?.focus();
+  });
+}
+function hideAccessibleDialog(container) {
+  if (!container) return;
+  container.classList.remove('show');
+  const trigger = dialogReturnFocus.get(container);
+  if (trigger && document.contains(trigger)) trigger.focus();
+  dialogReturnFocus.delete(container);
+}
+function visibleModalContainer() {
+  return [...document.querySelectorAll('.modal-mask.show, .settings-overlay.show, .node-drawer.show')].at(-1) || null;
+}
+document.addEventListener('keydown', event => {
+  const container = visibleModalContainer();
+  if (!container || event.key !== 'Tab') return;
+  const focusable = [...container.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])')]
+    .filter(element => element.offsetParent !== null);
+  if (!focusable.length) return;
+  const first = focusable[0], last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+});
+
 /* —— ESC 关闭模态 —— */
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (delModal.classList.contains('show')) {
-      delModal.classList.remove('show');
+      hideAccessibleDialog(delModal);
       pendingDelete = null;
     }
     const nsModal = document.getElementById('new-session-modal');
-    if (nsModal && nsModal.classList.contains('show')) nsModal.classList.remove('show');
+    if (nsModal && nsModal.classList.contains('show')) hideAccessibleDialog(nsModal);
   }
 });
 
@@ -4365,13 +4593,15 @@ function renderSettings() {
 }
 
 function openSettings() {
-  document.getElementById('settings-overlay').classList.add('show');
+  const overlay = document.getElementById('settings-overlay');
+  showAccessibleDialog(overlay, document.getElementById('settings-search-input'));
   renderSettings();
 }
 function closeSettings() {
-  document.getElementById('settings-overlay').classList.remove('show');
+  hideAccessibleDialog(document.getElementById('settings-overlay'));
 }
 document.getElementById('settings-close').addEventListener('click', closeSettings);
+document.getElementById('title-settings')?.addEventListener('click', openSettings);
 document.getElementById('settings-overlay').addEventListener('click', (e) => {
   if (e.target.id === 'settings-overlay') closeSettings();
 });
@@ -4387,8 +4617,8 @@ document.getElementById('settings-search-input').addEventListener('input', (e) =
    推理配置 Modal
    ============================================================ */
 const inferenceModal = document.getElementById('inference-modal');
-function openInferenceModal() { inferenceModal.classList.add('show'); }
-function closeInferenceModal() { inferenceModal.classList.remove('show'); }
+function openInferenceModal() { showAccessibleDialog(inferenceModal, document.getElementById('inference-close')); }
+function closeInferenceModal() { hideAccessibleDialog(inferenceModal); }
 document.getElementById('inference-close').addEventListener('click', closeInferenceModal);
 inferenceModal.addEventListener('click', (e) => {
   if (e.target === inferenceModal) closeInferenceModal();
@@ -4407,7 +4637,7 @@ document.addEventListener('keydown', (e) => {
     closeSettings();
     closeInferenceModal();
     if (delModal.classList.contains('show')) {
-      delModal.classList.remove('show');
+      hideAccessibleDialog(delModal);
       pendingDelete = null;
     }
     closeFootMenu();
@@ -4429,18 +4659,18 @@ function sessionItemHtml(s) {
   const ring = s.current_ring_no || 1;
   const doneText = pct >= 100 ? '已完成 · 100%' : `阶段 ${ring}/10 · ${pct}%`;
   return `
-    <div class="session-item" data-task="${s.task_id}">
-      <div class="session-row">
-        <span class="session-title">${escapeHtml(s.title || '未命名')}</span>
-        <button class="session-delete" title="删除对话">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
-      <div class="session-meta">
-        <span class="session-degree">${degree}</span>
-        <span class="session-progress-text">${doneText}</span>
-      </div>
-      <div class="session-progress-bar"><div class="session-progress-fill" style="width:${pct}%${pct >= 100 ? '; background: var(--success)' : ''}"></div></div>
+    <div class="session-item" data-task="${s.task_id}" role="listitem">
+      <button class="session-main" aria-label="打开论文任务：${escapeHtml(s.title || '未命名')}">
+        <div class="session-row"><span class="session-title">${escapeHtml(s.title || '未命名')}</span></div>
+        <div class="session-meta">
+          <span class="session-degree">${degree}</span>
+          <span class="session-progress-text">${doneText}</span>
+        </div>
+        <div class="session-progress-bar" aria-hidden="true"><div class="session-progress-fill" style="width:${pct}%${pct >= 100 ? '; background: var(--success)' : ''}"></div></div>
+      </button>
+      <button class="session-delete" title="删除对话" aria-label="删除论文任务：${escapeHtml(s.title || '未命名')}">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
     </div>`;
 }
 
@@ -4470,8 +4700,8 @@ async function loadSessions() {
   }
   // 绑定点击切换 + 删除
   box.querySelectorAll('.session-item').forEach(item => {
-    item.addEventListener('click', (e) => {
-      if (e.target.closest('.session-delete')) return;
+    const opener = item.querySelector('.session-main');
+    opener.addEventListener('click', () => {
       box.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
       item.classList.add('active');
       currentSession = item.dataset.task;
@@ -4484,7 +4714,7 @@ async function loadSessions() {
       pendingDelete = item;
       delName.textContent = item.querySelector('.session-title')?.textContent || '当前对话';
       const dm = document.getElementById('del-modal');
-      if (dm) dm.classList.add('show');
+      if (dm) showAccessibleDialog(dm, document.getElementById('del-cancel'));
     });
   });
   // 默认选第一个
@@ -4496,12 +4726,17 @@ async function loadSessions() {
   }
 }
 
+let sessionDetailRequest = 0;
 async function loadSessionDetail(taskId) {
+  const requestId = ++sessionDetailRequest;
   const prog = await apiSessionProgress(taskId);
+  if (requestId !== sessionDetailRequest || taskId !== currentSession) return;
   if (prog) { renderStagesFromProgress(prog); updateRunBtn(prog); }
   currentKnowledgeSession = prog?.session_id || taskId;
   await loadKbPanel(currentKnowledgeSession);
+  if (requestId !== sessionDetailRequest || taskId !== currentSession) return;
   buildHistoryFromProgress(prog);
+  await loadActiveWorkbenchPane();
 }
 
 // —— 根据进度重建消息历史（刷新后恢复已完成环）——
@@ -4607,11 +4842,10 @@ async function runCurrentRing() {
   try {
     const prog = await apiSessionProgress(currentSession);
     const no = prog ? prog.current_ring_no : 1;
-    const pathMap = { 1:'/rings/1/execute', 2:'/rings/2/review', 3:'/rings/3/execute', 4:'/rings/4/review', 5:'/rings/5/outline', 6:'/rings/6/chapter', 7:'/rings/7/polish', 8:'/rings/8/validate', 9:'/rings/9/layout', 10:'/rings/10/final' };
-    const path = pathMap[no];
-    if (!path) { toast(`环${no} 暂不支持自动执行`); return; }
+    if (!no || no < 1 || no > 10) { toast('无法确定当前环节'); return; }
+    appendUserMsg(`后台执行环${no}（${RING_NAMES[no] || ''}）`);
     if (no === 9) {
-      const generated = await apiGenerateDocx(currentSession);
+      const generated = await enqueueJobAndWait('docx.generate', {}, '生成 DOCX');
       if (generated.code !== 0) {
         appendAIMsg(`<div class="warn-card"><div class="warn-title">docx 生成失败</div><div style="font-size:13px;">${escapeHtml2(generated.msg || '')}</div></div>`, '排版准备失败');
         toast('docx 生成失败，不能执行排版检查');
@@ -4619,7 +4853,16 @@ async function runCurrentRing() {
       }
       appendAIMsg('<p><strong>待排版 docx 已生成</strong>，开始执行版式检查。</p>', '文档生成');
     }
-    await runRingShow(currentSession, no, path);
+    const result = await enqueueJobAndWait('ring.execute', { ring_no: no }, `环${no} ${RING_NAMES[no] || ''}`);
+    if (result.code === 0) {
+      renderRingResult(no, result.data);
+      appendGateBlock(no);
+      toast(result.msg || `环${no} 完成`);
+    } else {
+      appendAIMsg(`<div class="warn-card"><div class="warn-title">环${no} 执行未完成</div><div style="font-size:13px;">${escapeHtml2(result.msg || '')}</div><div class="warn-actions"><button class="btn btn-secondary btn-sm" onclick="document.querySelector('.kb-tab[data-tab=jobs]')?.click()">查看后台作业</button></div></div>`, '后台作业失败');
+    }
+    await loadSessionDetail(currentSession);
+    await loadSessions();
   } finally {
     ringRunning = false;
     if (label) label.style.display = '';
@@ -4648,14 +4891,23 @@ function updateRunBtn(prog) {
 // —— 新建对话（“新建对话”按钮触发）——
 function handleNewSession() {
   const modal = document.getElementById('new-session-modal');
-  if (modal) modal.classList.add('show');
+  if (modal) showAccessibleDialog(modal, document.getElementById('ns-title-input'));
   const input = document.getElementById('ns-title-input');
   if (input) setTimeout(() => input.focus(), 50);
 }
 
 async function submitNewSession() {
-  const title = document.getElementById('ns-title-input').value.trim();
-  if (!title) { toast('请输入论文题目'); return; }
+  const titleInput = document.getElementById('ns-title-input');
+  const titleError = document.getElementById('ns-title-error');
+  const title = titleInput.value.trim();
+  if (!title) {
+    titleInput.setAttribute('aria-invalid', 'true');
+    titleError.textContent = '请输入论文题目。';
+    titleInput.focus();
+    return;
+  }
+  titleInput.removeAttribute('aria-invalid');
+  titleError.textContent = '';
   const degree = document.getElementById('ns-degree').value;
   const subject = document.getElementById('ns-subject').value.trim() || '自然语言处理';
   const scope = document.getElementById('ns-scope')?.value || 'all';
@@ -4663,7 +4915,7 @@ async function submitNewSession() {
     title, degree, subject_field: subject, scope,
   });
   const modal = document.getElementById('new-session-modal');
-  if (modal) modal.classList.remove('show');
+  if (modal) hideAccessibleDialog(modal);
   if (r.code === 0) {
     toast('会话已创建：' + title);
     document.getElementById('ns-title-input').value = '';
@@ -4676,9 +4928,9 @@ async function submitNewSession() {
 
 function bindNewSessionModal() {
   const modal = document.getElementById('new-session-modal');
-  document.getElementById('ns-cancel').addEventListener('click', () => modal.classList.remove('show'));
+  document.getElementById('ns-cancel').addEventListener('click', () => hideAccessibleDialog(modal));
   document.getElementById('ns-confirm').addEventListener('click', submitNewSession);
-  modal.addEventListener('click', e => { if (e.target === modal) modal.classList.remove('show'); });
+  modal.addEventListener('click', e => { if (e.target === modal) hideAccessibleDialog(modal); });
   const ti = document.getElementById('ns-title-input');
   if (ti) ti.addEventListener('keydown', e => { if (e.key === 'Enter') submitNewSession(); });
 }
@@ -4692,20 +4944,46 @@ const API_BASE = (
   'http://127.0.0.1:8000'
 ).replace(/\/$/, '');
 
+async function apiRequest(path, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(API_BASE + path, {
+      ...options,
+      signal: controller.signal,
+      headers: { 'Accept': 'application/json', ...(options.headers || {}) },
+    });
+    let body;
+    try { body = await resp.json(); }
+    catch (_) { body = { code: resp.status || -1, msg: '服务返回了无法解析的响应', data: null }; }
+    if (!resp.ok && (!body || body.code === 0)) {
+      return { code: resp.status, msg: `请求失败（HTTP ${resp.status}）`, data: body?.data || null };
+    }
+    return body;
+  } catch (error) {
+    const timeout = error?.name === 'AbortError';
+    return {
+      code: -1,
+      msg: timeout ? '请求超时，请检查后端任务状态后重试' : `无法连接后端：${error?.message || '网络错误'}`,
+      data: null,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function apiGet(path, params) {
   const url = new URL(API_BASE + path);
   if (params) Object.entries(params).forEach(([k, v]) => v != null && url.searchParams.set(k, v));
-  const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
-  return resp.json();
+  return apiRequest(url.pathname + url.search);
 }
 
 async function apiPost(path, body) {
-  const resp = await fetch(API_BASE + path, {
+  return apiRequest(path, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
   });
-  return resp.json();
 }
 
 // ---- 会话（console）----
@@ -4732,6 +5010,47 @@ async function apiGenerateDocx(taskId) {
   return apiPost(`/api/v1/console/tasks/${taskId}/docx/generate`);
 }
 
+// ---- 可信工作台：证据 / 分节 / 作业 ----
+async function apiTaskSources(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/sources`);
+}
+async function apiTaskClaims(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/claims`);
+}
+async function apiEvidenceAudit(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/evidence-audit`);
+}
+async function apiArgumentMaps(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/research/argument-maps`);
+}
+async function apiSectionDrafts(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/writing/sections`);
+}
+async function apiSectionAudit(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/writing/sections-audit`);
+}
+async function apiReviewSection(taskId, draftId, approved, reason = '') {
+  return apiPost(`/api/v1/console/tasks/${taskId}/writing/sections/${draftId}/review`, { approved, reason });
+}
+async function apiReviseSection(taskId, draftId, content, title = '') {
+  return apiPost(`/api/v1/console/tasks/${taskId}/writing/sections/${draftId}/revise`, { content, title, actor: 'author' });
+}
+async function apiListJobs(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/jobs`, { limit: 100 });
+}
+async function apiGetJob(taskId, jobId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/jobs/${jobId}`);
+}
+async function apiEnqueueJob(taskId, payload) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/jobs`, payload);
+}
+async function apiCancelJob(taskId, jobId) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/jobs/${jobId}/cancel`);
+}
+async function apiRetryJob(taskId, jobId) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/jobs/${jobId}/retry`);
+}
+
 // ---- 知识库 ----
 async function apiKbList(sessionId) {
   const r = await apiGet(`/api/v1/kb/${encodeURIComponent(sessionId)}/files`);
@@ -4753,6 +5072,324 @@ async function apiKbDelete(sessionId, fileId) {
 const DEGREE_LABEL = { BACHELOR: '本科', MASTER: '硕士', PHD: '博士' };
 
 applyI18n();
+
+/* ============================================================
+   可信写作工作台：作业 / 证据 / 分节
+   ============================================================ */
+const JOB_TERMINAL = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED']);
+const JOB_STATUS_LABEL = {
+  PENDING: '排队中', RUNNING: '执行中', CANCEL_REQUESTED: '取消中',
+  SUCCEEDED: '已完成', FAILED: '失败', CANCELLED: '已取消',
+};
+
+function wbStatusClass(status) {
+  if (['SUCCEEDED', 'APPROVED', 'SUPPORTED'].includes(status)) return 'ok';
+  if (['FAILED', 'CANCELLED', 'REJECTED', 'AUTO_REJECTED', 'STALE', 'DISPUTED'].includes(status)) return 'bad';
+  return 'warn';
+}
+
+function formatCount(value) {
+  return new Intl.NumberFormat(currentLang || 'zh-CN', { maximumFractionDigits: 4 }).format(Number(value || 0));
+}
+
+function currentJobBudget() {
+  const tokenInput = document.getElementById('job-token-budget');
+  const costInput = document.getElementById('job-cost-budget');
+  return {
+    token_budget: Math.max(0, Number.parseInt(tokenInput?.value || '0', 10) || 0),
+    cost_budget: Math.max(0, Number.parseFloat(costInput?.value || '0') || 0),
+  };
+}
+
+function restoreJobBudget() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem('thesis-job-budget') || '{}'); }
+  catch (_) { saved = {}; }
+  const tokenInput = document.getElementById('job-token-budget');
+  const costInput = document.getElementById('job-cost-budget');
+  if (tokenInput && Number.isFinite(saved.token_budget)) tokenInput.value = String(saved.token_budget);
+  if (costInput && Number.isFinite(saved.cost_budget)) costInput.value = String(saved.cost_budget);
+  [tokenInput, costInput].forEach(input => input?.addEventListener('change', () => {
+    localStorage.setItem('thesis-job-budget', JSON.stringify(currentJobBudget()));
+  }));
+}
+
+async function enqueueJobAndWait(operation, payload, label) {
+  if (!currentSession) return { code: 1, msg: '请先选择论文任务' };
+  const taskId = currentSession;
+  const live = document.getElementById('jobs-live');
+  const existingResponse = await apiListJobs(taskId);
+  const existing = existingResponse.code === 0
+    ? (existingResponse.data || []).find(job =>
+        job.operation === operation && !JOB_TERMINAL.has(job.status)
+        && JSON.stringify(job.payload || {}) === JSON.stringify(payload || {}))
+    : null;
+  let job = existing;
+  if (!job) {
+    const randomPart = window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+    const queued = await apiEnqueueJob(taskId, {
+      operation,
+      payload,
+      idempotency_key: `${operation}-${randomPart}`,
+      max_attempts: 3,
+      ...currentJobBudget(),
+    });
+    if (queued.code !== 0) return queued;
+    job = queued.data;
+  }
+  if (live) live.textContent = `${label}：${JOB_STATUS_LABEL[job.status] || job.status}`;
+  await loadJobsPanel(false);
+  return waitForJob(taskId, job.job_id, label);
+}
+
+async function waitForJob(taskId, jobId, label) {
+  const deadline = Date.now() + 30 * 60 * 1000;
+  let networkFailures = 0;
+  while (Date.now() < deadline) {
+    const response = await apiGetJob(taskId, jobId);
+    if (response.code !== 0) {
+      networkFailures += 1;
+      if (networkFailures >= 5) {
+        return { code: response.code, msg: `${label}仍在后台执行，但状态查询连续失败：${response.msg}` };
+      }
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      continue;
+    }
+    networkFailures = 0;
+    const job = response.data;
+    const live = document.getElementById('jobs-live');
+    if (live) {
+      live.textContent = `${label}：${JOB_STATUS_LABEL[job.status] || job.status} · Token ${formatCount(job.tokens_used)}`;
+    }
+    if (document.querySelector('.kb-tab.active')?.dataset.tab === 'jobs') renderJobs([job]);
+    if (JOB_TERMINAL.has(job.status)) {
+      await loadJobsPanel(false);
+      if (job.status === 'SUCCEEDED') return job.result || { code: 0, msg: `${label}完成`, data: null };
+      return { code: 1, msg: job.error || `${label}${JOB_STATUS_LABEL[job.status]}`, data: { job } };
+    }
+    await new Promise(resolve => setTimeout(resolve, 900));
+  }
+  return { code: 1, msg: `${label}超过30分钟仍未完成，可在“作业”页继续查看或取消` };
+}
+
+async function loadJobsPanel(announce = true) {
+  const box = document.getElementById('job-list');
+  if (!box) return;
+  if (!currentSession) {
+    box.innerHTML = '<div class="wb-empty">选择论文任务后查看后台作业。</div>';
+    return;
+  }
+  const taskId = currentSession;
+  box.setAttribute('aria-busy', 'true');
+  const response = await apiListJobs(taskId);
+  if (taskId !== currentSession) return;
+  box.removeAttribute('aria-busy');
+  if (response.code !== 0) {
+    box.innerHTML = `<div class="wb-error">${escapeHtml2(response.msg)}<div class="wb-card-actions"><button class="btn btn-secondary btn-sm" onclick="loadJobsPanel()">重试</button></div></div>`;
+    return;
+  }
+  renderJobs(response.data || []);
+  if (announce) document.getElementById('jobs-live').textContent = `已加载 ${(response.data || []).length} 个作业`;
+}
+
+function renderJobs(jobs) {
+  const box = document.getElementById('job-list');
+  if (!box) return;
+  if (!jobs.length) {
+    box.innerHTML = '<div class="wb-empty">暂无后台作业。执行环节或生成分节后会显示在这里。</div>';
+    return;
+  }
+  const html = jobs.map(job => {
+    const tokenPct = job.token_budget > 0 ? Math.min(100, (job.tokens_used / job.token_budget) * 100) : 0;
+    const canCancel = ['PENDING', 'RUNNING', 'CANCEL_REQUESTED'].includes(job.status);
+    const canRetry = ['FAILED', 'CANCELLED'].includes(job.status);
+    return `<article class="wb-card" data-job-id="${escapeHtml2(job.job_id)}">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:start;">
+        <div class="wb-card-title">${escapeHtml2(job.operation)}</div>
+        <span class="wb-status ${wbStatusClass(job.status)}">${escapeHtml2(JOB_STATUS_LABEL[job.status] || job.status)}</span>
+      </div>
+      <div class="wb-card-meta">${escapeHtml2(job.job_id)} · 尝试 ${job.attempt}/${job.max_attempts}</div>
+      <div class="wb-card-meta">Token ${formatCount(job.tokens_used)}${job.token_budget ? ` / ${formatCount(job.token_budget)}` : '（不限）'} · 费用 ${formatCount(job.cost_used)}</div>
+      ${job.token_budget ? `<div class="wb-progress" aria-label="Token 使用 ${Math.round(tokenPct)}%"><span style="width:${tokenPct}%"></span></div>` : ''}
+      ${job.error ? `<div class="wb-card-meta" style="color:var(--error)">${escapeHtml2(job.error)}</div>` : ''}
+      <div class="wb-card-actions">
+        ${canCancel ? `<button class="btn btn-secondary btn-sm" data-job-action="cancel">取消</button>` : ''}
+        ${canRetry ? `<button class="btn btn-secondary btn-sm" data-job-action="retry">重试</button>` : ''}
+      </div>
+    </article>`;
+  }).join('');
+  box.innerHTML = html;
+  box.querySelectorAll('[data-job-action]').forEach(button => button.addEventListener('click', handleJobAction));
+}
+
+async function handleJobAction(event) {
+  const card = event.currentTarget.closest('[data-job-id]');
+  const jobId = card?.dataset.jobId;
+  if (!jobId || !currentSession) return;
+  event.currentTarget.disabled = true;
+  const action = event.currentTarget.dataset.jobAction;
+  const response = action === 'cancel'
+    ? await apiCancelJob(currentSession, jobId)
+    : await apiRetryJob(currentSession, jobId);
+  toast(response.code === 0 ? response.msg : `${action === 'cancel' ? '取消' : '重试'}失败：${response.msg}`);
+  await loadJobsPanel(false);
+}
+
+async function loadEvidencePanel() {
+  const claimBox = document.getElementById('claim-audit-list');
+  const sourceBox = document.getElementById('source-ledger-list');
+  const mapBox = document.getElementById('argument-map-list');
+  if (!claimBox || !sourceBox || !mapBox) return;
+  if (!currentSession) {
+    claimBox.innerHTML = '<div class="wb-empty">选择论文任务后查看证据。</div>';
+    sourceBox.innerHTML = '';
+    mapBox.innerHTML = '';
+    return;
+  }
+  const taskId = currentSession;
+  claimBox.setAttribute('aria-busy', 'true');
+  const [auditResponse, sourceResponse, mapResponse] = await Promise.all([
+    apiEvidenceAudit(taskId), apiTaskSources(taskId), apiArgumentMaps(taskId),
+  ]);
+  if (taskId !== currentSession) return;
+  claimBox.removeAttribute('aria-busy');
+  if (auditResponse.code !== 0) {
+    claimBox.innerHTML = `<div class="wb-error">${escapeHtml2(auditResponse.msg)}<div class="wb-card-actions"><button class="btn btn-secondary btn-sm" onclick="loadEvidencePanel()">重试</button></div></div>`;
+  } else {
+    const audit = auditResponse.data || {};
+    const claims = audit.claims || [];
+    claimBox.innerHTML = `<div class="wb-card">
+      <div class="wb-card-title">论断覆盖：${audit.supported_count || 0}/${audit.claim_count || 0}</div>
+      <div class="wb-card-meta">未支持 ${audit.unsupported_count || 0} · 有争议 ${audit.disputed_count || 0}</div>
+    </div>` + (claims.length ? claims.map(claim => `<article class="wb-card">
+      <div style="display:flex;justify-content:space-between;gap:8px;"><div class="wb-card-title">${escapeHtml2(claim.text)}</div><span class="wb-status ${wbStatusClass(claim.status)}">${escapeHtml2(claim.status)}</span></div>
+      <div class="wb-card-meta">${escapeHtml2(claim.section_id || '未分节')} · ${escapeHtml2(claim.claim_type || '')}</div>
+      <div class="wb-card-meta">支持证据 ${(claim.supporting_evidence_ids || []).length} · 反证 ${(claim.contradicting_evidence_ids || []).length}</div>
+    </article>`).join('') : '<div class="wb-empty">尚未登记论断；批准论证图后会自动出现。</div>');
+  }
+  const sources = sourceResponse.code === 0 ? (sourceResponse.data || []) : [];
+  sourceBox.innerHTML = `<div class="kb-section-title"><span>来源账本</span><span class="count">${sources.length}</span></div>` +
+    (sources.length ? sources.slice(0, 100).map(source => `<article class="wb-card">
+      <div class="wb-card-title">${escapeHtml2(source.title || source.doi || source.source_id)}</div>
+      <div class="wb-card-meta">${escapeHtml2(source.verification_status)}${source.doi ? ` · DOI ${escapeHtml2(source.doi)}` : ''}</div>
+    </article>`).join('') : '<div class="wb-empty">来源账本为空；批准环3文献后会自动登记。</div>');
+  const maps = mapResponse.code === 0 ? (mapResponse.data || []) : [];
+  mapBox.innerHTML = `<div class="kb-section-title"><span>论证图版本</span><span class="count">${maps.length}</span></div>` +
+    (maps.length ? maps.map(map => `<article class="wb-card">
+      <div style="display:flex;justify-content:space-between;gap:8px;"><div class="wb-card-title">v${map.version} ${escapeHtml2(map.payload?.title || '论证图')}</div><span class="wb-status ${wbStatusClass(map.status)}">${escapeHtml2(map.status)}</span></div>
+      <div class="wb-card-meta">${(map.payload?.claims || []).length} 个论断 · ${(map.payload?.research_questions || []).length} 个研究问题</div>
+    </article>`).join('') : '<div class="wb-empty">尚未创建论证图，可在环5通过 API 或 Agent 引导创建。</div>');
+  document.getElementById('evidence-live').textContent = `证据审计与 ${sources.length} 个来源已更新`;
+}
+
+async function loadSectionsPanel() {
+  const listBox = document.getElementById('section-list');
+  const auditBox = document.getElementById('section-audit');
+  if (!listBox || !auditBox) return;
+  if (!currentSession) {
+    auditBox.className = 'wb-empty';
+    auditBox.textContent = '选择论文任务后查看分节。';
+    listBox.innerHTML = '';
+    return;
+  }
+  const taskId = currentSession;
+  listBox.setAttribute('aria-busy', 'true');
+  const [auditResponse, draftResponse] = await Promise.all([
+    apiSectionAudit(taskId), apiSectionDrafts(taskId),
+  ]);
+  if (taskId !== currentSession) return;
+  listBox.removeAttribute('aria-busy');
+  if (auditResponse.code !== 0 || draftResponse.code !== 0) {
+    const message = auditResponse.code !== 0 ? auditResponse.msg : draftResponse.msg;
+    auditBox.className = 'wb-error';
+    auditBox.innerHTML = `${escapeHtml2(message)}<div class="wb-card-actions"><button class="btn btn-secondary btn-sm" onclick="loadSectionsPanel()">重试</button></div>`;
+    listBox.innerHTML = '';
+    return;
+  }
+  const audit = auditResponse.data || {};
+  const drafts = draftResponse.data || [];
+  auditBox.className = 'wb-card';
+  auditBox.innerHTML = `<div class="wb-card-title">已批准 ${(audit.approved_section_ids || []).length}/${(audit.expected_section_ids || []).length} 节</div>
+    <div class="wb-card-meta">${audit.can_assemble ? '全部分节已就绪，可以汇编环6初稿。' : `待完成：${escapeHtml2((audit.missing_section_ids || []).join('、') || '等待大纲')}`}</div>
+    <div class="wb-card-actions">${audit.can_assemble ? '<button class="btn btn-primary btn-sm" id="assemble-sections">汇编环6初稿</button>' : ''}</div>`;
+  document.getElementById('assemble-sections')?.addEventListener('click', assembleSectionsFromPanel);
+  const latestBySection = new Map();
+  drafts.forEach(draft => {
+    const current = latestBySection.get(draft.section_id);
+    if (!current || draft.version > current.version) latestBySection.set(draft.section_id, draft);
+  });
+  const missingCards = (audit.missing_section_ids || []).filter(id => !latestBySection.has(id)).map(sectionId => `<article class="wb-card" data-section-id="${escapeHtml2(sectionId)}">
+    <div class="wb-card-title">${escapeHtml2(sectionId)}</div><div class="wb-card-meta">尚未生成草稿</div>
+    <div class="wb-card-actions"><button class="btn btn-primary btn-sm" data-section-action="generate">生成本节</button></div>
+  </article>`);
+  const draftCards = [...latestBySection.values()].sort((a, b) => a.section_id.localeCompare(b.section_id, undefined, { numeric: true })).map(draft => `<article class="wb-card" data-draft-id="${escapeHtml2(draft.section_draft_id)}" data-section-id="${escapeHtml2(draft.section_id)}">
+    <div style="display:flex;justify-content:space-between;gap:8px;align-items:start;"><div class="wb-card-title">${escapeHtml2(draft.section_id)} ${escapeHtml2(draft.title)}</div><span class="wb-status ${wbStatusClass(draft.status)}">v${draft.version} ${escapeHtml2(draft.status)}</span></div>
+    <div class="wb-card-meta">证据 ${(draft.evidence_ids || []).length} · 结果 ${(draft.result_ids || []).length} · 审批 ${(draft.approvals || []).length}</div>
+    <details><summary class="wb-card-meta">查看正文</summary><pre class="section-preview">${escapeHtml2(draft.content)}</pre></details>
+    <div class="wb-card-actions">
+      ${draft.status === 'WAITING_APPROVAL' ? '<button class="btn btn-primary btn-sm" data-section-action="approve">批准</button><button class="btn btn-secondary btn-sm" data-section-action="reject">驳回</button>' : ''}
+      ${draft.status !== 'STALE' ? '<button class="btn btn-secondary btn-sm" data-section-action="edit">修订为新版本</button>' : ''}
+      ${['REJECTED','AUTO_REJECTED','STALE'].includes(draft.status) ? '<button class="btn btn-secondary btn-sm" data-section-action="generate">重新生成</button>' : ''}
+    </div>
+    <div class="section-edit-area" hidden>
+      <label class="sr-only" for="editor-${escapeHtml2(draft.section_draft_id)}">编辑 ${escapeHtml2(draft.section_id)} 正文</label>
+      <textarea class="section-editor" id="editor-${escapeHtml2(draft.section_draft_id)}">${escapeHtml2(draft.content)}</textarea>
+      <div class="wb-card-actions"><button class="btn btn-primary btn-sm" data-section-action="save">保存新版本</button><button class="btn btn-secondary btn-sm" data-section-action="cancel-edit">取消</button></div>
+    </div>
+  </article>`);
+  listBox.innerHTML = [...missingCards, ...draftCards].join('') || '<div class="wb-empty">进入环6并批准大纲后，这里会显示可写分节。</div>';
+  listBox.querySelectorAll('[data-section-action]').forEach(button => button.addEventListener('click', handleSectionAction));
+  document.getElementById('sections-live').textContent = `已加载 ${drafts.length} 个分节版本`;
+}
+
+async function handleSectionAction(event) {
+  const button = event.currentTarget;
+  const card = button.closest('[data-section-id]');
+  const sectionId = card?.dataset.sectionId;
+  const draftId = card?.dataset.draftId;
+  const action = button.dataset.sectionAction;
+  if (!currentSession || !sectionId) return;
+  if (action === 'edit' || action === 'cancel-edit') {
+    const area = card.querySelector('.section-edit-area');
+    area.hidden = action !== 'edit';
+    if (action === 'edit') area.querySelector('textarea')?.focus();
+    else button.closest('.wb-card')?.querySelector('[data-section-action="edit"]')?.focus();
+    return;
+  }
+  button.disabled = true;
+  let response;
+  if (action === 'generate') {
+    response = await enqueueJobAndWait('section.generate', { section_id: sectionId }, `生成分节 ${sectionId}`);
+  } else if (action === 'approve') {
+    response = await apiReviewSection(currentSession, draftId, true);
+  } else if (action === 'reject') {
+    const reason = window.prompt('请输入驳回原因：', '需要补充证据或修改表述');
+    if (reason === null) { button.disabled = false; return; }
+    response = await apiReviewSection(currentSession, draftId, false, reason);
+  } else if (action === 'save') {
+    const content = card.querySelector('.section-editor')?.value || '';
+    response = await apiReviseSection(currentSession, draftId, content);
+  }
+  toast(response?.code === 0 ? response.msg : `操作失败：${response?.msg || '未知错误'}`);
+  await loadSectionsPanel();
+}
+
+async function assembleSectionsFromPanel(event) {
+  event.currentTarget.disabled = true;
+  const response = await apiPost(`/api/v1/console/tasks/${currentSession}/rings/6/assemble`);
+  if (response.code === 0) {
+    renderRingResult(6, response.data);
+    appendGateBlock(6);
+    await loadSessionDetail(currentSession);
+  } else toast(`汇编失败：${response.msg}`);
+}
+
+async function loadActiveWorkbenchPane() {
+  const target = document.querySelector('.kb-tab.active')?.dataset.tab || 'refs';
+  if (target === 'evidence') await loadEvidencePanel();
+  else if (target === 'writing') await loadSectionsPanel();
+  else if (target === 'jobs') await loadJobsPanel(false);
+}
 
 // —— 启动初始化：加载会话列表 + 绑定新建按钮 ——
 
@@ -4880,7 +5517,7 @@ function openNodeDrawer(node) {
   document.getElementById('nd-neighbors').innerHTML = neighbors.length
     ? neighbors.map(nb => `<button class="nd-link" data-target-id="${nb.id}">${nb.label}</button>`).join('')
     : '暂无关联节点';
-  div.classList.add('show');
+  showAccessibleDialog(div, document.getElementById('nd-close'));
   div.dataset.nodeId = id;
   div.dataset.nodeType = type;
   const openBtn = document.getElementById('nd-open');
@@ -5100,6 +5737,7 @@ async function kbUpload(files) {
 
 
 async function initApp() {
+  restoreJobBudget();
   await loadSessions();
   // 新建对话按钮（.new-chat-btn 或 sidebar 新建）
   const newBtn = document.querySelector('.new-chat-btn') || document.querySelector('.sidebar-top button.btn-primary, #new-chat');
@@ -5113,7 +5751,7 @@ async function initApp() {
   });
   // 图谱抽屉关闭
   const ndClose = document.getElementById('nd-close');
-  if (ndClose && !ndClose.dataset.bound) { ndClose.dataset.bound = '1'; ndClose.addEventListener('click', () => document.getElementById('node-drawer').classList.remove('show')); }
+  if (ndClose && !ndClose.dataset.bound) { ndClose.dataset.bound = '1'; ndClose.addEventListener('click', () => hideAccessibleDialog(document.getElementById('node-drawer'))); }
   const ndOpen = document.getElementById('nd-open');
   if (ndOpen && !ndOpen.dataset.bound) {
     ndOpen.dataset.bound = '1';
@@ -5130,7 +5768,7 @@ async function initApp() {
       } else {
         toast(type === 'note' ? '打开笔记（笔记编辑器建设中）' : '创建笔记（笔记编辑器建设中）');
       }
-      d.classList.remove('show');
+      hideAccessibleDialog(d);
     });
   }
 
@@ -5146,6 +5784,19 @@ async function initApp() {
       e.target.value = '';
     });
   }
+  const refreshBindings = [
+    ['evidence-refresh', loadEvidencePanel],
+    ['sections-refresh', loadSectionsPanel],
+    ['jobs-refresh', loadJobsPanel],
+  ];
+  refreshBindings.forEach(([id, handler]) => {
+    const button = document.getElementById(id);
+    if (button && !button.dataset.bound) {
+      button.dataset.bound = '1';
+      button.addEventListener('click', () => handler());
+    }
+  });
+  activateWorkbenchTab(document.querySelector('.kb-tab.active')?.dataset.tab || 'refs');
 }
 initApp();
 

@@ -157,8 +157,22 @@ def test_section_generation_requires_supported_claims_and_assembles(monkeypatch)
     second = orchestration.generate_section_draft(task_id, {"section_id": "1.2"}).data
     assert first["status"] == "WAITING_APPROVAL"
     assert first["evidence_ids"] == [evidence["evidence_id"]]
+    rejected_revision = orchestration.revise_section_draft(
+        task_id,
+        first["section_draft_id"],
+        {"content": "删除了全部证据标记的错误修订"},
+    )
+    assert rejected_revision.is_ok is False
+    assert rejected_revision.data["status"] == "AUTO_REJECTED"
+    revised = orchestration.revise_section_draft(
+        task_id,
+        first["section_draft_id"],
+        {"content": first["content"] + "\n\n作者补充了边界条件说明。"},
+    ).data
+    assert revised["version"] == 3
+    assert revised["context_manifest"]["revision_parent_id"] == first["section_draft_id"]
     orchestration.review_section_draft(
-        task_id, first["section_draft_id"], approved=True
+        task_id, revised["section_draft_id"], approved=True
     )
     orchestration.review_section_draft(
         task_id, second["section_draft_id"], approved=True
@@ -173,7 +187,7 @@ def test_section_generation_requires_supported_claims_and_assembles(monkeypatch)
     artifacts = orchestration.list_artifacts(task_id).data
     draft = next(item for item in artifacts if item["kind"] == "SECTION_DRAFT")
     assert draft["payload"]["section_draft_ids"] == [
-        first["section_draft_id"], second["section_draft_id"]
+        revised["section_draft_id"], second["section_draft_id"]
     ]
 
     orchestration.run_ring7(task_id)

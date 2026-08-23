@@ -18,6 +18,11 @@ import httpx
 
 from common.sources import get_enabled_sources, get_source, registry_summary, resolve_scope
 
+def _has_cjk(text: str) -> bool:
+    """是否含中日韩文字（用于 scope 语言门过滤）。"""
+    return any("一" <= ch <= "鿿" or "㐀" <= ch <= "䶿" for ch in (text or ""))
+
+
 logger = logging.getLogger("thesis.lit")
 
 #: 各源 HTTP 超时（秒）
@@ -172,7 +177,13 @@ class LiteratureService:
         # 合并去重（DOI 优先，其次 标题+年）；引导层条目不参与去重（保留）
         real = [it for it in results if it.item_type != "guide"]
         guides = [it for it in results if it.item_type == "guide"]
-        return (self._dedupe(real) + guides)[:max_results]
+        merged = self._dedupe(real) + guides
+        # scope 语言门：english 排中文标题条目，chinese 排纯英文标题（引导层按注册表路由不重排）
+        if scope == "english":
+            merged = [it for it in merged if not _has_cjk((it.title or "") + (it.abstract or ""))]
+        elif scope == "chinese":
+            merged = [it for it in merged if _has_cjk(it.title or "") or it.item_type == "guide"]
+        return merged[:max_results]
 
     def lookup_doi(self, doi: str) -> Optional[LitItem]:
         """按 DOI 精确反查（Crossref 权威，OpenAlex 补充）。"""

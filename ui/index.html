@@ -4575,9 +4575,10 @@ async function submitNewSession() {
   if (!title) { toast('请输入论文题目'); return; }
   const degree = document.getElementById('ns-degree').value;
   const subject = document.getElementById('ns-subject').value.trim() || '自然语言处理';
+  const scope = document.getElementById('ns-scope')?.value || 'all';
   const r = await apiCreateSession({
     title, degree, subject_field: subject,
-    session_id: 'default',
+    session_id: 'default', scope,
   });
   const modal = document.getElementById('new-session-modal');
   if (modal) modal.classList.remove('show');

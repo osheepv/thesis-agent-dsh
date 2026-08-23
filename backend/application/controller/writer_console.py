@@ -42,6 +42,7 @@ async def create_task(req: Dict[str, Any],
     template_id = req.get("template_id")
     session_id = req.get("session_id", "")
     tenant_id = req.get("tenant_id", "default")
+    scope = req.get("scope", "all")
     try:
         degree = Degree(degree)
     except ValueError:
@@ -49,6 +50,7 @@ async def create_task(req: Dict[str, Any],
     return orchestration.create_task(
         title=title, degree=degree, subject_field=subject_field,
         template_id=template_id, session_id=session_id, tenant_id=tenant_id,
+        scope=scope,
     )
 
 

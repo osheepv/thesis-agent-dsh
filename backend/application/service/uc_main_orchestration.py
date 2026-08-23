@@ -143,7 +143,7 @@ class TaskRecord:
 
     def __init__(self, task_id: str, title: str, degree: str, subject_field: str,
                  session_id: str = "", tenant_id: str = "default",
-                 template_id: Optional[str] = None) -> None:
+                 template_id: Optional[str] = None, scope: str = "all") -> None:
         self.task_id = task_id
         self.title = title
         self.degree = degree
@@ -151,6 +151,7 @@ class TaskRecord:
         self.template_id = template_id
         self.session_id = session_id
         self.tenant_id = tenant_id
+        self.scope = scope
         self.ring1: Optional[Dict[str, Any]] = None
         self.ring2: Optional[Dict[str, Any]] = None
         self.ring3: Optional[Dict[str, Any]] = None
@@ -164,12 +165,14 @@ class TaskRecord:
         self.docx: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """序列化（环产物为 JSON 文本，脏数据防御式转储）。"""
+        """序列化（环产物为 JSON 文本；None 存 "null" 保持语义）。"""
         def _dump(v: Optional[Dict[str, Any]]) -> str:
+            if v is None:
+                return "null"
             try:
-                return json.dumps(v or {}, ensure_ascii=False)
+                return json.dumps(v, ensure_ascii=False)
             except (TypeError, ValueError):
-                return "{}"
+                return "null"
         row: Dict[str, Any] = {
             "task_id": self.task_id,
             "title": self.title,
@@ -178,6 +181,7 @@ class TaskRecord:
             "template_id": self.template_id or "",
             "session_id": self.session_id,
             "tenant_id": self.tenant_id,
+            "scope": getattr(self, "scope", "all"),
         }
         for f in TaskRecord.RING_FIELDS:
             row[f] = _dump(getattr(self, f))
@@ -191,7 +195,7 @@ class TaskRecord:
         def _load(v: Any) -> Optional[Dict[str, Any]]:
             if isinstance(v, dict):
                 return v
-            if isinstance(v, str) and v:
+            if isinstance(v, str) and v.strip() not in ("", "null"):
                 try:
                     return json.loads(v)
                 except (TypeError, ValueError):
@@ -206,6 +210,7 @@ class TaskRecord:
             session_id=data.get("session_id", ""),
             tenant_id=data.get("tenant_id", "default"),
             template_id=data.get("template_id") or None,
+            scope=data.get("scope", "all"),
         )
         for f in cls.RING_FIELDS:
             setattr(rec, f, _load(data.get(f)))
@@ -389,12 +394,17 @@ class MainOrchestration:
 
     def create_task(self, title: str, degree: Degree, subject_field: str,
                     template_id: Optional[str] = None, session_id: str = "",
-                    tenant_id: str = "default") -> Result[Dict[str, Any]]:
+                    tenant_id: str = "default", scope: str = "") -> Result[Dict[str, Any]]:
         """创建论文任务并初始化 FSM（默认停在环1）。
 
+        Args:
+            scope: 文献检索范围（english/chinese/all），空则用全局默认。
         Returns:
             含 task_id / title / degree / subject_field / current_ring 的任务视图。
         """
+        scope = scope or os.getenv("THESIS_LIT_SCOPE", "all")
+        if scope not in ("english", "chinese", "all"):
+            scope = "all"
         try:
             state = self._fsm.create_task(
                 title=title, degree=degree, subject_field=subject_field,
@@ -403,7 +413,7 @@ class MainOrchestration:
             rec = TaskRecord(
                 task_id=state.task_id, title=title, degree=degree.value,
                 subject_field=subject_field, session_id=session_id,
-                tenant_id=tenant_id, template_id=template_id,
+                tenant_id=tenant_id, template_id=template_id, scope=scope,
             )
             self._store.put(rec)
             data = {
@@ -926,7 +936,7 @@ class MainOrchestration:
                     subject_field=rec.subject_field,
                     degree=Degree(rec.degree),
                     theme=theme,
-                    scope="all",
+                    scope=getattr(rec, "scope", "all") or "all",
                     kb_files=kb_files,
                     session_id=rec.session_id,
                     tenant_id=rec.tenant_id,

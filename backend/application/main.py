@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Optional
 
 from fastapi import FastAPI, Request
@@ -85,12 +86,15 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
     )
 
     # CORS（本地 UI 预览：http://localhost:8787 等前端端口）
+    # 默认放开本地开发；生产用 THESIS_CORS_ORIGINS 逗号分隔收紧（如 http://app.example.com,https://app.example.com）
     from fastapi.middleware.cors import CORSMiddleware
 
+    origins_env = os.getenv("THESIS_CORS_ORIGINS", "*").strip()
+    allow_origins = "*" if origins_env == "*" else [o.strip() for o in origins_env.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # 本地开发放开；生产按域名收紧
-        allow_credentials=False,
+        allow_origins=allow_origins,  # 本地开发放开；生产按域名收紧
+        allow_credentials=allow_origins != "*",
         allow_methods=["*"],
         allow_headers=["*"],
     )

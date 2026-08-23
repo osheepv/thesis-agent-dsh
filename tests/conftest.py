@@ -19,6 +19,8 @@ from pathlib import Path
 # 测试环境禁用 LLM（不调用 DeepSeek API，执行体自动回退确定性 Mock），
 # 环境变量优先于 .env 文件，须在导入业务模块前设置。
 os.environ.setdefault("THESIS_DEEPSEEK_ENABLED", "false")
+# 测试环境任务存储走内存（不落盘，不污染开发数据库）
+os.environ.setdefault("THESIS_TASK_STORE_MEMORY", "true")
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 BACKEND_DIR = PROJECT_ROOT / "backend"

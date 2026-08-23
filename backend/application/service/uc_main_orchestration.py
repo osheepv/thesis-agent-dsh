@@ -18,8 +18,10 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import threading
 import uuid
+from datetime import datetime
 
 logger = logging.getLogger("thesis.uc")
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
@@ -127,21 +129,17 @@ class RealDocxRenderer:
             "download_url": f"/api/v1/docx/files/{outcome.filename}",
             "filename": outcome.filename,
             "word_count": outcome.word_count,
+            "file_path": getattr(outcome, "file_path", ""),
         }
 
 
 # =====================================================================
-# 任务记录（内存态 + 会话隔离预留）
+# 任务记录（SQLite 持久化 + 会话隔离预留）
 # =====================================================================
 class TaskRecord:
-    """应用层任务暂存记录。"""
+    """应用层任务记录（含各环产物，可落库）。"""
 
-    __slots__ = (
-        "task_id", "title", "degree", "subject_field", "template_id",
-        "session_id", "tenant_id",
-        "ring1", "ring2", "ring3", "ring4", "ring5", "ring6", "ring7", "ring8", "ring9",
-        "ring10", "docx",
-    )
+    RING_FIELDS = tuple(f"ring{i}" for i in range(1, 11))
 
     def __init__(self, task_id: str, title: str, degree: str, subject_field: str,
                  session_id: str = "", tenant_id: str = "default",
@@ -165,32 +163,152 @@ class TaskRecord:
         self.ring10: Optional[Dict[str, Any]] = None
         self.docx: Optional[Dict[str, Any]] = None
 
+    def to_dict(self) -> Dict[str, Any]:
+        """序列化（环产物为 JSON 文本，脏数据防御式转储）。"""
+        def _dump(v: Optional[Dict[str, Any]]) -> str:
+            try:
+                return json.dumps(v or {}, ensure_ascii=False)
+            except (TypeError, ValueError):
+                return "{}"
+        row: Dict[str, Any] = {
+            "task_id": self.task_id,
+            "title": self.title,
+            "degree": self.degree,
+            "subject_field": self.subject_field,
+            "template_id": self.template_id or "",
+            "session_id": self.session_id,
+            "tenant_id": self.tenant_id,
+        }
+        for f in TaskRecord.RING_FIELDS:
+            row[f] = _dump(getattr(self, f))
+        row["docx"] = _dump(self.docx)
+        return row
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "TaskRecord":
+        """反序列化（遗漏的环产物置 None，不补空壳）。"""
+
+        def _load(v: Any) -> Optional[Dict[str, Any]]:
+            if isinstance(v, dict):
+                return v
+            if isinstance(v, str) and v:
+                try:
+                    return json.loads(v)
+                except (TypeError, ValueError):
+                    return None
+            return None
+
+        rec = cls(
+            task_id=data.get("task_id", ""),
+            title=data.get("title", ""),
+            degree=data.get("degree", "MASTER"),
+            subject_field=data.get("subject_field", ""),
+            session_id=data.get("session_id", ""),
+            tenant_id=data.get("tenant_id", "default"),
+            template_id=data.get("template_id") or None,
+        )
+        for f in cls.RING_FIELDS:
+            setattr(rec, f, _load(data.get(f)))
+        rec.docx = _load(data.get("docx"))
+        return rec
+
 
 class _TaskStore:
-    """进程内任务暂存（线程安全）。"""
+    """任务暂存：默认 SQLite 文件持久化（重启不丢），测试可切内存。
 
-    def __init__(self) -> None:
-        self._tasks: Dict[str, TaskRecord] = {}
+    存储结构（内置 sqlite3，零新依赖）：
+        t_task_store(
+            task_id TEXT PRIMARY KEY,
+            payload TEXT,        -- 整条 TaskRecord 的 JSON
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """
+
+    def __init__(self, db_path: Optional[str] = None) -> None:
         self._lock = threading.Lock()
+        # 显式传 db_path = 必须 SQLite（测试/自管场景）；不传时按环境变量切内存
+        if db_path is None and os.getenv("THESIS_TASK_STORE_MEMORY", "").lower() == "true":
+            self._path = None
+            self._tasks = {}
+            self._db = None
+            return
+        self._path = db_path or self._default_path()
+        os.makedirs(os.path.dirname(self._path), exist_ok=True)
+        self._db = sqlite3.connect(self._path, check_same_thread=False, timeout=15)
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS t_task_store ("
+            "task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, "
+            "created_at TEXT, updated_at TEXT)"
+        )
+        self._db.commit()
+
+    @staticmethod
+    def _default_path() -> str:
+        base = os.getenv("THESIS_TASK_STORE_DIR", "")
+        if not base:
+            # 默认与 thesis.db 同目录（backend/），gitignored
+            here = os.path.dirname(os.path.abspath(__file__))
+            base = os.path.join(os.path.dirname(os.path.dirname(here)), ".")
+        return os.path.join(base, "task_store.db")
 
     def put(self, rec: TaskRecord) -> TaskRecord:
         with self._lock:
-            self._tasks[rec.task_id] = rec
+            if self._db is None:
+                self._tasks[rec.task_id] = rec
+            else:
+                payload = json.dumps(rec.to_dict(), ensure_ascii=False)
+                now = datetime.utcnow().isoformat() + "Z"
+                self._db.execute(
+                    "INSERT INTO t_task_store(task_id, payload, created_at, updated_at) "
+                    "VALUES(?, ?, ?, ?) "
+                    "ON CONFLICT(task_id) DO UPDATE SET payload=excluded.payload, "
+                    "updated_at=excluded.updated_at",
+                    (rec.task_id, payload, now, now),
+                )
+                self._db.commit()
         return rec
 
     def get(self, task_id: str) -> Optional[TaskRecord]:
         with self._lock:
-            return self._tasks.get(task_id)
+            if self._db is None:
+                return self._tasks.get(task_id)
+            row = self._db.execute(
+                "SELECT payload FROM t_task_store WHERE task_id=?", (task_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return TaskRecord.from_dict(json.loads(row[0]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
 
     def all(self) -> List[TaskRecord]:
         """全部任务（会话列表）。"""
         with self._lock:
-            return list(self._tasks.values())
+            if self._db is None:
+                return list(self._tasks.values())
+            rows = self._db.execute(
+                "SELECT payload FROM t_task_store ORDER BY created_at"
+            ).fetchall()
+        recs: List[TaskRecord] = []
+        for (payload,) in rows:
+            try:
+                recs.append(TaskRecord.from_dict(json.loads(payload)))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+        return recs
 
     def delete(self, task_id: str) -> bool:
         """删除任务。"""
         with self._lock:
-            return self._tasks.pop(task_id, None) is not None
+            if self._db is None:
+                return self._tasks.pop(task_id, None) is not None
+            cur = self._db.execute(
+                "DELETE FROM t_task_store WHERE task_id=?", (task_id,)
+            )
+            self._db.commit()
+            return cur.rowcount > 0
 
 
 # =====================================================================
@@ -318,6 +436,7 @@ class MainOrchestration:
                 task_id=task_id, session_id=session_id,
             )
             rec.template_id = info.get("template_id")
+            self._store.put(rec)
             return Result.ok(data=info, msg="模板解析成功")
         except BizException:
             raise
@@ -349,6 +468,7 @@ class MainOrchestration:
         candidates = data.get("candidates", [])
         chosen_title = candidates[0]["title"] if candidates else data.get("theme", rec.title)
         rec.ring1 = {"candidates": candidates, "chosen": chosen_title, "compliant": True}
+        self._store.put(rec)
         self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R1", accept=True,
                           artifact_uri=res.output)
         self._advance_to(task_id, f"{task_id}-R1", target_ring_no=2)
@@ -373,6 +493,7 @@ class MainOrchestration:
         res = get_executor(2).execute(ctx)
         data = json.loads(res.output)
         rec.ring2 = data
+        self._store.put(rec)
         data["compliant"] = bool(res.accept)
         if not res.accept:
             # 评审未通过：返回错误语义（fallbackTo=1 由执行体产出）
@@ -417,6 +538,7 @@ class MainOrchestration:
         res = get_executor(4).execute(ctx)
         data = json.loads(res.output)
         rec.ring4 = data
+        self._store.put(rec)
         data["compliant"] = bool(res.accept)
         if res.accept:
             self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R4", accept=True,
@@ -480,6 +602,7 @@ class MainOrchestration:
         outline_text = self._outline_to_text(chapters)
         rec.ring5 = {"outline": outline_text, "chapters": outline.get("chapters", []),
                      "theme": outline.get("theme", chosen), "compliant": True}
+        self._store.put(rec)
         self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R5", accept=True,
                           artifact_uri=res.output)
         self._advance_to(task_id, f"{task_id}-R5", target_ring_no=6)
@@ -516,6 +639,7 @@ class MainOrchestration:
         rec.ring6 = {"chapters": chapters, "content": full_content,
                      "total_words": draft.get("total_words", 0),
                      "used_refs": draft.get("used_refs", []), "compliant": True}
+        self._store.put(rec)
         self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R6", accept=True,
                           artifact_uri=res.output)
         self._advance_to(task_id, f"{task_id}-R6", target_ring_no=7)
@@ -551,6 +675,7 @@ class MainOrchestration:
         full_content = self._draft_to_text(polished)
         rec.ring7 = {"chapters": polished, "content": full_content,
                      "total_words": data.get("total_words", 0), "compliant": True}
+        self._store.put(rec)
         self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R7", accept=True,
                           artifact_uri=res.output)
         self._advance_to(task_id, f"{task_id}-R7", target_ring_no=8)
@@ -575,17 +700,24 @@ class MainOrchestration:
             raise BizException(ErrorCode.DOCX_GENERATE_FAILED,
                               msg="请先运行 docx 生成（generate_docx），再执行排版检查",
                               detail={"task_id": task_id})
-        # 从 docx 记录中找落盘路径（generate 时 RealDocxRenderer 存了 filename）
-        import glob as _glob
+        # 从 docx 记录中找落盘路径（generate 时已存 file_path；无则按 filename 拼，
+        # 最后才 glob 兜底——多任务并发时不串数据）
         import os as _os
-        fn = docx.get("filename", "")
-        outputs_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
-            _os.path.abspath(__file__)))), "thesis_docx", "storage", "outputs")
-        if fn:
-            p = _os.path.join(outputs_dir, fn)
-            if _os.path.exists(p):
-                docx_path = p
+        docx_path = docx.get("file_path", "") or ""
+        if docx_path and not _os.path.exists(docx_path):
+            docx_path = ""
         if not docx_path:
+            fn = docx.get("filename", "")
+            outputs_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
+                _os.path.abspath(__file__)))), "thesis_docx", "storage", "outputs")
+            if fn:
+                p = _os.path.join(outputs_dir, fn)
+                if _os.path.exists(p):
+                    docx_path = p
+        if not docx_path:
+            import glob as _glob
+            outputs_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
+                _os.path.abspath(__file__)))), "thesis_docx", "storage", "outputs")
             cands = sorted(_glob.glob(_os.path.join(outputs_dir, "*_thesis_render.docx")),
                            key=_os.path.getmtime, reverse=True)
             docx_path = cands[0] if cands else ""
@@ -603,6 +735,7 @@ class MainOrchestration:
         res = get_executor(9).execute(ctx)
         data = json.loads(res.output)
         rec.ring9 = data
+        self._store.put(rec)
         data["compliant"] = bool(res.accept)
         if res.accept:
             self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R9", accept=True,
@@ -649,6 +782,7 @@ class MainOrchestration:
         res = get_executor(8).execute(ctx)
         data = json.loads(res.output)
         rec.ring8 = data
+        self._store.put(rec)
         data["compliant"] = bool(res.accept)
         if res.accept:
             self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R8", accept=True,
@@ -685,6 +819,7 @@ class MainOrchestration:
         res = get_executor(10).execute(ctx)
         data = json.loads(res.output)
         rec.ring10 = data
+        self._store.put(rec)
         if res.accept:
             self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R10", accept=True,
                               artifact_uri=res.output)
@@ -722,7 +857,8 @@ class MainOrchestration:
                 ErrorCode.DOCX_GENERATE_FAILED, msg=f"docx 生成失败: {exc}", detail=str(exc)
             ) from exc
         rec.docx = {"file_id": gen.get("file_id"), "download_url": gen.get("download_url"),
-                    "filename": gen.get("filename", "")}
+                    "filename": gen.get("filename", ""), "file_path": gen.get("file_path", "")}
+        self._store.put(rec)
         return Result.ok(data=gen, msg="docx 生成完成")
 
     # ------------------------------------------------------------------
@@ -798,6 +934,7 @@ class MainOrchestration:
             )
             data = json.loads(res.output)
             rec.ring3 = data
+            self._store.put(rec)
             return data.get("items", [])
         except Exception:  # noqa: BLE001 - 检索失败不阻塞大纲/撰写流程
             return []

@@ -199,6 +199,15 @@ class Ring6ChapterExecutor(RingExecutor):
             [it if isinstance(it, dict) else it.to_dict() for it in ctx.literature]
             if ctx.literature else []
         )
+        # RAG：知识库全文语义检索（本地嵌入，零成本；不可用返回空串不阻塞）
+        from common.rag import kb_blocks_text
+
+        try:
+            kb_block = kb_blocks_text(ctx.session_id, theme, k=6)
+        except Exception:  # noqa: BLE001
+            kb_block = ""
+        if kb_block:
+            pool_block = pool_block + "\n" + kb_block
         tpl = prompt_repo.render("ring6_chapter", {
             "theme": theme,
             "subject_field": ctx.subject_field,

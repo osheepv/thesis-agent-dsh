@@ -50,6 +50,14 @@ async def upload_file(
         if year:
             meta["year"] = int(year) if year.isdigit() else year
         rec = store.save_document(session_id, file.filename or "document.pdf", content, metadata=meta)
+        # 上传后自动索引 RAG（后台线程，不阻塞上传返回；不可用静默跳过）
+        try:
+            import threading as _th
+            from common.rag import index_session
+
+            _th.Thread(target=index_session, args=(session_id,), daemon=True).start()
+        except Exception:  # noqa: BLE001
+            pass
         return Result.ok(data={
             "file_id": rec["file_id"],
             "file_name": rec["file_name"],

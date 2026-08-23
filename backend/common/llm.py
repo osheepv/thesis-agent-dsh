@@ -51,8 +51,8 @@ class LLMSettings(BaseSettings):
     timeout: float = Field(default=_DEFAULT_TIMEOUT)
     #: 失败重试次数
     retry_max: int = Field(default=_DEFAULT_RETRY)
-    #: LLM 不可用时执行体是否回退确定性 Mock（false 则直接报错）
-    fallback_to_mock: bool = Field(default=True)
+    #: LLM 不可用时是否回退确定性 Mock；正式默认关闭，测试/演示需显式开启
+    fallback_to_mock: bool = Field(default=False)
 
 
 def _load_settings() -> LLMSettings:

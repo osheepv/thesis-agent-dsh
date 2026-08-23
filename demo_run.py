@@ -1,4 +1,8 @@
-import json, urllib.request, os
+"""最小严格流程冒烟：创建任务、执行环1、确认环1、读取进度。"""
+
+import json
+import urllib.error
+import urllib.request
 
 BASE = "http://127.0.0.1:8000"
 
@@ -21,36 +25,43 @@ def get(path):
     except Exception as e:
         return -1, {"error": str(e)}
 
-st, body = post("/api/v1/console/tasks", {"title":"基于深度学习的社会媒体情感分析研究","degree":"MASTER","subject_field":"自然语言处理","session_id":"run-demo"})
-print("1) 创建任务:", st, "| code=", body.get("code"), "| task_id=", body.get("data",{}).get("task_id"))
-tid = body["data"]["task_id"]
+def main():
+    st, body = post("/api/v1/console/tasks", {
+        "title": "基于深度学习的社会媒体情感分析研究",
+        "degree": "MASTER",
+        "subject_field": "自然语言处理",
+        "session_id": "run-demo",
+    })
+    print("1) 创建任务:", st, "| code=", body.get("code"))
+    tid = body.get("data", {}).get("task_id")
+    if not tid:
+        print("创建失败：", body)
+        return
 
-st, b = post(f"/api/v1/console/tasks/{tid}/rings/1/execute?session_id=run-demo")
-print("2) 环1选题:", st, "| code=", b.get("code"), "| msg=", b.get("msg"), "| 候选数=", len(b.get("data",{}).get("candidates",[])))
+    st, result = post(f"/api/v1/console/tasks/{tid}/rings/1/execute?session_id=run-demo")
+    print("2) 环1执行:", st, "| code=", result.get("code"), "| msg=", result.get("msg"))
+    if result.get("code") != 0:
+        return
 
-st, b = post(f"/api/v1/console/tasks/{tid}/rings/5/outline?session_id=run-demo")
-print("3) 环5大纲:", st, "| code=", b.get("code"), "| msg=", b.get("msg"), "| 章节数=", len(b.get("data",{}).get("chapters",[])))
+    st, pending = get(f"/api/v1/console/tasks/{tid}/progress?session_id=run-demo")
+    print("3) 待确认:", pending.get("data", {}).get("phase_state"))
+    if pending.get("data", {}).get("phase_state") != "WAITING_APPROVAL":
+        return
 
-st, b = post(f"/api/v1/console/tasks/{tid}/rings/6/chapter?session_id=run-demo")
-print("4) 环6撰写:", st, "| code=", b.get("code"), "| msg=", b.get("msg"), "| 总字数=", b.get("data",{}).get("total_words"))
+    st, confirmed = post(
+        f"/api/v1/console/tasks/{tid}/rings/1/confirm?session_id=run-demo",
+        {"confirmed": True},
+    )
+    print("4) 确认环1:", st, "| code=", confirmed.get("code"), "| msg=", confirmed.get("msg"))
 
-st, b = post(f"/api/v1/console/tasks/{tid}/docx/generate?session_id=run-demo")
-print("5) 生成docx:", st, "| code=", b.get("code"), "| msg=", b.get("msg"), "| file_id=", b.get("data",{}).get("file_id"), "| url=", b.get("data",{}).get("download_url"))
-# 下载端点按文件 ID（download_url 最后一段）访问，而非内部 file_id 代号
-file_id = b.get("data",{}).get("download_url", "").rsplit("/", 1)[-1]
+    st, progress = get(f"/api/v1/console/tasks/{tid}/progress?session_id=run-demo")
+    print(
+        "5) 进度:", st,
+        "| 当前环=", progress.get("data", {}).get("current_ring_no"),
+        "| 状态=", progress.get("data", {}).get("phase_state"),
+    )
+    print("TASK_ID=", tid)
 
-st, b = get(f"/api/v1/console/tasks/{tid}/progress?session_id=run-demo")
-print("6) 进度:", st, "| code=", b.get("code"), "| 当前环=", b.get("data",{}).get("current_ring_no"), "| 完成度=", b.get("data",{}).get("complete_percent"), "%")
 
-if file_id:
-    try:
-        with urllib.request.urlopen(BASE + f"/api/v1/docx/files/{file_id}?session_id=run-demo") as r:
-            data = r.read()
-            out = "demo_output/thesis_demo.docx"
-            os.makedirs("demo_output", exist_ok=True)
-            with open(out,'wb') as f: f.write(data)
-            print("7) 下载docx: 成功 ->", out, "|", len(data), "bytes")
-    except Exception as e:
-        print("7) 下载docx: 失败", e)
-
-print("TASK_ID=", tid)
+if __name__ == "__main__":
+    main()

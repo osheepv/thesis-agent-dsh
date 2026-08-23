@@ -10,8 +10,8 @@
 
 事务边界：状态推进/回退均通过 repository.persist_transition（FSM + Gate 同事务）。
 
-HITL 说明：环2/4/8/10 为 HITL 敏感环节，阶段态为 IN_PROGRESS 时等待人工确认；
-M3 网关负责确认，本轮仅在 FsmOrchestrator 预留 confirm_hitl 接口与 hitl_required 标志。
+确认说明：所有环节都遵守“执行产物 → 自动验收 → 用户确认 → 推进”的协议；
+环2/4/8/10 额外标记为 HITL 敏感环节，供界面和后续审批策略使用。
 """
 from __future__ import annotations
 
@@ -189,15 +189,59 @@ class FsmOrchestrator:
                 }
             )
 
+        completed_rings = state.current_ring_no - 1
+        if state.is_finished:
+            completed_rings = 10
+
         return {
             "task_id": state.task_id,
             "total_rings": 10,
             "current_ring_no": state.current_ring_no,
             "current_ring": state.ring.value,
             "degree": state.degree.value,
-            "complete_percent": round((state.current_ring_no - 1) / 10.0 * 100, 1),
+            "complete_percent": round(completed_rings / 10.0 * 100, 1),
+            "phase_state": state.phase_state.value,
+            "has_artifact": str(state.current_ring_no) in state.artifacts,
+            "can_execute": state.phase_state in (
+                PhaseState.NOT_STARTED,
+                PhaseState.IN_PROGRESS,
+                PhaseState.FALLBACK,
+            ),
+            "can_confirm": state.phase_state == PhaseState.WAITING_APPROVAL,
             "rings": rings,
         }
+
+    # ============================================================
+    # 提交执行产物（不推进）
+    # ============================================================
+    def submit_execution(
+        self,
+        task_id: str,
+        artifact_uri: str,
+        accepted: bool = True,
+    ) -> FsmState:
+        """记录当前环节执行结果，等待用户确认后再推进。
+
+        执行体只能把当前环节置为 ``WAITING_APPROVAL``；只有
+        :meth:`advance` 或 :meth:`confirm_hitl` 才能推进。失败产物仍保留，
+        供界面解释失败原因和执行回退。
+        """
+        state = self.get_task(task_id)
+        if state.is_finished:
+            raise BizException(ErrorCode.FSM_INVALID_TRANSITION, "任务已完结，禁止再次执行")
+        if state.phase_state == PhaseState.PASSED:
+            raise BizException(ErrorCode.FSM_INVALID_TRANSITION, "当前环节已经通过")
+        if not artifact_uri:
+            raise BizException(ErrorCode.INVALID_PARAM, "执行产物不能为空")
+
+        state.artifacts[str(state.current_ring_no)] = artifact_uri
+        state.phase_state = (
+            PhaseState.WAITING_APPROVAL if accepted else PhaseState.FALLBACK
+        )
+        state.hitl_confirmed = False
+        state.biz_req_no = ""
+        self._repo.persist_transition(state)
+        return state
 
     # ============================================================
     # 推进当前环节（advance）
@@ -210,12 +254,14 @@ class FsmOrchestrator:
         reject_reason: Optional[str] = None,
         artifact_uri: Optional[str] = None,
         gate_rule: str = "internal_acceptance",
+        artifact_event: Optional[dict[str, Any]] = None,
     ) -> FsmState:
         """推进当前环节。
 
         - 幂等键 `biz_req_no`：同一请求号重复调用时，返回已记录的推进结果（去重）。
-        - `accept=True` ：当前环节验收通过 → 进入下一环节。
-        - `accept=False`：当前环节验收被拒 → 状态置 FALLBACK（并压入回退栈供回退）。
+        - 当前环节必须已经执行并处于 ``WAITING_APPROVAL``。
+        - `accept=True` ：用户确认当前产物 → 进入下一环节。
+        - `accept=False`：用户拒绝当前产物 → 状态置 FALLBACK。
 
         Raises:
             BizException: 任务不存在 / 幂等冲突 / 已完结。
@@ -231,6 +277,14 @@ class FsmOrchestrator:
         if state.current_ring_no >= 10 and state.phase_state == PhaseState.PASSED:
             raise BizException(ErrorCode.FSM_INVALID_TRANSITION, "任务已完结，禁止推进")
 
+        if state.phase_state != PhaseState.WAITING_APPROVAL:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                "当前环节尚未执行或没有待确认产物，禁止推进",
+            )
+        if str(state.current_ring_no) not in state.artifacts:
+            raise BizException(ErrorCode.FSM_INVALID_TRANSITION, "当前环节产物缺失，禁止推进")
+
         ring = RING_NO_TO_TYPE[state.current_ring_no]
         route: DegreeRoute = get_degree_route(state.degree, ring)
 
@@ -242,6 +296,14 @@ class FsmOrchestrator:
             reject_reason=None if accept else (reject_reason or "验收未通过"),
             gate_rule=gate_rule,
         )
+
+        if artifact_event is not None:
+            self._append_artifact_event(
+                state,
+                artifact_event,
+                approved=bool(accept),
+                reject_reason=reject_reason or "",
+            )
 
         if accept:
             # 通过：记录主产物 → 压入回退快照 → 前驱指针 → 进入下一环节
@@ -261,15 +323,13 @@ class FsmOrchestrator:
             state.prev_ring_no = state.current_ring_no
             state.phase_state = PhaseState.PASSED
             state.biz_req_no = biz_req_no
+            state.hitl_confirmed = ring.is_hitl_gate
 
-            # ---- HITL 敏感环节：推进到下一环节前置 IN_PROGRESS（等待人工/下一执行）----
+            # 下一环必须重新执行。HITL 表示产物生成后的人工验收，不是执行前确认。
             if state.current_ring_no < 10:
                 state.current_ring_no += 1
-                next_route = get_degree_route(state.degree, RING_NO_TO_TYPE[state.current_ring_no])
-                state.phase_state = (
-                    PhaseState.IN_PROGRESS if next_route.hitl_required else PhaseState.NOT_STARTED
-                )
-                state.hitl_confirmed = not next_route.hitl_required  # 非 HITL 环节视为已确认
+                state.phase_state = PhaseState.NOT_STARTED
+                state.hitl_confirmed = False
         else:
             # 拒绝：置 FALLBACK，不推进。
             state.phase_state = PhaseState.FALLBACK
@@ -277,6 +337,47 @@ class FsmOrchestrator:
 
         self._repo.persist_transition(state, gate)
         return state
+
+    @staticmethod
+    def _append_artifact_event(
+        state: FsmState,
+        event: dict[str, Any],
+        *,
+        approved: bool,
+        reject_reason: str,
+    ) -> None:
+        """把产物审批事件写入 FSM 事务 Outbox。
+
+        Outbox 与 FSM/Gate 由 ``persist_transition`` 原子提交；产物仓库随后幂等投影。
+        """
+        if not isinstance(event, dict):
+            raise BizException(ErrorCode.INVALID_PARAM, "artifact_event 必须是对象")
+        event_id = str(event.get("event_id", "")).strip()
+        if not event_id:
+            event_id = f"EVT-{uuid.uuid4().hex[:20].upper()}"
+        task_id = str(event.get("task_id", state.task_id))
+        stage_no = int(event.get("stage_no", state.current_ring_no) or 0)
+        if task_id != state.task_id or stage_no != state.current_ring_no:
+            raise BizException(ErrorCode.INVALID_PARAM, "产物事件与当前任务/环节不一致")
+
+        outbox = state.aux_artifacts.setdefault("artifact_outbox", [])
+        if not isinstance(outbox, list):
+            raise BizException(ErrorCode.TASK_STATE_INVALID, "artifact_outbox 状态损坏")
+        if any(str(item.get("event_id", "")) == event_id for item in outbox if isinstance(item, dict)):
+            return
+
+        normalized = dict(event)
+        normalized.update(
+            {
+                "event_id": event_id,
+                "task_id": state.task_id,
+                "stage_no": state.current_ring_no,
+                "approved": approved,
+                "reason": reject_reason or str(event.get("reason", "")),
+                "projection_status": "PENDING",
+            }
+        )
+        outbox.append(normalized)
 
     # ============================================================
     # 回退（rollback）
@@ -290,6 +391,8 @@ class FsmOrchestrator:
             BizException: 任务不存在 / 目标环节非法 / 无可用回退快照。
         """
         state = self.get_task(task_id)
+        # Outbox 是不可丢失的审批审计流，不属于可回退的业务内容快照。
+        current_outbox = state.clone().aux_artifacts.get("artifact_outbox", [])
 
         if target_ring_no < 1 or target_ring_no > 10:
             raise BizException(ErrorCode.INVALID_PARAM, "目标环节号非法")
@@ -320,6 +423,7 @@ class FsmOrchestrator:
         restored.subject_field = state.subject_field
         restored.template_id = state.template_id
         restored.biz_req_no = ""  # 回退后清空幂等键，允许重新推进
+        restored.aux_artifacts["artifact_outbox"] = current_outbox
 
         # 若回退到的环节是 HITL 敏感，重新置为等待人工
         ring = RING_NO_TO_TYPE[restored.current_ring_no]
@@ -336,7 +440,7 @@ class FsmOrchestrator:
         return restored
 
     # ============================================================
-    # HITL 人工确认（M3 网关预留接口，本期仅落状态不调用外部网关）
+    # HITL 敏感环节确认（兼容低层 API；工作台统一使用 confirm_ring）
     # ============================================================
     def delete_task(self, task_id: str) -> None:
         """删除任务（仓储移除；回退栈/看门一并清理）。"""
@@ -344,6 +448,32 @@ class FsmOrchestrator:
         # 仓储提供 delete 则清理（InMemory 与 SqlAlchemy 均实现）
         if hasattr(self._repo, "delete"):
             self._repo.delete(task_id)
+
+    def mark_artifact_event_projected(
+        self,
+        task_id: str,
+        event_id: str,
+        artifact_id: str,
+    ) -> FsmState:
+        """确认 Outbox 事件已被幂等投影到产物仓库。"""
+        state = self.get_task(task_id)
+        outbox = state.aux_artifacts.get("artifact_outbox", [])
+        if not isinstance(outbox, list):
+            raise BizException(ErrorCode.TASK_STATE_INVALID, "artifact_outbox 状态损坏")
+        matched = False
+        for event in outbox:
+            if not isinstance(event, dict) or str(event.get("event_id", "")) != event_id:
+                continue
+            matched = True
+            if event.get("projection_status") == "PROJECTED":
+                return state
+            event["projection_status"] = "PROJECTED"
+            event["artifact_id"] = artifact_id
+            break
+        if not matched:
+            raise BizException(ErrorCode.INVALID_PARAM, f"Outbox 事件不存在: {event_id}")
+        self._repo.persist_transition(state)
+        return state
 
     def confirm_hitl(
         self,
@@ -353,7 +483,8 @@ class FsmOrchestrator:
     ) -> FsmState:
         """人工确认当前 HITL 敏感环节（环2/4/8/10）。
 
-        本轮仅预留接口与状态落库，真正的 M3 网关逻辑在下一期实现。
+        该接口只保留给低层 FSM API；工作台十环流程统一调用应用层
+        ``confirm_ring``，从而确保普通环节也不能绕过人工确认。
         - confirmed=True : 人工通过 → 触发 advance（accept=True）。
         - confirmed=False: 人工拒绝 → 触发 advance（accept=False）。
 
@@ -370,7 +501,7 @@ class FsmOrchestrator:
             biz_req_no=f"HITL-{task_id}-{state.current_ring_no}-{uuid.uuid4().hex[:8]}",
             accept=confirmed,
             reject_reason=reject_reason,
-            gate_rule="hitl_gate",
+            gate_rule="hitl_confirmation",
         )
 
 

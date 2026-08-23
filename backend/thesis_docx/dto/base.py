@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SectionSkeleton(BaseModel):
@@ -80,16 +80,22 @@ class DocxGenerateResult(BaseModel):
         download_url: 下载链接。
         filename: 生成文件名。
         word_count: 估算字数（剔除空白字符）。
-        validate: 生成后即校验的快照（pydantic 内嵌校验结果）。
+        validation: 生成后即校验的快照；序列化字段名保持为 `validate`。
         file_hash: 生成文件 SHA-256（可选，便于去重比对）。
     """
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
 
     file_id: str = Field(..., description="生成文件 ID")
     download_url: str = Field(..., description="下载链接")
     filename: str = Field(default="", description="生成文件名")
     word_count: int = Field(default=0, description="估算字数")
     file_hash: str = Field(default="", description="生成文件 SHA-256")
-    validate: Optional["DocxValidateResult"] = Field(default=None, description="生成后校验快照")
+    validation: Optional["DocxValidateResult"] = Field(
+        default=None,
+        alias="validate",
+        description="生成后校验快照",
+    )
 
 
 class DocxValidateRequest(BaseModel):

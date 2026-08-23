@@ -96,7 +96,7 @@ def _build_degree_route_table() -> dict[tuple[Degree, RingType], DegreeRoute]:
             hitl_required=True, min_word_requirement=3000,
         )
 
-    # ---- 环3 文献综述：基础 ----
+    # ---- 环3 文献调研：基础 ----
     for deg in Degree:
         table[(deg, RingType.RING_3)] = DegreeRoute(
             ring=RingType.RING_3, innovation_level=InnovationLevel.LOW,
@@ -146,7 +146,7 @@ def _build_degree_route_table() -> dict[tuple[Degree, RingType], DegreeRoute]:
             hitl_required=False, min_word_requirement=deg.min_word_requirement,
         )
 
-    # ---- 环7 万方查重（M7 预留）----
+    # ---- 环7 修改润色 ----
     for deg in Degree:
         table[(deg, RingType.RING_7)] = DegreeRoute(
             ring=RingType.RING_7, innovation_level=InnovationLevel.MEDIUM,
@@ -154,7 +154,7 @@ def _build_degree_route_table() -> dict[tuple[Degree, RingType], DegreeRoute]:
             hitl_required=False, min_word_requirement=deg.min_word_requirement,
         )
 
-    # ---- 环8 合规校验（HITL 敏感）----
+    # ---- 环8 引用校验（HITL 敏感）----
     for deg in Degree:
         table[(deg, RingType.RING_8)] = DegreeRoute(
             ring=RingType.RING_8, innovation_level=InnovationLevel.MEDIUM,
@@ -259,7 +259,7 @@ class FsmState:
         template_id: 论文模板 ID。
         hitl_confirmed: 当前 HITL 环节是否已人工确认（M3 网关预留）。
         artifacts: 主产物指针（{ring_no: artifact_uri}，同步）。
-        aux_artifacts: 附属产物指针（{ring_no: [artifact_uri]}，异步预留）。
+        aux_artifacts: 附属产物与事务 Outbox（JSON 对象）。
         created_at: 创建时间。
         updated_at: 更新时间。
     """
@@ -275,7 +275,7 @@ class FsmState:
     template_id: str = ""
     hitl_confirmed: bool = False
     artifacts: dict[str, str] = field(default_factory=dict)
-    aux_artifacts: dict[str, list[str]] = field(default_factory=dict)
+    aux_artifacts: dict[str, Any] = field(default_factory=dict)
     biz_req_no: str = ""  # 幂等键（推进操作的唯一请求号）
     created_at: datetime = field(default_factory=_now_utc)
     updated_at: datetime = field(default_factory=_now_utc)

@@ -157,6 +157,8 @@ class Ring6ChapterExecutor(RingExecutor):
                     return self._fallback_mock(ctx, theme)
                 raise
         else:
+            if not settings.fallback_to_mock:
+                raise LLMError("环6需要可用的 LLM；正式模式禁止静默回退 Mock")
             return self._fallback_mock(ctx, theme)
 
         evidence = {

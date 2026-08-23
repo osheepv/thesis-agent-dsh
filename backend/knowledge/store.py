@@ -21,7 +21,7 @@ import os
 import re
 import shutil
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -80,7 +80,7 @@ class KnowledgeStore:
             "stored_name": safe_name,
             "file_path": str(target),
             "file_size": len(content),
-            "uploaded_at": datetime.utcnow().isoformat() + "Z",
+            "uploaded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "metadata": metadata or {},
         }
         # 更新索引
@@ -235,7 +235,11 @@ class KnowledgeStore:
                 return json.loads(meta.read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001
                 logger.warning("meta.json 损坏，重建")
-        return {"session_id": session_id, "documents": [], "created_at": datetime.utcnow().isoformat() + "Z"}
+        return {
+            "session_id": session_id,
+            "documents": [],
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
 
     def _save_index(self, session_id: str, index: Dict[str, Any]) -> None:
         meta = _session_dir(session_id) / "meta.json"

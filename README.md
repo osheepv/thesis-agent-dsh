@@ -1,71 +1,70 @@
 # thesis-agent-dsh
 
-基于 DSH 的学位论文全流程写作 Agent —— 后端（真 LLM + 真实文献链路）+ Claude 风格桌面 UI。
+学位论文全流程智能写作工作台的工程化原型：FastAPI 后端、十阶段状态机、文献与知识库基础、docx 管线和桌面式 Web UI。
 
-> 当前：10 环节全流程闭环（选题→开题评审→文献调研→综述评审→大纲→撰写→润色→引用校验→排版→定稿），
-> 全部接入真 LLM（DeepSeek 直调）+ 真实文献检索（Crossref/OpenAlex/Semantic Scholar + 中文引导层 NCPSSD/ChinaXiv），
-> 附本地零成本 RAG 语义检索与双链知识库。二期需求与轮子选型见
-> [docs/二期需求与轮子选型分析.md](docs/二期需求与轮子选型分析.md)。
+> 准确定位：项目已经具备可信的十阶段控制流，但还不是可稳定交付完整本/硕/博论文的成品。当前重点是把整批生成改造成可编辑、可版本化、逐条绑定证据的分节写作系统。产品边界和建设路线见 [产品架构蓝图](docs/产品架构蓝图.md)，界面规范见 [DESIGN.md](DESIGN.md)。
 
 ## 项目定位
 
-依据《学位论文全流程标准化规范（本硕博）》（[docs/学位论文全流程标准化规范_本硕博.md](docs/学位论文全流程标准化规范_本硕博.md)）的 10 环节状态机（选题→新颖度→文献调研→文献综述→大纲→撰写→润色→引用校验→排版→定稿），把论文写作流程从"经验"抽象为"可执行、可校验、可回退"的 Agent 工作流；本硕博共用同一骨架，差异仅在各环验收阈值与创新要求。设计文档全集（系统设计/架构/部署/安全）见 `docs/design/`。
+依据《学位论文全流程标准化规范（本硕博）》（[docs/学位论文全流程标准化规范_本硕博.md](docs/学位论文全流程标准化规范_本硕博.md)）的 10 环节状态机，把论文写作从经验流程抽象为可执行、可校验、可回退、可人工确认的工作流。本硕博共用同一骨架，通过验收阈值、引用深度、大纲层级与最低字数要求体现差异。
 
 ## 当前状态
 
-**10 环节全部实现，真 LLM + 真实文献检索全链路闭环**：
-- 环1/5/6/7 由 DeepSeek（`deepseek-v4-flash`）真实生成；环3 真实检索（Crossref + OpenAlex + Semantic Scholar，中文期刊走 NCPSSD/ChinaXiv 引导层）；环2/4 新颖度/综述评审（真实查新拦截泛化题目）；环8 多源引用校验（伪引回退）；环9 docx 版式合规检查；环10 定稿汇总。
-- 防编造护栏：环5/6 只能引用环3 检索池（`[L序号]`）+ 知识库 RAG 语义块（`[KB]`），环7 指纹守护（引用/数字保留率 <0.85 拒绝），文献未命中不编造。
-- 标准检索通道：源注册表（Source Registry）按 scope（english/chinese/all）路由——新建对话可选检索范围并持久化；英文 scope 自动过滤中文期刊条目。
-- **RAG 语义检索**：知识库文献（PDF/txt/md）自动全文切块 + 本地嵌入（BAAI/bge-small-zh-v1.5，约 100MB 装一次永久免费）+ numpy 余弦检索，写作时注入 Top-K 相关段落到 prompt——零 API 成本，用户本地出算力。
-- **M9 知识库**：会话 1:1 强绑定（对话=知识库）；文献池（上传/复制 GB/T 7714/下载/删除）、笔记（contenteditable 编辑器 + `[[双链]]`）、知识图谱（Cytoscape.js，Obsidian Graph View 风格：hover 邻接高亮 / BFS 跳数视图 / 节点详情抽屉）。
-- 提示词模板化：`backend/prompts/*.md`（SYSTEM+USER 文本，改文案不碰代码）。
-- 持久化：任务列表+各环产物落 SQLite（`task_store.db`，重启不丢）；FSM 状态 SQLite 过渡（`THESIS_DB_URL` 控制，后期迁 PostgreSQL 改一行）。
-- 前端 UI：`ui/index.html`（单文件，Claude Code 桌面版风格——Claude 官方配色 / 对话级 10 环进度条 / 每环确认闸门双重验证 / 会话=知识库关联）。
-- CI：GitHub Actions（`.github/workflows/main.yml`），push 自动跑 125 用例。
-- 测试：**125 个 pytest 全绿**（FSM/执行体/闭环/文献/评审/排版/定稿/RAG/持久化/提示词模板）。
-- 一键全流程：`demo_full_10.py`（HTTP 走 API，跑完 10 环 + 下载成品 docx）与 `demo_run.py`（快速 6 步闭环）。
+当前已落地：
+
+- 十环执行体已接入主编排；每一环都严格执行“生成产物 → 自动验收 → `WAITING_APPROVAL` → 用户确认 → 下一环”。
+- 跨环执行、无产物推进和重复执行待确认环都会被拒绝；环10最终确认后进度为 100%。
+- 正式模式默认关闭静默 Mock。模型未配置或调用失败时明确报错；测试/演示需要显式开启 Mock。
+- 环3支持 Crossref、OpenAlex、Semantic Scholar 等来源及中文检索引导；空文献池不再被当成成功。
+- 环8无可核验引用时失败，环10材料缺失时失败；外部元数据命中不等同于全文事实已核验。
+- 知识库与会话 1:1 绑定，包含文献文件、笔记、双链、图谱和本地 RAG 基础。
+- 任务、各环产物和 FSM 状态使用 SQLite 持久化；docx 生成、下载与版式检查已串联。
+- 阶段审批通过事务 Outbox 投影为不可变版本产物；上游改版会递归将下游标记为过期。
+- 已实现来源、可定位摘录、论断和证据链接账本；未经作者复核的摘录不能支撑正文论断。
+- 已实现研究协议、实验运行状态机、原始材料血缘和结果账本；实证类任务未批准结果账本时禁止生成初稿。
+- 已实现论证图的有向无环校验与审批；核心论断自动登记到证据账本，大纲对论证版本建立依赖。
+- 环6支持按节最小上下文生成、独立版本、自动验收、逐节审批和完整性汇编；上游失效会使相关分节过期。
+- 新分节链路的环8会审计正文证据/结果标记，生成稳定引文编号、GB/T 7714参考文献和结果交叉引用清单。
+- 前端支持十环进度、执行状态、人工确认闸门及刷新后的闸门恢复。
+- `demo_run.py` 提供最小严格流程冒烟；`demo_full_10.py` 按真实闸门协议运行，任一环失败即停止。
+
+当前关键缺口：
+
+- 可视化分节编辑/版本差异、后台可恢复作业，以及 DOCX 原生书签/REF 域交叉引用仍待完成。
+- UI 仍是单文件原型；后台作业、取消恢复、桌面打包与生产级权限尚未完成。
+- 现有后端已具备分节版本与逐节审批，但前端尚未把证据侧栏、论证图和实验工作台完整呈现出来。
 
 ## 模块映射（对齐系统设计 M1~M9 落地状态）
 
 | 模块编号 | 模块名称 | 目录 | 状态 |
 | --- | --- | --- | --- |
 | M1 | FSM 编排器 | `backend/fsm/orchestrator/` | ✅ 已实现（10 环状态机 + HITL 闸门 + 回退） |
-| M2 | 环节执行体 | `backend/executor/` | ✅ 已实现（环1~10 全部，LLM 优先 + Mock 回退） |
-| M3 | 验收 Gate / HITL | `backend/fsm/` | ✅ 已实现（每环人工确认闸门，双重验证） |
+| M2 | 环节执行体 | `backend/executor/`、`backend/writing/` | 🟡 十环、证据约束分节写作和汇编已接入；可视化编辑待建设 |
+| M3 | 验收 Gate / HITL | `backend/fsm/` | ✅ 执行/验收/确认分离，所有环人工确认 |
 | M4 | 状态存储 | `backend/db/`、`backend/fsm/repository/` | ✅ SQLite（任务/环产物/FSM 状态） |
 | M5/M6 | docx 解析/生成 | `backend/thesis_docx/` | ✅ 已实现（docxtpl + 版式检查器） |
 | M7 | 查重 | — | 预留（OOS：只提醒人工自建查重） |
-| M8 | Guardrail | `backend/common/` | 部分（防编造护栏：池引用白名单 + 指纹守护） |
+| M8 | Guardrail | `backend/common/`、`backend/evidence/`、`backend/research/` | 🟡 来源/摘录/论断、实验结果血缘和环8强制审计已实现；DOCX 原生域验证待建设 |
 | M9 | 知识库 | `backend/knowledge/` | ✅ 已实现（文件池/笔记双链/图谱 API + RAG 检索） |
 | 公共 | 公共模块 | `backend/common/` | ✅ 已实现（LLM 客户端 / 文献服务 / 引用格式化 / 提示词仓库） |
 
 ## 环境准备
 
 ```bash
-# 1. 创建 venv（若未创建）
-python.exe -m venv C:/Users/欧阳威/.workbuddy/binaries/python/envs/default
-
-# 2. 激活
-# Windows (Git Bash / PowerShell)
-source C:/Users/欧阳威/.workbuddy/binaries/python/envs/default/Scripts/activate
-#  或直接使用 venv 内 python：
-C:/Users/欧阳威/.workbuddy/binaries/python/envs/default/Scripts/python.exe -m pip list
-
-# 3. 安装依赖
-cd backend
-C:/Users/欧阳威/.workbuddy/binaries/python/envs/default/Scripts/python.exe -m pip install -r requirements.txt
+python -m venv .venv
+# PowerShell
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r backend/requirements.txt
 ```
 
-> 说明：一期 pytest 与 API 启动不依赖真实 PostgreSQL 实例（任务为内存态），
-> 模型/DDL 仅用于二期 M4 持久化对接。安装 `psycopg2-binary`/`asyncpg` 需真实 PG 才能连库。
+默认使用 SQLite，不需要 PostgreSQL。真实模型与文献服务由环境变量启用。
 
 ## 运行服务
 
 ```bash
 cd backend
 # 必须先配置 .env（复制 .env.example 并填 DeepSeek key）
-C:/Users/欧阳威/.workbuddy/binaries/python/envs/default/Scripts/python.exe -m uvicorn application.main:app --host 127.0.0.1 --port 8000
+python -m uvicorn application.main:app --host 127.0.0.1 --port 8000
 ```
 
 打开 http://127.0.0.1:8000/docs 查看 Swagger。
@@ -74,16 +73,19 @@ C:/Users/欧阳威/.workbuddy/binaries/python/envs/default/Scripts/python.exe -m
 
 ```bash
 # 用任意静态服务器托管 ui/index.html（如 VSCode Live Server / python -m http.server）
-cd ui && C:/Users/欧阳威/.workbuddy/binaries/python/envs/default/Scripts/python.exe -m http.server 8787
+cd ui
+python -m http.server 8787
 ```
 
 浏览器打开 http://localhost:8787（后端 8000 需同时运行）。
 
 ## 运行测试
 
+当前回归基线：**164 项 pytest 全部通过**。
+
 ```bash
 # 项目根执行（conftest 自动注入路径）
-C:/Users/欧阳威/.workbuddy/binaries/python/envs/default/Scripts/python.exe -m pytest tests -v
+python -m pytest tests -v
 ```
 
 ## 数据库 DDL
@@ -100,16 +102,18 @@ psql -U <user> -d <db> -f backend/db/ddl.sql
 
 ## 技术栈（锁定版本，见 backend/requirements.txt）
 
-Python 3.13 · FastAPI 0.115.12 · SQLAlchemy 2.0.41 · SQLite（过渡；后期迁 PostgreSQL）·
-DeepSeek（`deepseek-v4-flash`，openai SDK 直调）· docxtpl 0.20.2 · openxml-audit 0.7.5 ·
+Python 3.13 · FastAPI 0.115.12 · SQLAlchemy 2.0.41 · SQLite（过渡；后期可迁 PostgreSQL）·
+OpenAI 兼容模型客户端（模型名由环境配置）· docxtpl 0.20.2 · openxml-audit 0.7.5 ·
 sentence-transformers 3.4.1（BAAI/bge-small-zh-v1.5 本地嵌入，RAG 零成本）· pypdf ·
 Cytoscape.js 3.30.2（知识图谱）· pytest 8.3.5
 
 ## 环境变量
 
 后端读取 `backend/.env`（模板见 `backend/.env.example`，**.env 严禁提交 git**）：
-`THESIS_DEEPSEEK_API_KEY`（必填）/ `THESIS_DB_URL` / `THESIS_LIT_ENABLED` / `THESIS_LIT_SCOPE` /
-`THESIS_METASO_ENABLED`（默认 false，省钱）/ `THESIS_RAG_ENABLED` / `THESIS_CORS_ORIGINS` / `THESIS_TASK_STORE_MEMORY`（测试用）。
+`THESIS_DEEPSEEK_API_KEY` / `THESIS_DEEPSEEK_FALLBACK_TO_MOCK` / `THESIS_DB_URL` / `THESIS_LIT_ENABLED` / `THESIS_LIT_SCOPE` /
+`THESIS_METASO_ENABLED`（默认 false，省钱）/ `THESIS_RAG_ENABLED` / `THESIS_CORS_ORIGINS` /
+`THESIS_TASK_STORE_MEMORY`（测试用）/ `THESIS_ARTIFACT_DB` / `THESIS_EVIDENCE_DB` /
+`THESIS_RESEARCH_DB` / `THESIS_SECTION_DB`。
 
 ## API 示例
 

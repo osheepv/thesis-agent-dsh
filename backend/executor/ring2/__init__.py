@@ -168,6 +168,8 @@ class Ring2DefenseReviewExecutor(RingExecutor):
                     logger.warning("环2 LLM 判定不可用，回退规则：%s", exc)
                 else:
                     raise
+        elif not settings.fallback_to_mock:
+            raise LLMError("环2需要可用的 LLM；正式模式禁止静默回退规则判定")
 
         if verdict is not None:
             level = (verdict.novelty_level or "MEDIUM").upper()

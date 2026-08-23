@@ -10,6 +10,7 @@ LLM 接入（决策 D1）：
 """
 from __future__ import annotations
 
+import json
 import logging
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -125,6 +126,18 @@ def _llm_generate(ctx: ExecContext) -> OutlineResult:
             [it if isinstance(it, dict) else it.to_dict() for it in ctx.literature]
             if ctx.literature else []
         ),
+        "argument_map_block": (
+            "【已批准论证图】\n"
+            + json.dumps(getattr(ctx, "argument_map", {}), ensure_ascii=False)
+            if getattr(ctx, "argument_map", {})
+            else "【论证图】本任务尚未启用结构化论证图。"
+        ),
+        "research_protocol_block": (
+            "【已批准研究协议】\n"
+            + json.dumps(getattr(ctx, "research_protocol", {}), ensure_ascii=False)
+            if getattr(ctx, "research_protocol", {})
+            else "【研究协议】本任务尚未启用结构化研究协议。"
+        ),
     })
     raw = get_llm_client().generate_json(
         system=tpl["system"],
@@ -166,6 +179,8 @@ class Ring5OutlineExecutor(RingExecutor):
                 raise
 
         if outline_result is None:
+            if not settings.fallback_to_mock:
+                raise LLMError("环5需要可用的 LLM；正式模式禁止静默回退 Mock")
             return self._fallback_mock(ctx, theme)
 
         evidence = {

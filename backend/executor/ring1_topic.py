@@ -170,6 +170,8 @@ class Ring1TopicExecutor(RingExecutor):
                     llm_result = None
                 else:
                     raise
+        elif not settings.fallback_to_mock:
+            raise LLMError("环1需要可用的 LLM；正式模式禁止静默回退 Mock")
 
         if llm_result is not None:
             topic_result = llm_result

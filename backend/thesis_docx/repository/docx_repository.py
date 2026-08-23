@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from common.aicoding.exception import BizException, ErrorCode
@@ -67,8 +67,9 @@ class DocxRepository:
     def save_template(self, record: Dict[str, Any]) -> TemplateRecordDict:
         """保存模板记录，返回带默认字段的记录。"""
         rec = TemplateRecordDict(record)
-        rec.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
-        rec.setdefault("updated_at", datetime.utcnow().isoformat() + "Z")
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        rec.setdefault("created_at", now)
+        rec.setdefault("updated_at", now)
         rec.setdefault("deleted", False)
         if self._backend == "sqlalchemy" and self._model is not None:
             self._orm_save(rec)
@@ -130,7 +131,10 @@ class DocxRepository:
     def save_output(self, output: Dict[str, Any]) -> TemplateRecordDict:
         """保存生成记录。"""
         rec = TemplateRecordDict(output)
-        rec.setdefault("created_at", datetime.utcnow().isoformat() + "Z")
+        rec.setdefault(
+            "created_at",
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
         rec.setdefault("deleted", False)
         with self._lock:
             self._outputs[rec["file_id"]] = dict(rec)

@@ -15,5 +15,9 @@ async def healthz() -> Result[dict]:
     import datetime
 
     return Result.ok(
-        data={"service": "thesis-agent-dsh", "status": "UP", "ts": datetime.datetime.utcnow().isoformat() + "Z"}
+        data={
+            "service": "thesis-agent-dsh",
+            "status": "UP",
+            "ts": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
+        }
     )

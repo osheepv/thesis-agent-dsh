@@ -101,7 +101,7 @@ def _extract_draft_chapters(ctx: ExecContext) -> list[Dict[str, Any]]:
 
 def _facts_fingerprint(text: str) -> Dict[str, Any]:
     """提取文本『事实指纹』：引用集 + 数字 token + 主体词（用于比对润色前后）。"""
-    refs = re.findall(r"\[L\d+\]", text)
+    refs = re.findall(r"\[(?:L\d+|EVD-[A-Z0-9]+|RES-[A-Z0-9]+)\]", text)
     numbers = re.findall(r"\d+(?:\.\d+)?%?", text)
     # 主体词：含"研究/方法/模型/数据/实验"等的短词（粗略）
     subjects = re.findall(r"[一-鿿A-Za-z]{2,12}(?:研究|方法|模型|数据|实验|算法|系统|框架)", text)
@@ -231,7 +231,9 @@ class Ring7PolishExecutor(RingExecutor):
                 },
             )
 
-        # 离线/未配置：原样返回（回退原稿，仍算通过）
+        # 离线演示可显式保留原稿；正式模式必须暴露 LLM 不可用。
+        if not settings.fallback_to_mock:
+            raise LLMError("环7需要可用的 LLM；正式模式禁止静默回退原稿")
         return self._fallback_original(src_chapters, issue="LLM 不可用，保留原稿", source="mock")
 
     def _llm_polish(self, ctx: ExecContext, src_chapters: List[Dict[str, Any]]) -> LLMPolishOut:

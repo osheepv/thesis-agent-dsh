@@ -223,6 +223,376 @@ async def ring10_final(task_id: str, session_id: str = "",
         return _err(exc)
 
 
+@router.get("/tasks/{task_id}/artifacts", response_model=None)
+async def list_artifacts(task_id: str, session_id: str = "",
+                         orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    """查看全部产物版本、依赖、审批和失效状态。"""
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_artifacts(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
+# 证据账本（来源 → 摘录 → 论断 → 链接 → 审计）
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/sources", response_model=None)
+async def register_source(task_id: str, req: Dict[str, Any], session_id: str = "",
+                          orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.register_source(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/sources", response_model=None)
+async def list_sources(task_id: str, session_id: str = "",
+                       orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_sources(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/evidence", response_model=None)
+async def add_evidence(task_id: str, req: Dict[str, Any], session_id: str = "",
+                       orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.add_evidence(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/evidence", response_model=None)
+async def list_evidence(task_id: str, session_id: str = "", source_id: str = "",
+                        orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_evidence(task_id, source_id=source_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/evidence/{evidence_id}/review", response_model=None)
+async def review_evidence(task_id: str, evidence_id: str, req: Dict[str, Any],
+                          session_id: str = "",
+                          orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.review_evidence(
+            task_id,
+            evidence_id,
+            approved=bool(req.get("approved", True)),
+            actor=str(req.get("actor", "author")),
+            reason=str(req.get("reason", "")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/claims", response_model=None)
+async def add_claim(task_id: str, req: Dict[str, Any], session_id: str = "",
+                    orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.add_claim(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/claims", response_model=None)
+async def list_claims(task_id: str, session_id: str = "", artifact_id: str = "",
+                      orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_claims(task_id, artifact_id=artifact_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/claims/{claim_id}/links", response_model=None)
+async def link_claim_evidence(task_id: str, claim_id: str, req: Dict[str, Any],
+                              session_id: str = "",
+                              orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.link_claim_evidence(task_id, claim_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/evidence-audit", response_model=None)
+async def audit_evidence(task_id: str, session_id: str = "", artifact_id: str = "",
+                         orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.audit_evidence(task_id, artifact_id=artifact_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
+# 分节写作、逐节审批与环6汇编
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/writing/sections/generate", response_model=None)
+async def generate_section_draft(task_id: str, req: Dict[str, Any], session_id: str = "",
+                                 orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.generate_section_draft(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/writing/sections", response_model=None)
+async def list_section_drafts(task_id: str, session_id: str = "",
+                              orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_section_drafts(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/writing/sections-audit", response_model=None)
+async def audit_section_drafts(task_id: str, session_id: str = "",
+                               orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.audit_section_drafts(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/writing/sections/{section_draft_id}/review", response_model=None)
+async def review_section_draft(task_id: str, section_draft_id: str, req: Dict[str, Any],
+                               session_id: str = "",
+                               orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.review_section_draft(
+            task_id,
+            section_draft_id,
+            approved=bool(req.get("approved", True)),
+            actor=str(req.get("actor", "author")),
+            reason=str(req.get("reason", "")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/rings/6/assemble", response_model=None)
+async def assemble_section_drafts(task_id: str, session_id: str = "",
+                                  orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.assemble_section_drafts(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
+# 研究协议、实验运行与结果血缘
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/research/argument-maps", response_model=None)
+async def create_argument_map(task_id: str, req: Dict[str, Any], session_id: str = "",
+                              orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.create_argument_map(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/research/argument-maps", response_model=None)
+async def list_argument_maps(task_id: str, session_id: str = "",
+                             orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_argument_maps(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/research/argument-maps/{artifact_id}/review", response_model=None)
+async def review_argument_map(task_id: str, artifact_id: str, req: Dict[str, Any],
+                              session_id: str = "",
+                              orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.review_argument_map(
+            task_id,
+            artifact_id,
+            approved=bool(req.get("approved", True)),
+            actor=str(req.get("actor", "author")),
+            reason=str(req.get("reason", "")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/research/protocols", response_model=None)
+async def create_research_protocol(task_id: str, req: Dict[str, Any], session_id: str = "",
+                                   orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.create_research_protocol(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/research/protocols", response_model=None)
+async def list_research_protocols(task_id: str, session_id: str = "",
+                                  orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_research_protocols(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/research/protocols/{artifact_id}/review", response_model=None)
+async def review_research_protocol(task_id: str, artifact_id: str, req: Dict[str, Any],
+                                   session_id: str = "",
+                                   orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.review_research_protocol(
+            task_id,
+            artifact_id,
+            approved=bool(req.get("approved", True)),
+            actor=str(req.get("actor", "author")),
+            reason=str(req.get("reason", "")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/research/runs", response_model=None)
+async def create_experiment_run(task_id: str, req: Dict[str, Any], session_id: str = "",
+                                orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.create_experiment_run(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/research/runs", response_model=None)
+async def list_experiment_runs(task_id: str, session_id: str = "",
+                               orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_experiment_runs(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/research/runs/{run_id}/transition", response_model=None)
+async def update_experiment_run(task_id: str, run_id: str, req: Dict[str, Any],
+                                session_id: str = "",
+                                orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.update_experiment_run(task_id, run_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/research/runs/{run_id}/results", response_model=None)
+async def add_result_record(task_id: str, run_id: str, req: Dict[str, Any],
+                            session_id: str = "",
+                            orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.add_result_record(task_id, run_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/research/results", response_model=None)
+async def list_result_records(task_id: str, session_id: str = "", run_id: str = "",
+                              orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_result_records(task_id, run_id=run_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/research/results/{result_id}/review", response_model=None)
+async def review_result_record(task_id: str, result_id: str, req: Dict[str, Any],
+                               session_id: str = "",
+                               orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.review_result_record(
+            task_id, result_id, verified_by_user=bool(req.get("verified_by_user", True))
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/research/audit", response_model=None)
+async def audit_research(task_id: str, session_id: str = "",
+                         orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.audit_research(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/research/result-ledgers", response_model=None)
+async def create_result_ledger(task_id: str, session_id: str = "",
+                               orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.create_result_ledger(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/research/result-ledgers/{artifact_id}/review", response_model=None)
+async def review_result_ledger(task_id: str, artifact_id: str, req: Dict[str, Any],
+                               session_id: str = "",
+                               orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.review_result_ledger(
+            task_id,
+            artifact_id,
+            approved=bool(req.get("approved", True)),
+            actor=str(req.get("actor", "author")),
+            reason=str(req.get("reason", "")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
+# 当前环产物确认（执行和推进分离）
+# ---------------------------------------------------------------------
+@router.post("/tasks/{task_id}/rings/{ring_no}/confirm", response_model=None)
+async def confirm_ring(task_id: str, ring_no: int, req: Dict[str, Any],
+                       session_id: str = "",
+                       orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.confirm_ring(
+            task_id=task_id,
+            ring_no=ring_no,
+            confirmed=bool(req.get("confirmed", True)),
+            reject_reason=str(req.get("reject_reason", "")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 # ---------------------------------------------------------------------
 # 生成 docx
 # ---------------------------------------------------------------------

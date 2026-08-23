@@ -37,7 +37,9 @@ class FsmStateModel(FSMBase):
     # 回退栈 JSON（数组：[{prev_ring, phase_state, snapshot, created_at}]）
     rollback_stack: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True, comment="回退栈 JSON")
     # 当前环节阶段态
-    phase_state: Mapped[str] = mapped_column(comment="阶段态 NOT_STARTED/IN_PROGRESS/PASSED/FALLBACK")
+    phase_state: Mapped[str] = mapped_column(
+        comment="阶段态 NOT_STARTED/IN_PROGRESS/WAITING_APPROVAL/PASSED/FALLBACK"
+    )
     # 辅助信息
     title: Mapped[str] = mapped_column(default="", comment="论文题目")
     subject_field: Mapped[str] = mapped_column(default="", comment="学科方向")

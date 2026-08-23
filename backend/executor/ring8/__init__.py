@@ -114,8 +114,8 @@ class Ring8ComplianceExecutor(RingExecutor):
                 output=CitationCheckResult(
                     total=0, summary="未提供参考文献，跳过校验（需人工先补全引用列表）"
                 ).model_dump_json(indent=2),
-                accept=True,
-                fallbackTo=None,
+                accept=False,
+                fallbackTo=6,
                 issues=["未提供引用列表，请补全后重新校验"],
                 evidence={"checked": 0},
             )

@@ -21,19 +21,52 @@ import re
 import sqlite3
 import threading
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger("thesis.uc")
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 from common.aicoding.dto.result import Result
 from common.aicoding.enums.degree import Degree
-from common.aicoding.enums.ring_type import RingType
+from common.aicoding.enums.phase_state import PhaseState
 from common.aicoding.exception.biz_exception import BizException
 from common.aicoding.exception.error_code import ErrorCode
+from common.workflow_contracts import get_stage_contract
+from common.citation import format_gbt7714
+
+from artifacts import (
+    ArtifactKind,
+    ArtifactOutboxProjector,
+    ArtifactRegistry,
+    ArtifactStatus,
+    ContextManifest,
+)
+from evidence import (
+    ClaimType,
+    EvidenceLedger,
+    EvidenceLedgerError,
+    EvidenceRelation,
+    SourceVerificationStatus,
+)
+from research import (
+    ArgumentClaimSpec,
+    ArgumentMap,
+    ArgumentRole,
+    ExperimentStatus,
+    ResearchExecutionRegistry,
+    ResearchMethod,
+    ResearchProtocol,
+    ResearchRegistryError,
+)
+from writing import (
+    SectionDraftGenerator,
+    SectionDraftRegistry,
+    SectionDraftRegistryError,
+    SectionDraftStatus,
+)
 
 from executor import ExecContext, get_executor
-from fsm.orchestrator import FsmOrchestrator, RING_NO_TO_TYPE
+from fsm.orchestrator import FsmOrchestrator
 from fsm.repository import InMemoryFsmRepository
 
 
@@ -263,7 +296,7 @@ class _TaskStore:
                 self._tasks[rec.task_id] = rec
             else:
                 payload = json.dumps(rec.to_dict(), ensure_ascii=False)
-                now = datetime.utcnow().isoformat() + "Z"
+                now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                 self._db.execute(
                     "INSERT INTO t_task_store(task_id, payload, created_at, updated_at) "
                     "VALUES(?, ?, ?, ?) "
@@ -333,10 +366,57 @@ class MainOrchestration:
         fsm: Optional[FsmOrchestrator] = None,
         docx_renderer: Optional[DocxRenderPort] = None,
         store: Optional[_TaskStore] = None,
+        artifact_registry: Optional[ArtifactRegistry] = None,
+        evidence_ledger: Optional[EvidenceLedger] = None,
+        research_registry: Optional[ResearchExecutionRegistry] = None,
+        section_registry: Optional[SectionDraftRegistry] = None,
+        section_generator: Optional[SectionDraftGenerator] = None,
     ) -> None:
         self._fsm = fsm or FsmOrchestrator(InMemoryFsmRepository())
         self._docx = docx_renderer or RealDocxRenderer()
         self._store = store or _TaskStore()
+        if artifact_registry is None:
+            if os.getenv("THESIS_TASK_STORE_MEMORY", "").lower() == "true":
+                artifact_registry = ArtifactRegistry()
+            else:
+                artifact_path = os.getenv(
+                    "THESIS_ARTIFACT_DB",
+                    os.path.join(os.path.dirname(_TaskStore._default_path()), "artifacts.db"),
+                )
+                artifact_registry = ArtifactRegistry(artifact_path)
+        self._artifacts = artifact_registry
+        self._artifact_projector = ArtifactOutboxProjector(self._artifacts)
+        if evidence_ledger is None:
+            if os.getenv("THESIS_TASK_STORE_MEMORY", "").lower() == "true":
+                evidence_ledger = EvidenceLedger()
+            else:
+                evidence_path = os.getenv(
+                    "THESIS_EVIDENCE_DB",
+                    os.path.join(os.path.dirname(_TaskStore._default_path()), "evidence.db"),
+                )
+                evidence_ledger = EvidenceLedger(evidence_path)
+        self._evidence = evidence_ledger
+        if research_registry is None:
+            if os.getenv("THESIS_TASK_STORE_MEMORY", "").lower() == "true":
+                research_registry = ResearchExecutionRegistry()
+            else:
+                research_path = os.getenv(
+                    "THESIS_RESEARCH_DB",
+                    os.path.join(os.path.dirname(_TaskStore._default_path()), "research.db"),
+                )
+                research_registry = ResearchExecutionRegistry(research_path)
+        self._research = research_registry
+        if section_registry is None:
+            if os.getenv("THESIS_TASK_STORE_MEMORY", "").lower() == "true":
+                section_registry = SectionDraftRegistry()
+            else:
+                section_path = os.getenv(
+                    "THESIS_SECTION_DB",
+                    os.path.join(os.path.dirname(_TaskStore._default_path()), "sections.db"),
+                )
+                section_registry = SectionDraftRegistry(section_path)
+        self._sections = section_registry
+        self._section_generator = section_generator or SectionDraftGenerator()
 
     def delete_task(self, task_id: str) -> Result[Dict[str, Any]]:
         """删除会话（连带知识库）。"""
@@ -344,12 +424,20 @@ class MainOrchestration:
         if rec is None:
             raise BizException(ErrorCode.TASK_NOT_FOUND, msg=f"任务不存在: {task_id}")
         self._store.delete(task_id)
+        self._artifacts.delete_task(task_id)
+        self._evidence.delete_task(task_id)
+        self._research.delete_task(task_id)
+        self._sections.delete_task(task_id)
         try:
             self._fsm.delete_task(task_id)
         except Exception:  # noqa: BLE001 - FSM 无该任务不阻塞
             pass
-        # 连带删除知识库目录
-        if rec.session_id:
+        # 连带删除知识库目录。兼容旧数据：若还有任务错误地共享同一 session，
+        # 保留知识库，避免删除一个任务时破坏另一个任务的数据。
+        knowledge_is_shared = any(
+            other.session_id == rec.session_id for other in self._store.all()
+        )
+        if rec.session_id and not knowledge_is_shared:
             try:
                 import shutil as _sh
                 from knowledge.store import get_kb_store
@@ -363,7 +451,17 @@ class MainOrchestration:
                         _os.remove(target)
             except Exception:  # noqa: BLE001
                 pass
-        return Result.ok(data={"task_id": task_id}, msg="会话已删除（含知识库）")
+        return Result.ok(
+            data={
+                "task_id": task_id,
+                "knowledge_deleted": bool(rec.session_id and not knowledge_is_shared),
+            },
+            msg=(
+                "会话已删除（含知识库）"
+                if rec.session_id and not knowledge_is_shared
+                else "会话已删除；检测到旧任务共享知识库，资料已保留"
+            ),
+        )
 
     # ------------------------------------------------------------------
     # 步骤 1：创建论文任务（UC-01）
@@ -410,9 +508,19 @@ class MainOrchestration:
                 title=title, degree=degree, subject_field=subject_field,
                 template_id=template_id or "",
             )
+            canonical_session_id = session_id.strip()
+            if not canonical_session_id or canonical_session_id == "default":
+                canonical_session_id = state.task_id
+            if any(r.session_id == canonical_session_id for r in self._store.all()):
+                self._fsm.delete_task(state.task_id)
+                raise BizException(
+                    ErrorCode.INVALID_PARAM,
+                    msg="一个会话只能绑定一个论文任务，请使用新的 session_id",
+                    detail={"session_id": canonical_session_id},
+                )
             rec = TaskRecord(
                 task_id=state.task_id, title=title, degree=degree.value,
-                subject_field=subject_field, session_id=session_id,
+                subject_field=subject_field, session_id=canonical_session_id,
                 tenant_id=tenant_id, template_id=template_id, scope=scope,
             )
             self._store.put(rec)
@@ -422,10 +530,16 @@ class MainOrchestration:
                 "degree": degree.value,
                 "subject_field": subject_field,
                 "template_id": template_id,
+                "session_id": canonical_session_id,
                 "current_ring": state.ring.value,
                 "status": "NOT_STARTED",
             }
-            return Result.ok(data=data, msg="论文任务创建成功", trace_id=session_id, tenant_id=tenant_id)
+            return Result.ok(
+                data=data,
+                msg="论文任务创建成功",
+                trace_id=canonical_session_id,
+                tenant_id=tenant_id,
+            )
         except BizException:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -459,8 +573,8 @@ class MainOrchestration:
     # 步骤 3：环1 选题（UC-02）
     # ------------------------------------------------------------------
     def run_ring1(self, task_id: str) -> Result[Dict[str, Any]]:
-        """执行环1选题：M2 产出候选题目，并推进 FSM 到环2。"""
-        rec = self._require(task_id)
+        """执行环1选题：M2 产出候选题目，等待用户确认。"""
+        rec = self._require_current_ring(task_id, 1)
         ctx = ExecContext(
             subject_field=rec.subject_field,
             degree=Degree(rec.degree),
@@ -479,9 +593,7 @@ class MainOrchestration:
         chosen_title = candidates[0]["title"] if candidates else data.get("theme", rec.title)
         rec.ring1 = {"candidates": candidates, "chosen": chosen_title, "compliant": True}
         self._store.put(rec)
-        self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R1", accept=True,
-                          artifact_uri=res.output)
-        self._advance_to(task_id, f"{task_id}-R1", target_ring_no=2)
+        self._fsm.submit_execution(task_id, res.output, accepted=True)
         return Result.ok(data={"candidates": candidates, "chosen": chosen_title,
                                "recommendation": data.get("recommendation", "")},
                          msg="环1选题完成")
@@ -491,7 +603,7 @@ class MainOrchestration:
     # ------------------------------------------------------------------
     def run_ring2(self, task_id: str) -> Result[Dict[str, Any]]:
         """执行环2开题评审：真实检索相似研究 → 新颖度判定（LOW 回退环1）。"""
-        rec = self._require(task_id)
+        rec = self._require_current_ring(task_id, 2)
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
         ctx = ExecContext(
             subject_field=rec.subject_field,
@@ -502,9 +614,10 @@ class MainOrchestration:
         )
         res = get_executor(2).execute(ctx)
         data = json.loads(res.output)
+        data["compliant"] = bool(res.accept)
         rec.ring2 = data
         self._store.put(rec)
-        data["compliant"] = bool(res.accept)
+        self._fsm.submit_execution(task_id, res.output, accepted=res.accept)
         if not res.accept:
             # 评审未通过：返回错误语义（fallbackTo=1 由执行体产出）
             return Result.fail(
@@ -517,10 +630,6 @@ class MainOrchestration:
                     "fallbackTo": 1,
                 },
             )
-        if res.accept:
-            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R2", accept=True,
-                              artifact_uri=res.output)
-            self._advance_to(task_id, f"{task_id}-R2", target_ring_no=3)  # 自动过环2 → 环3
         return Result.ok(data={
             "novelty_level": data.get("novelty_level", ""),
             "similar_count": data.get("similar_count", 0),
@@ -534,7 +643,7 @@ class MainOrchestration:
     # ------------------------------------------------------------------
     def run_ring4(self, task_id: str) -> Result[Dict[str, Any]]:
         """执行环4综述评审：池内竞争度 + 创新点包住检查（需重评估回退环2）。"""
-        rec = self._require(task_id)
+        rec = self._require_current_ring(task_id, 4)
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
         pool = self._ensure_literature(rec, chosen)
         ctx = ExecContext(
@@ -547,14 +656,11 @@ class MainOrchestration:
         )
         res = get_executor(4).execute(ctx)
         data = json.loads(res.output)
+        data["compliant"] = bool(res.accept)
         rec.ring4 = data
         self._store.put(rec)
-        data["compliant"] = bool(res.accept)
-        if res.accept:
-            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R4", accept=True,
-                              artifact_uri=res.output)
-            self._advance_to(task_id, f"{task_id}-R4", target_ring_no=5)  # 自动过环4 → 环5
-        else:
+        self._fsm.submit_execution(task_id, res.output, accepted=res.accept)
+        if not res.accept:
             return Result.fail(
                 code=101200,
                 msg=f"环4评审未通过：{data.get('recommendation', '')}",
@@ -565,20 +671,32 @@ class MainOrchestration:
                     "fallbackTo": res.fallbackTo,
                 },
             )
+        return Result.ok(data={
+            "verdict": data.get("verdict", ""),
+            "overlap_count": data.get("overlap_count", 0),
+            "recommendation": data.get("recommendation", ""),
+            "fallbackTo": None,
+        }, msg="环4综述评审完成，等待确认")
 
     # ------------------------------------------------------------------
     # 步骤 3.7：环3 文献调研（显式入口）
     # ------------------------------------------------------------------
     def run_ring3(self, task_id: str) -> Result[Dict[str, Any]]:
-        """执行环3文献调研：真实检索建池（显式入口，推进到环4）。"""
-        rec = self._require(task_id)
+        """执行环3文献调研：真实检索建池，等待用户确认。"""
+        rec = self._require_current_ring(task_id, 3)
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
         pool = self._ensure_literature(rec, chosen)
-        # 产物已缓存到 rec.ring3（_ensure_literature 内执行），推进到环4
-        if rec.ring3 is not None:
-            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R3", accept=True,
-                              artifact_uri=json.dumps(rec.ring3))
-            self._advance_to(task_id, f"{task_id}-R3", target_ring_no=4)
+        if rec.ring3 is None or not pool:
+            raise BizException(
+                ErrorCode.FSM_ACCEPTANCE_REJECTED,
+                msg="环3未检索到可用文献，禁止继续写作",
+                detail={"fallbackTo": 3, "issues": ["文献池为空"]},
+            )
+        rec.ring3["compliant"] = True
+        self._store.put(rec)
+        self._fsm.submit_execution(
+            task_id, json.dumps(rec.ring3, ensure_ascii=False), accepted=True
+        )
         return Result.ok(data={
             "total": len(pool),
             "items": rec.ring3.get("items", []) if rec.ring3 else [],
@@ -589,8 +707,30 @@ class MainOrchestration:
     # 步骤 4：环5 大纲（UC-03）
     # ------------------------------------------------------------------
     def run_ring5(self, task_id: str) -> Result[Dict[str, Any]]:
-        """执行环5大纲：基于选题生成章节结构，并推进 FSM。"""
-        rec = self._require(task_id)
+        """执行环5大纲：基于选题生成章节结构，等待用户确认。"""
+        rec = self._require_current_ring(task_id, 5)
+        argument_maps = [
+            artifact
+            for artifact in self._artifacts.list_task(task_id)
+            if artifact.kind == ArtifactKind.ARGUMENT_MAP
+        ]
+        argument_map = self._active_argument_map(task_id)
+        if argument_maps and argument_map is None:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="论证图尚未获作者批准，不能生成大纲",
+            )
+        protocols = [
+            artifact
+            for artifact in self._artifacts.list_task(task_id)
+            if artifact.kind == ArtifactKind.RESEARCH_PROTOCOL
+        ]
+        protocol = self._active_research_protocol(task_id)
+        if protocols and protocol is None:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="研究协议尚未获作者批准，不能生成大纲",
+            )
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
         pool = self._ensure_literature(rec, chosen)
         ctx = ExecContext(
@@ -598,6 +738,8 @@ class MainOrchestration:
             degree=Degree(rec.degree),
             theme=chosen,
             literature=pool,
+            argument_map=argument_map.payload if argument_map is not None else {},
+            research_protocol=protocol.payload if protocol is not None else {},
             session_id=rec.session_id,
             tenant_id=rec.tenant_id,
         )
@@ -609,13 +751,29 @@ class MainOrchestration:
             )
         outline = json.loads(res.output)
         chapters = outline.get("chapters", [])
+        if argument_map is not None:
+            required_sections = {
+                str(item.get("section_id", ""))
+                for item in argument_map.payload.get("claims", []) or []
+                if str(item.get("section_id", ""))
+            }
+            outline_sections = {
+                str(item.get("number", ""))
+                for item in chapters
+                if isinstance(item, dict) and str(item.get("number", ""))
+            }
+            missing_sections = sorted(required_sections - outline_sections)
+            if missing_sections:
+                raise BizException(
+                    ErrorCode.FSM_ACCEPTANCE_REJECTED,
+                    msg="环5大纲未覆盖论证图中的全部章节位置",
+                    detail={"missing_section_ids": missing_sections},
+                )
         outline_text = self._outline_to_text(chapters)
         rec.ring5 = {"outline": outline_text, "chapters": outline.get("chapters", []),
                      "theme": outline.get("theme", chosen), "compliant": True}
         self._store.put(rec)
-        self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R5", accept=True,
-                          artifact_uri=res.output)
-        self._advance_to(task_id, f"{task_id}-R5", target_ring_no=6)
+        self._fsm.submit_execution(task_id, res.output, accepted=True)
         return Result.ok(data={"outline": outline_text, "chapters": chapters,
                                "summary": outline.get("summary", "")}, msg="环5大纲完成")
 
@@ -623,8 +781,21 @@ class MainOrchestration:
     # 步骤 5：环6 撰写（UC-03 延续）
     # ------------------------------------------------------------------
     def run_ring6(self, task_id: str) -> Result[Dict[str, Any]]:
-        """执行环6撰写：基于大纲生成初稿正文，并推进 FSM。"""
-        rec = self._require(task_id)
+        """执行环6撰写：基于大纲生成初稿正文，等待用户确认。"""
+        if self._sections.list_task(task_id):
+            return self.assemble_section_drafts(task_id)
+        rec = self._require_current_ring(task_id, 6)
+        protocol = self._active_research_protocol(task_id)
+        if protocol is not None and self._method_requires_execution(protocol.payload):
+            result_ledger = self._artifacts.get_active(
+                task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
+            )
+            if result_ledger is None:
+                raise BizException(
+                    ErrorCode.FSM_INVALID_TRANSITION,
+                    msg="实证/系统类研究须先完成实验、核验结果并批准结果账本，才能撰写初稿",
+                    detail={"required_artifact": ArtifactKind.RESULT_LEDGER.value},
+                )
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
         outline_text = (rec.ring5 or {}).get("outline", "")
         pool = self._ensure_literature(rec, chosen)
@@ -650,9 +821,7 @@ class MainOrchestration:
                      "total_words": draft.get("total_words", 0),
                      "used_refs": draft.get("used_refs", []), "compliant": True}
         self._store.put(rec)
-        self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R6", accept=True,
-                          artifact_uri=res.output)
-        self._advance_to(task_id, f"{task_id}-R6", target_ring_no=7)
+        self._fsm.submit_execution(task_id, res.output, accepted=True)
         return Result.ok(data={"chapters": chapters, "total_words": draft.get("total_words", 0),
                                "content_preview": full_content[:200]}, msg="环6撰写完成")
 
@@ -661,7 +830,7 @@ class MainOrchestration:
     # ------------------------------------------------------------------
     def run_ring7(self, task_id: str) -> Result[Dict[str, Any]]:
         """执行环7润色：对环6 初稿做表达润色 + 术语统一，只改表达不改事实。"""
-        rec = self._require(task_id)
+        rec = self._require_current_ring(task_id, 7)
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
         draft = (rec.ring6 or {}).get("chapters", [])
         # ring6 产物可能是 chapters 列表，序列化为 JSON 供环7 解析
@@ -686,9 +855,7 @@ class MainOrchestration:
         rec.ring7 = {"chapters": polished, "content": full_content,
                      "total_words": data.get("total_words", 0), "compliant": True}
         self._store.put(rec)
-        self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R7", accept=True,
-                          artifact_uri=res.output)
-        self._advance_to(task_id, f"{task_id}-R7", target_ring_no=8)
+        self._fsm.submit_execution(task_id, res.output, accepted=True)
         return Result.ok(data={
             "chapters": polished,
             "total_words": data.get("total_words", 0),
@@ -701,7 +868,7 @@ class MainOrchestration:
     # ------------------------------------------------------------------
     def run_ring9(self, task_id: str) -> Result[Dict[str, Any]]:
         """执行环9排版合规检查：对 docx 产物做版式检查（只查不改）。"""
-        rec = self._require(task_id)
+        rec = self._require_current_ring(task_id, 9)
         docx = rec.docx or {}
         docx_path = ""
         # rec.docx 存的是 file_id/下载信息；实际文件路径需从生成链路拿。
@@ -744,25 +911,30 @@ class MainOrchestration:
 
         res = get_executor(9).execute(ctx)
         data = json.loads(res.output)
+        data["compliant"] = bool(res.accept)
         rec.ring9 = data
         self._store.put(rec)
-        data["compliant"] = bool(res.accept)
-        if res.accept:
-            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R9", accept=True,
-                              artifact_uri=res.output)
-            self._advance_to(task_id, f"{task_id}-R9", target_ring_no=10)
-        return Result.ok(data={
+        self._fsm.submit_execution(task_id, res.output, accepted=res.accept)
+        result_data = {
             "compliant": data.get("compliant", False),
             "issue_count": len(data.get("issues", [])),
             "summary": data.get("summary", ""),
-        }, msg="环9排版检查完成" if res.accept else f"环9排版检查未通过：{data.get('summary', '')}")
+            "fallbackTo": res.fallbackTo,
+        }
+        if not res.accept:
+            return Result.fail(
+                code=101200,
+                msg=f"环9排版检查未通过：{data.get('summary', '')}",
+                data=result_data,
+            )
+        return Result.ok(data=result_data, msg="环9排版检查完成，等待确认")
 
     # ------------------------------------------------------------------
     # 步骤 6.5：环8 引用校验（UC-03 延续）
     # ------------------------------------------------------------------
     def run_ring8(self, task_id: str) -> Result[Dict[str, Any]]:
         """执行环8引用校验：把环6 引用的 [L序号] 映射为池内题录 → 多源核验。"""
-        rec = self._require(task_id)
+        rec = self._require_current_ring(task_id, 8)
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
         pool = self._ensure_literature(rec, chosen)
         pool_by_idx = {i + 1: it for i, it in enumerate(pool)}
@@ -770,6 +942,10 @@ class MainOrchestration:
         # 从环6 产物收集 used_refs 对应的题录
         ring6 = rec.ring6 or {}
         used_refs = (ring6.get("used_refs") or []) if isinstance(ring6, dict) else []
+        if ring6.get("section_draft_ids") or any(
+            str(ref).startswith("EVD-") for ref in used_refs
+        ):
+            return self._run_ledger_citation_audit(task_id, rec)
         refs = []
         for ref in used_refs:
             m = re.match(r"\[L(\d+)\]", ref)
@@ -777,10 +953,6 @@ class MainOrchestration:
                 it = pool_by_idx[int(m.group(1))]
                 refs.append({"title": it.get("title", "") or it.get("ref_title", ""),
                              "doi": it.get("doi", "")})
-        # 无 used_refs → 用池内前 5 条做示范校验（保证环8 有数据可跑）
-        if not refs and pool:
-            refs = [{"title": p.get("title", ""), "doi": p.get("doi", "")} for p in pool[:5]]
-
         ctx = ExecContext(
             subject_field=rec.subject_field,
             degree=Degree(rec.degree),
@@ -791,26 +963,215 @@ class MainOrchestration:
         ctx.references = refs  # extra 字段
         res = get_executor(8).execute(ctx)
         data = json.loads(res.output)
+        data["compliant"] = bool(res.accept)
         rec.ring8 = data
         self._store.put(rec)
-        data["compliant"] = bool(res.accept)
-        if res.accept:
-            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R8", accept=True,
-                              artifact_uri=res.output)
-            self._advance_to(task_id, f"{task_id}-R8", target_ring_no=9)
-        return Result.ok(data={
+        self._fsm.submit_execution(task_id, res.output, accepted=res.accept)
+        result_data = {
             "total": data.get("total", 0),
             "passed": data.get("passed", 0),
             "uncertain": data.get("uncertain", 0),
             "failed": data.get("failed", 0),
-        }, msg=f"环8引用校验完成：{data.get('summary', '')}" if res.accept else f"环8引用校验未通过：{data.get('summary', '')}")
+            "fallbackTo": res.fallbackTo,
+        }
+        if not res.accept:
+            return Result.fail(
+                code=101200,
+                msg=f"环8引用校验未通过：{data.get('summary', '')}",
+                data=result_data,
+            )
+        return Result.ok(
+            data=result_data,
+            msg=f"环8引用校验完成，等待确认：{data.get('summary', '')}",
+        )
+
+    def _run_ledger_citation_audit(
+        self, task_id: str, rec: TaskRecord
+    ) -> Result[Dict[str, Any]]:
+        """审计分节正文中的证据/结果标记，并生成稳定参考文献编号。"""
+        ring6 = rec.ring6 or {}
+        final_draft = rec.ring7 or ring6
+        content = str(final_draft.get("content", ""))
+        expected_evidence_ids = {
+            str(item)
+            for item in (ring6.get("used_refs", []) or [])
+            if str(item).startswith("EVD-")
+        }
+        expected_result_ids = {
+            str(item)
+            for item in (ring6.get("used_result_ids", []) or [])
+            if str(item).startswith("RES-")
+        }
+        marked_evidence_ids = set(re.findall(r"\[(EVD-[A-Z0-9]+)\]", content))
+        marked_result_ids = set(re.findall(r"\[(RES-[A-Z0-9]+)\]", content))
+        issues: list[str] = []
+        missing_evidence_markers = sorted(expected_evidence_ids - marked_evidence_ids)
+        unexpected_evidence_markers = sorted(marked_evidence_ids - expected_evidence_ids)
+        missing_result_markers = sorted(expected_result_ids - marked_result_ids)
+        unexpected_result_markers = sorted(marked_result_ids - expected_result_ids)
+        if missing_evidence_markers:
+            issues.append(f"正文丢失证据标记: {missing_evidence_markers}")
+        if unexpected_evidence_markers:
+            issues.append(f"正文出现未登记证据标记: {unexpected_evidence_markers}")
+        if missing_result_markers:
+            issues.append(f"正文丢失结果标记: {missing_result_markers}")
+        if unexpected_result_markers:
+            issues.append(f"正文出现未登记结果标记: {unexpected_result_markers}")
+
+        evidence_rows: dict[str, tuple[Any, Any]] = {}
+        for evidence_id in sorted(expected_evidence_ids | marked_evidence_ids):
+            try:
+                excerpt = self._evidence.get_excerpt(task_id, evidence_id)
+                source = self._evidence.get_source(task_id, excerpt.source_id)
+            except Exception as exc:  # noqa: BLE001
+                issues.append(f"证据 {evidence_id} 不存在或跨任务: {exc}")
+                continue
+            if excerpt.review_status.value != "APPROVED":
+                issues.append(f"证据 {evidence_id} 未获作者批准")
+            if source.verification_status in {
+                SourceVerificationStatus.UNVERIFIED,
+                SourceVerificationStatus.RETRACTED_FLAG,
+                SourceVerificationStatus.EXCLUDED,
+            }:
+                issues.append(
+                    f"来源 {source.source_id} 核验状态不可用于终稿: "
+                    f"{source.verification_status.value}"
+                )
+            evidence_rows[evidence_id] = (excerpt, source)
+
+        result_ledger = self._artifacts.get_active(
+            task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
+        )
+        verified_results = {
+            str(item.get("result_id", "")): item
+            for item in (result_ledger.payload.get("results", []) if result_ledger else [])
+            if bool(item.get("verified_by_user"))
+        }
+        for result_id in sorted(expected_result_ids | marked_result_ids):
+            if result_id not in verified_results:
+                issues.append(f"结果 {result_id} 不属于当前已批准结果账本")
+
+        argument_map = self._active_argument_map(task_id)
+        claim_audit = (
+            self._evidence.audit(task_id, argument_map.artifact_id)
+            if argument_map is not None
+            else {
+                "claim_count": 0,
+                "blocking_claim_ids": [],
+                "can_publish": True,
+                "claims": [],
+            }
+        )
+        if claim_audit.get("blocking_claim_ids"):
+            issues.append(
+                f"仍有未支持或有争议论断: {claim_audit['blocking_claim_ids']}"
+            )
+
+        ordered_evidence_ids = sorted(
+            evidence_rows,
+            key=lambda evidence_id: (
+                content.find(f"[{evidence_id}]")
+                if f"[{evidence_id}]" in content
+                else len(content),
+                evidence_id,
+            ),
+        )
+        source_numbers: dict[str, int] = {}
+        reference_entries: list[dict[str, Any]] = []
+        citation_map: dict[str, int] = {}
+        for evidence_id in ordered_evidence_ids:
+            _excerpt, source = evidence_rows[evidence_id]
+            if source.source_id not in source_numbers:
+                number = len(source_numbers) + 1
+                source_numbers[source.source_id] = number
+                item = {
+                    "title": source.title,
+                    "authors": list(source.authors),
+                    "year": source.year,
+                    "venue": source.venue,
+                    "doi": source.doi,
+                    "item_type": str(source.metadata.get("item_type", "article")),
+                }
+                reference_entries.append(
+                    {
+                        "number": number,
+                        "source_id": source.source_id,
+                        "title": source.title,
+                        "doi": source.doi,
+                        "gbt7714": str(source.metadata.get("gbt7714", ""))
+                        or format_gbt7714(item),
+                    }
+                )
+            citation_map[evidence_id] = source_numbers[source.source_id]
+
+        rendered_content = content
+        for evidence_id, number in citation_map.items():
+            rendered_content = rendered_content.replace(f"[{evidence_id}]", f"[{number}]")
+        cross_reference_map: dict[str, str] = {}
+        for result_id, result in verified_results.items():
+            label = str(result.get("table_or_figure_id", "")) or f"结果 {result_id}"
+            cross_reference_map[result_id] = label
+            rendered_content = rendered_content.replace(f"[{result_id}]", f"（见{label}）")
+        if reference_entries:
+            references_text = "\n".join(
+                f"[{item['number']}] {item['gbt7714']}" for item in reference_entries
+            )
+            rendered_content = f"{rendered_content.rstrip()}\n\n# 参考文献\n\n{references_text}"
+
+        accepted = not issues
+        data = {
+            "total": len(reference_entries),
+            "passed": len(reference_entries) if accepted else 0,
+            "uncertain": 0,
+            "failed": len(issues),
+            "items": reference_entries,
+            "citation_map": citation_map,
+            "cross_reference_map": cross_reference_map,
+            "claim_audit": claim_audit,
+            "marker_audit": {
+                "expected_evidence_ids": sorted(expected_evidence_ids),
+                "marked_evidence_ids": sorted(marked_evidence_ids),
+                "expected_result_ids": sorted(expected_result_ids),
+                "marked_result_ids": sorted(marked_result_ids),
+            },
+            "issues": issues,
+            "rendered_content": rendered_content,
+            "summary": (
+                f"证据链、结果链与 {len(reference_entries)} 条参考文献均通过审计"
+                if accepted
+                else f"引用审计发现 {len(issues)} 个阻断项"
+            ),
+            "compliant": accepted,
+        }
+        rec.ring8 = data
+        self._store.put(rec)
+        self._fsm.submit_execution(
+            task_id, json.dumps(data, ensure_ascii=False), accepted=accepted
+        )
+        result_data = {
+            key: data[key]
+            for key in (
+                "total", "passed", "uncertain", "failed", "citation_map",
+                "cross_reference_map", "issues", "summary",
+            )
+        }
+        if not accepted:
+            return Result.fail(
+                code=101200,
+                msg=f"环8引用校验未通过：{data['summary']}",
+                data=result_data,
+            )
+        return Result.ok(
+            data=result_data,
+            msg=f"环8引用校验完成，等待确认：{data['summary']}",
+        )
 
     # ------------------------------------------------------------------
     # 步骤 7.5：环10 定稿汇总（UC-05）
     # ------------------------------------------------------------------
     def run_ring10(self, task_id: str) -> Result[Dict[str, Any]]:
         """执行环10定稿：汇总环1~9 验收状态 + 一致性/材料检查 + 交付清单。"""
-        rec = self._require(task_id)
+        rec = self._require_current_ring(task_id, 10)
         artifacts: Dict[str, Any] = {}
         for no in range(1, 10):
             art = getattr(rec, f"ring{no}")
@@ -828,15 +1189,17 @@ class MainOrchestration:
         ctx.artifacts = artifacts  # extra 字段
         res = get_executor(10).execute(ctx)
         data = json.loads(res.output)
+        data["compliant"] = bool(res.accept)
         rec.ring10 = data
         self._store.put(rec)
-        if res.accept:
-            self._fsm.advance(task_id=task_id, biz_req_no=f"{task_id}-R10", accept=True,
-                              artifact_uri=res.output)
-            self._advance_to(task_id, f"{task_id}-R10", target_ring_no=10)
-        return Result.ok(data=data,
-                         msg=f"环10定稿：{data.get('summary', '')}" if res.accept
-                         else f"环10未通过：{data.get('summary', '')}")
+        self._fsm.submit_execution(task_id, res.output, accepted=res.accept)
+        if not res.accept:
+            return Result.fail(
+                code=101200,
+                msg=f"环10未通过：{data.get('summary', '')}",
+                data={**data, "fallbackTo": res.fallbackTo},
+            )
+        return Result.ok(data=data, msg=f"环10定稿待最终确认：{data.get('summary', '')}")
 
     # ------------------------------------------------------------------
     # 步骤 8：生成 docx（UC-04）
@@ -844,17 +1207,36 @@ class MainOrchestration:
     def generate_docx(self, task_id: str, template_id: Optional[str] = None) -> Result[Dict[str, Any]]:
         """按用户模板 + 初稿内容生成 docx，返回下载链接。
 
-        若未提供真实模板，则回退到内置骨架渲染（依据大纲+正文标记生成占位语法，
-        由渲染端替换；测试注入 mock 时直接返回假链接）。
+        docx 是环9排版检查的输入，因此只允许在环8确认完成、进入环9后生成。
+        若已完成环7润色，优先使用润色稿；未提供模板时使用内置骨架渲染。
         """
         rec = self._require(task_id)
+        state = self._fsm.get_task(task_id)
+        if state.current_ring_no != 9 or state.phase_state == PhaseState.WAITING_APPROVAL:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="docx 只能在环8确认完成、进入环9后生成",
+            )
+        if not rec.ring5 or not (rec.ring7 or rec.ring6):
+            raise BizException(
+                ErrorCode.DOCX_GENERATE_FAILED,
+                msg="大纲或正文产物缺失，无法生成 docx",
+                detail={"task_id": task_id},
+            )
         tid = template_id or rec.template_id
+        draft = rec.ring7 or rec.ring6 or {}
+        rendered_content = (
+            (rec.ring8 or {}).get("rendered_content", "")
+            if isinstance(rec.ring8, dict)
+            else ""
+        )
+        chosen_title = (rec.ring1 or {}).get("chosen", rec.title)
         content = {
-            "topic": rec.title,
-            "title": rec.title,
+            "topic": chosen_title,
+            "title": chosen_title,
             "outline": (rec.ring5 or {}).get("outline", ""),
-            "chapter": (rec.ring6 or {}).get("content", ""),
-            "content": (rec.ring6 or {}).get("content", ""),
+            "chapter": rendered_content or draft.get("content", ""),
+            "content": rendered_content or draft.get("content", ""),
             "degree": rec.degree,
             "subject_field": rec.subject_field,
         }
@@ -877,13 +1259,138 @@ class MainOrchestration:
     def progress(self, task_id: str) -> Result[Dict[str, Any]]:
         """读取任务进度（委托 M1 FSM progress）。"""
         try:
-            return Result.ok(data=self._fsm.get_progress(task_id), msg="进度查询成功")
+            rec = self._require(task_id)
+            projection_issues = self._project_pending_artifacts(task_id)
+            data = self._fsm.get_progress(task_id)
+            data.update({
+                "title": rec.title,
+                "session_id": rec.session_id,
+                "scope": rec.scope,
+                "artifact_projection_pending": bool(projection_issues),
+                "artifact_projection_issues": projection_issues,
+            })
+            return Result.ok(data=data, msg="进度查询成功")
         except BizException:
             raise
         except Exception as exc:  # noqa: BLE001
             raise BizException(
                 ErrorCode.STATE_READ_FAILED, msg=f"进度查询失败: {exc}", detail=str(exc)
             ) from exc
+
+    def confirm_ring(
+        self,
+        task_id: str,
+        ring_no: int,
+        confirmed: bool = True,
+        reject_reason: str = "",
+    ) -> Result[Dict[str, Any]]:
+        """确认或拒绝当前环产物；成功确认后才推进到下一环。"""
+        state = self._fsm.get_task(task_id)
+        if state.current_ring_no != ring_no:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg=f"当前是环{state.current_ring_no}，不能确认环{ring_no}",
+            )
+        if state.phase_state != PhaseState.WAITING_APPROVAL:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="当前环没有待确认产物，请先执行该环节",
+            )
+        if confirmed and ring_no == 5:
+            protocols = [
+                artifact
+                for artifact in self._artifacts.list_task(task_id)
+                if artifact.kind == ArtifactKind.RESEARCH_PROTOCOL
+            ]
+            if protocols and self._active_research_protocol(task_id) is None:
+                raise BizException(
+                    ErrorCode.FSM_INVALID_TRANSITION,
+                    msg="研究协议尚未获作者批准，不能确认环5",
+                    detail={"required_artifact": ArtifactKind.RESEARCH_PROTOCOL.value},
+                )
+            argument_maps = [
+                artifact
+                for artifact in self._artifacts.list_task(task_id)
+                if artifact.kind == ArtifactKind.ARGUMENT_MAP
+            ]
+            if argument_maps and self._active_argument_map(task_id) is None:
+                raise BizException(
+                    ErrorCode.FSM_INVALID_TRANSITION,
+                    msg="论证图尚未获作者批准，不能确认环5",
+                    detail={"required_artifact": ArtifactKind.ARGUMENT_MAP.value},
+                )
+        rec = self._require(task_id)
+        payload = getattr(rec, f"ring{ring_no}", None) or {}
+        contract = get_stage_contract(ring_no)
+        event_id = f"EVT-{uuid.uuid4().hex[:20].upper()}"
+        dependency_ids: tuple[str, ...] = ()
+        if ring_no == 5:
+            protocol = self._active_research_protocol(task_id)
+            argument_map = self._active_argument_map(task_id)
+            if protocol is not None or argument_map is not None:
+                ring4 = self._artifacts.get_active(
+                    task_id=task_id,
+                    stage_no=4,
+                    kind=ArtifactKind(get_stage_contract(4).runtime_artifact_kind),
+                )
+                if ring4 is None:
+                    raise ResearchRegistryError("环5产物缺少有效的环4依赖")
+                dependency_ids = tuple(
+                    [ring4.artifact_id]
+                    + ([protocol.artifact_id] if protocol is not None else [])
+                    + ([argument_map.artifact_id] if argument_map is not None else [])
+                )
+        elif ring_no == 6:
+            result_ledger = self._artifacts.get_active(
+                task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
+            )
+            if result_ledger is not None:
+                outline = self._artifacts.get_active(
+                    task_id=task_id, stage_no=5, kind=ArtifactKind.OUTLINE
+                )
+                if outline is None:
+                    raise ResearchRegistryError("环6产物缺少有效大纲依赖")
+                dependency_ids = (outline.artifact_id, result_ledger.artifact_id)
+        context_manifest = ContextManifest(
+            prompt_id=f"ring{ring_no}",
+            prompt_version="legacy-v1",
+            model=str(payload.get("source", "")) if isinstance(payload, dict) else "",
+            input_artifact_ids=dependency_ids,
+        )
+        artifact_event = {
+            "event_id": event_id,
+            "task_id": task_id,
+            "stage_no": ring_no,
+            "kind": contract.runtime_artifact_kind,
+            "payload": payload if isinstance(payload, dict) else {"value": payload},
+            "context_manifest": context_manifest.to_dict(),
+            "dependency_ids": list(dependency_ids),
+            "auto_gate_passed": True,
+            "gate_report": {"fsm_acceptance": "passed"},
+            "actor": "author",
+        }
+        self._fsm.advance(
+            task_id=task_id,
+            biz_req_no=f"CONFIRM-{task_id}-R{ring_no}-{uuid.uuid4().hex[:8]}",
+            accept=confirmed,
+            reject_reason=reject_reason or None,
+            gate_rule="user_confirmation",
+            artifact_event=artifact_event,
+        )
+        projection_issues = self._project_pending_artifacts(task_id)
+        progress = self._fsm.get_progress(task_id)
+        progress["artifact_projection_pending"] = bool(projection_issues)
+        progress["artifact_projection_issues"] = projection_issues
+        return Result.ok(
+            data=progress,
+            msg=(
+                "已确认，进入下一环"
+                if confirmed and ring_no < 10
+                else "论文全流程已确认完成"
+                if confirmed
+                else "已拒绝当前产物，可重新执行或回退"
+            ),
+        )
 
     # ------------------------------------------------------------------
     # 会话隔离校验
@@ -911,6 +1418,969 @@ class MainOrchestration:
         rec = self._store.get(task_id)
         if rec is None:
             raise BizException(ErrorCode.TASK_NOT_FOUND, msg=f"任务不存在: {task_id}")
+        return rec
+
+    def list_artifacts(self, task_id: str) -> Result[List[Dict[str, Any]]]:
+        """列出任务全部产物版本及审批/失效状态。"""
+        self._require(task_id)
+        projection_issues = self._project_pending_artifacts(task_id)
+        items = []
+        for artifact in self._artifacts.list_task(task_id):
+            items.append(
+                {
+                    "artifact_id": artifact.artifact_id,
+                    "stage_no": artifact.stage_no,
+                    "kind": artifact.kind.value,
+                    "version": artifact.version,
+                    "status": artifact.status.value,
+                    "payload": artifact.payload,
+                    "content_hash": artifact.content_hash,
+                    "dependency_ids": list(artifact.dependency_ids),
+                    "stale_reason": artifact.stale_reason,
+                    "source_event_id": artifact.source_event_id,
+                    "created_at": artifact.created_at,
+                    "updated_at": artifact.updated_at,
+                }
+            )
+        return Result.ok(
+            data=items,
+            msg=(
+                "产物列表（存在待恢复投影）"
+                if projection_issues
+                else "产物列表"
+            ),
+        )
+
+    # ------------------------------------------------------------------
+    # 证据账本：来源 → 可定位摘录 → 论断 → 显式证据链接
+    # ------------------------------------------------------------------
+    def register_source(self, task_id: str, source: Dict[str, Any]) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        status_value = str(source.get("verification_status", "UNVERIFIED"))
+        try:
+            status = SourceVerificationStatus(status_value)
+        except ValueError as exc:
+            raise EvidenceLedgerError(f"非法来源核验状态: {status_value}") from exc
+        record = self._evidence.register_source(
+            task_id=task_id,
+            title=str(source.get("title", "")),
+            authors=source.get("authors", ()) or (),
+            year=source.get("year"),
+            venue=str(source.get("venue", "")),
+            doi=str(source.get("doi", "")),
+            url=str(source.get("url", "")),
+            provider=str(source.get("provider", "user")),
+            verification_status=status,
+            reliability=str(source.get("reliability", "uncertain")),
+            file_hash=str(source.get("file_hash", "")),
+            metadata=dict(source.get("metadata", {}) or {}),
+        )
+        return Result.ok(data=record.to_dict(), msg="来源已登记")
+
+    def list_sources(self, task_id: str) -> Result[List[Dict[str, Any]]]:
+        self._require(task_id)
+        self._sync_approved_literature_artifacts(task_id)
+        return Result.ok(
+            data=[item.to_dict() for item in self._evidence.list_sources(task_id)],
+            msg="来源列表",
+        )
+
+    def add_evidence(self, task_id: str, value: Dict[str, Any]) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        excerpt = self._evidence.add_excerpt(
+            task_id=task_id,
+            source_id=str(value.get("source_id", "")),
+            quote=str(value.get("quote", "")),
+            page_start=value.get("page_start"),
+            page_end=value.get("page_end"),
+            section=str(value.get("section", "")),
+            char_start=value.get("char_start"),
+            char_end=value.get("char_end"),
+            created_by=str(value.get("created_by", "agent")),
+        )
+        return Result.ok(data=excerpt.to_dict(), msg="证据摘录已登记，等待作者复核")
+
+    def list_evidence(self, task_id: str, source_id: str = "") -> Result[List[Dict[str, Any]]]:
+        self._require(task_id)
+        return Result.ok(
+            data=[
+                item.to_dict()
+                for item in self._evidence.list_excerpts(task_id, source_id=source_id)
+            ],
+            msg="证据摘录列表",
+        )
+
+    def review_evidence(
+        self, task_id: str, evidence_id: str, *, approved: bool,
+        actor: str = "author", reason: str = "",
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        excerpt = self._evidence.review_excerpt(
+            task_id, evidence_id, approved=approved, actor=actor, reason=reason
+        )
+        return Result.ok(data=excerpt.to_dict(), msg="证据复核结果已记录")
+
+    def add_claim(self, task_id: str, value: Dict[str, Any]) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        artifact_id = str(value.get("artifact_id", ""))
+        if artifact_id:
+            artifact = self._artifacts.get(artifact_id)
+            if artifact.task_id != task_id:
+                raise EvidenceLedgerError("禁止把论断挂到其他论文任务的产物")
+        type_value = str(value.get("claim_type", "FACTUAL"))
+        try:
+            claim_type = ClaimType(type_value)
+        except ValueError as exc:
+            raise EvidenceLedgerError(f"非法论断类型: {type_value}") from exc
+        claim = self._evidence.add_claim(
+            task_id=task_id,
+            text=str(value.get("text", "")),
+            artifact_id=artifact_id,
+            section_id=str(value.get("section_id", "")),
+            claim_type=claim_type,
+        )
+        return Result.ok(data=claim.to_dict(), msg="论断已登记")
+
+    def list_claims(self, task_id: str, artifact_id: str = "") -> Result[List[Dict[str, Any]]]:
+        self._require(task_id)
+        return Result.ok(
+            data=[
+                item.to_dict()
+                for item in self._evidence.list_claims(task_id, artifact_id=artifact_id)
+            ],
+            msg="论断列表",
+        )
+
+    def link_claim_evidence(
+        self, task_id: str, claim_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        relation_value = str(value.get("relation", "SUPPORTS"))
+        try:
+            relation = EvidenceRelation(relation_value)
+        except ValueError as exc:
+            raise EvidenceLedgerError(f"非法证据关系: {relation_value}") from exc
+        link = self._evidence.link_evidence(
+            task_id=task_id,
+            claim_id=claim_id,
+            evidence_id=str(value.get("evidence_id", "")),
+            relation=relation,
+            rationale=str(value.get("rationale", "")),
+        )
+        return Result.ok(data=link.to_dict(), msg="论断—证据链接已登记")
+
+    def audit_evidence(self, task_id: str, artifact_id: str = "") -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        return Result.ok(
+            data=self._evidence.audit(task_id, artifact_id=artifact_id),
+            msg="证据覆盖审计完成",
+        )
+
+    # ------------------------------------------------------------------
+    # 分节写作、逐节审批与环6汇编
+    # ------------------------------------------------------------------
+    def generate_section_draft(
+        self, task_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        rec = self._require_current_ring(task_id, 6)
+        self._refresh_section_staleness(task_id)
+        section_id = str(value.get("section_id", "")).strip()
+        catalog = self._outline_section_catalog(task_id)
+        if section_id not in catalog:
+            raise SectionDraftRegistryError(f"大纲中不存在分节: {section_id}")
+        outline = self._artifacts.get_active(
+            task_id=task_id, stage_no=5, kind=ArtifactKind.OUTLINE
+        )
+        if outline is None:
+            raise SectionDraftRegistryError("缺少有效批准大纲")
+        argument_map = self._active_argument_map(task_id)
+        protocol = self._active_research_protocol(task_id)
+        result_ledger = self._artifacts.get_active(
+            task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
+        )
+        upstream = [outline.artifact_id]
+        if argument_map is not None:
+            self._sync_argument_map_claims(task_id, argument_map)
+            upstream.append(argument_map.artifact_id)
+        if protocol is not None:
+            upstream.append(protocol.artifact_id)
+        if result_ledger is not None:
+            upstream.append(result_ledger.artifact_id)
+
+        claim_rows: list[dict[str, Any]] = []
+        evidence_details: dict[str, dict[str, Any]] = {}
+        if argument_map is not None:
+            audit_rows = self._evidence.audit(task_id, argument_map.artifact_id)["claims"]
+            claim_rows = [row for row in audit_rows if row["section_id"] == section_id]
+
+        requested_result_ids = tuple(
+            dict.fromkeys(str(item) for item in (value.get("result_ids", ()) or ()) if str(item))
+        )
+        allowed_results = {
+            str(item.get("result_id", "")): item
+            for item in (result_ledger.payload.get("results", []) if result_ledger else [])
+            if bool(item.get("verified_by_user"))
+        }
+        unknown_result_ids = [
+            result_id for result_id in requested_result_ids if result_id not in allowed_results
+        ]
+        if unknown_result_ids:
+            raise SectionDraftRegistryError(
+                f"分节引用了未核验或不属于当前结果账本的结果: {unknown_result_ids}"
+            )
+
+        blockers: list[str] = []
+        for claim in claim_rows:
+            supporting = list(claim.get("supporting_evidence_ids", []) or [])
+            if claim["status"] == "DISPUTED":
+                blockers.append(f"论断 {claim['claim_id']} 存在未解决反证")
+            elif claim["status"] == "UNSUPPORTED" and not (
+                claim["claim_type"] == ClaimType.NUMERIC.value and requested_result_ids
+            ):
+                blockers.append(f"论断 {claim['claim_id']} 缺少批准证据")
+            for evidence_id in supporting:
+                excerpt = self._evidence.get_excerpt(task_id, evidence_id)
+                source = self._evidence.get_source(task_id, excerpt.source_id)
+                evidence_details[evidence_id] = {
+                    "evidence_id": evidence_id,
+                    "quote": excerpt.quote,
+                    "source_id": source.source_id,
+                    "source_title": source.title,
+                    "doi": source.doi,
+                    "page_start": excerpt.page_start,
+                    "page_end": excerpt.page_end,
+                    "section": excerpt.section,
+                }
+        if blockers:
+            raise SectionDraftRegistryError("；".join(blockers))
+
+        context = {
+            "task_id": task_id,
+            "section_id": section_id,
+            "title": str(value.get("title", "")).strip() or catalog[section_id],
+            "paper_title": (rec.ring1 or {}).get("chosen", rec.title),
+            "outline_node": catalog[section_id],
+            "claims": claim_rows,
+            "evidence": list(evidence_details.values()),
+            "results": [allowed_results[result_id] for result_id in requested_result_ids],
+            "instruction": str(value.get("instruction", "")),
+        }
+        generated = self._section_generator.generate(context)
+        expected_claim_ids = {str(claim["claim_id"]) for claim in claim_rows}
+        covered_claim_ids = set(generated.covered_claim_ids)
+        allowed_evidence_ids = set(evidence_details)
+        used_evidence_ids = set(generated.used_evidence_ids)
+        used_result_ids = set(generated.used_result_ids)
+        gate_issues: list[str] = []
+        if not expected_claim_ids.issubset(covered_claim_ids):
+            gate_issues.append(
+                f"未覆盖论断: {sorted(expected_claim_ids - covered_claim_ids)}"
+            )
+        if not used_evidence_ids.issubset(allowed_evidence_ids):
+            gate_issues.append(
+                f"使用了上下文外证据: {sorted(used_evidence_ids - allowed_evidence_ids)}"
+            )
+        if not used_result_ids.issubset(set(requested_result_ids)):
+            gate_issues.append(
+                f"使用了上下文外结果: {sorted(used_result_ids - set(requested_result_ids))}"
+            )
+        for claim in claim_rows:
+            supporting = set(claim.get("supporting_evidence_ids", []) or [])
+            if supporting and not supporting.intersection(used_evidence_ids):
+                gate_issues.append(f"论断 {claim['claim_id']} 未实际引用其支持证据")
+        if requested_result_ids and not set(requested_result_ids).issubset(used_result_ids):
+            gate_issues.append("未使用全部指定结果记录")
+
+        manifest = ContextManifest(
+            prompt_id="section_draft",
+            prompt_version="v1",
+            input_artifact_ids=tuple(upstream),
+            evidence_ids=tuple(sorted(used_evidence_ids)),
+        )
+        draft = self._sections.create_version(
+            task_id=task_id,
+            section_id=section_id,
+            title=generated.title or context["title"],
+            content=generated.content,
+            claim_ids=tuple(sorted(expected_claim_ids)),
+            evidence_ids=tuple(sorted(used_evidence_ids)),
+            result_ids=tuple(sorted(used_result_ids)),
+            upstream_artifact_ids=tuple(upstream),
+            context_manifest=manifest.to_dict(),
+        )
+        draft = self._sections.submit_auto_gate(
+            task_id,
+            draft.section_draft_id,
+            passed=not gate_issues,
+            report={
+                "issues": gate_issues,
+                "claim_count": len(expected_claim_ids),
+                "evidence_count": len(used_evidence_ids),
+                "result_count": len(used_result_ids),
+            },
+        )
+        if gate_issues:
+            return Result.fail(
+                code=101200,
+                msg="分节草稿未通过自动验收",
+                data=draft.to_dict(),
+            )
+        return Result.ok(data=draft.to_dict(), msg="分节草稿已生成，等待作者审批")
+
+    def review_section_draft(
+        self, task_id: str, section_draft_id: str, *, approved: bool,
+        actor: str = "author", reason: str = "",
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        draft = self._sections.decide(
+            task_id, section_draft_id, approved=approved, actor=actor, reason=reason
+        )
+        data = draft.to_dict()
+        data["approvals"] = self._sections.list_approvals(task_id, section_draft_id)
+        return Result.ok(data=data, msg="分节审批已记录")
+
+    def list_section_drafts(self, task_id: str) -> Result[List[Dict[str, Any]]]:
+        self._require(task_id)
+        self._refresh_section_staleness(task_id)
+        return Result.ok(
+            data=[
+                {
+                    **draft.to_dict(),
+                    "approvals": self._sections.list_approvals(
+                        task_id, draft.section_draft_id
+                    ),
+                }
+                for draft in self._sections.list_task(task_id)
+            ],
+            msg="分节草稿版本列表",
+        )
+
+    def audit_section_drafts(self, task_id: str) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        self._refresh_section_staleness(task_id)
+        catalog = self._outline_section_catalog(task_id)
+        active = {
+            section_id: self._sections.get_active(task_id, section_id)
+            for section_id in catalog
+        }
+        missing = [section_id for section_id, draft in active.items() if draft is None]
+        return Result.ok(
+            data={
+                "task_id": task_id,
+                "expected_section_ids": list(catalog),
+                "approved_section_ids": [
+                    section_id for section_id, draft in active.items() if draft is not None
+                ],
+                "missing_section_ids": missing,
+                "can_assemble": bool(catalog) and not missing,
+            },
+            msg="分节完整性审计完成",
+        )
+
+    def assemble_section_drafts(self, task_id: str) -> Result[Dict[str, Any]]:
+        rec = self._require_current_ring(task_id, 6)
+        audit = self.audit_section_drafts(task_id).data
+        if not audit["can_assemble"]:
+            raise SectionDraftRegistryError(
+                f"仍有分节未批准: {audit['missing_section_ids']}"
+            )
+        catalog = self._outline_section_catalog(task_id)
+        drafts = [self._sections.get_active(task_id, section_id) for section_id in catalog]
+        chapters = [
+            {
+                "section_id": draft.section_id,
+                "chapter_title": draft.title,
+                "content": draft.content,
+                "word_count": len(draft.content.replace("\n", "")),
+                "section_draft_id": draft.section_draft_id,
+                "section_version": draft.version,
+            }
+            for draft in drafts
+            if draft is not None
+        ]
+        full_content = self._draft_to_text(chapters)
+        evidence_ids = sorted(
+            {evidence_id for draft in drafts if draft for evidence_id in draft.evidence_ids}
+        )
+        result_ids = sorted(
+            {result_id for draft in drafts if draft for result_id in draft.result_ids}
+        )
+        rec.ring6 = {
+            "chapters": chapters,
+            "content": full_content,
+            "total_words": sum(item["word_count"] for item in chapters),
+            "used_refs": evidence_ids,
+            "used_result_ids": result_ids,
+            "section_draft_ids": [draft.section_draft_id for draft in drafts if draft],
+            "compliant": True,
+        }
+        self._store.put(rec)
+        self._fsm.submit_execution(
+            task_id, json.dumps(rec.ring6, ensure_ascii=False), accepted=True
+        )
+        return Result.ok(
+            data={
+                "chapters": chapters,
+                "total_words": rec.ring6["total_words"],
+                "section_count": len(chapters),
+                "used_evidence_ids": evidence_ids,
+                "used_result_ids": result_ids,
+            },
+            msg="全部批准分节已汇编为环6初稿，等待环6确认",
+        )
+
+    def _outline_section_catalog(self, task_id: str) -> Dict[str, str]:
+        outline = self._artifacts.get_active(
+            task_id=task_id, stage_no=5, kind=ArtifactKind.OUTLINE
+        )
+        if outline is None:
+            return {}
+        nodes = [item for item in outline.payload.get("chapters", []) if isinstance(item, dict)]
+        sections = [item for item in nodes if int(item.get("level", 1) or 1) >= 2]
+        if not sections:
+            sections = nodes
+        return {
+            str(item.get("number", "")).strip(): str(item.get("title", "")).strip()
+            for item in sections
+            if str(item.get("number", "")).strip()
+        }
+
+    def _refresh_section_staleness(self, task_id: str) -> None:
+        for draft in self._sections.list_task(task_id):
+            if draft.status not in {
+                SectionDraftStatus.APPROVED,
+                SectionDraftStatus.WAITING_APPROVAL,
+                SectionDraftStatus.GENERATED,
+            }:
+                continue
+            for artifact_id in draft.upstream_artifact_ids:
+                try:
+                    artifact = self._artifacts.get(artifact_id)
+                except Exception:  # noqa: BLE001
+                    self._sections.mark_stale(
+                        task_id, draft.section_draft_id,
+                        reason=f"上游产物不存在: {artifact_id}",
+                    )
+                    break
+                if artifact.status != ArtifactStatus.APPROVED:
+                    self._sections.mark_stale(
+                        task_id, draft.section_draft_id,
+                        reason=f"上游产物已失效: {artifact_id}",
+                    )
+                    break
+
+    # ------------------------------------------------------------------
+    # 研究协议、实验运行与结果账本
+    # ------------------------------------------------------------------
+    def create_argument_map(
+        self, task_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        state = self._fsm.get_task(task_id)
+        if state.current_ring_no != 5:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="论证图只能在环5设计和审批",
+            )
+        claims: list[ArgumentClaimSpec] = []
+        for raw in value.get("claims", ()) or ():
+            if not isinstance(raw, dict):
+                raise ResearchRegistryError("论证图 claims 条目必须是对象")
+            try:
+                claim_type = ClaimType(str(raw.get("claim_type", "FACTUAL")))
+                role = ArgumentRole(str(raw.get("role", "CLAIM")))
+            except ValueError as exc:
+                raise ResearchRegistryError(f"非法论断类型或角色: {raw}") from exc
+            claims.append(
+                ArgumentClaimSpec(
+                    claim_key=str(raw.get("claim_key", "")),
+                    text=str(raw.get("text", "")),
+                    section_id=str(raw.get("section_id", "")),
+                    claim_type=claim_type,
+                    role=role,
+                    parent_keys=tuple(raw.get("parent_keys", ()) or ()),
+                    evidence_requirements=tuple(
+                        raw.get("evidence_requirements", ()) or ()
+                    ),
+                )
+            )
+        argument_map = ArgumentMap(
+            title=str(value.get("title", "")),
+            research_questions=tuple(value.get("research_questions", ()) or ()),
+            claims=tuple(claims),
+        )
+        ring4 = self._artifacts.get_active(
+            task_id=task_id,
+            stage_no=4,
+            kind=ArtifactKind(get_stage_contract(4).runtime_artifact_kind),
+        )
+        if ring4 is None:
+            raise ResearchRegistryError("创建论证图前缺少环4有效批准产物")
+        protocol = self._active_research_protocol(task_id)
+        protocol_versions = [
+            artifact
+            for artifact in self._artifacts.list_task(task_id)
+            if artifact.kind == ArtifactKind.RESEARCH_PROTOCOL
+        ]
+        if protocol_versions and protocol is None:
+            raise ResearchRegistryError("研究协议尚未批准，不能据此创建论证图")
+        dependencies = (ring4.artifact_id,) + (
+            (protocol.artifact_id,) if protocol is not None else ()
+        )
+        artifact = self._artifacts.create_version(
+            task_id=task_id,
+            stage_no=5,
+            kind=ArtifactKind.ARGUMENT_MAP,
+            payload=argument_map.to_dict(),
+            dependency_ids=dependencies,
+            context_manifest=ContextManifest(
+                prompt_id="argument_map",
+                prompt_version="v1",
+                input_artifact_ids=dependencies,
+            ),
+        )
+        artifact = self._artifacts.submit_auto_gate(
+            artifact.artifact_id,
+            passed=True,
+            report={"graph_validation": "passed", "claim_count": len(claims)},
+        )
+        return Result.ok(data=self._artifact_dict(artifact), msg="论证图已生成，等待作者审批")
+
+    def review_argument_map(
+        self, task_id: str, artifact_id: str, *, approved: bool,
+        actor: str = "author", reason: str = "",
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        artifact = self._artifacts.get(artifact_id)
+        if artifact.task_id != task_id or artifact.kind != ArtifactKind.ARGUMENT_MAP:
+            raise ResearchRegistryError("当前任务中不存在该论证图")
+        if artifact.status == ArtifactStatus.WAITING_APPROVAL:
+            artifact = self._artifacts.decide(
+                artifact_id, approved=approved, actor=actor, reason=reason
+            )
+        elif artifact.status != ArtifactStatus.APPROVED or not approved:
+            raise ResearchRegistryError("该论证图当前状态不能重复审批")
+        if artifact.status == ArtifactStatus.APPROVED:
+            self._sync_argument_map_claims(task_id, artifact)
+        return Result.ok(data=self._artifact_dict(artifact), msg="论证图审批已记录")
+
+    def list_argument_maps(self, task_id: str) -> Result[List[Dict[str, Any]]]:
+        self._require(task_id)
+        active = self._active_argument_map(task_id)
+        if active is not None:
+            self._sync_argument_map_claims(task_id, active)
+        return Result.ok(
+            data=[
+                self._artifact_dict(artifact)
+                for artifact in self._artifacts.list_task(task_id)
+                if artifact.kind == ArtifactKind.ARGUMENT_MAP
+            ],
+            msg="论证图列表",
+        )
+
+    def _sync_argument_map_claims(self, task_id: str, artifact) -> None:
+        for raw in artifact.payload.get("claims", []) or []:
+            self._evidence.add_claim(
+                task_id=task_id,
+                text=str(raw.get("text", "")),
+                artifact_id=artifact.artifact_id,
+                section_id=str(raw.get("section_id", "")),
+                claim_type=ClaimType(str(raw.get("claim_type", "FACTUAL"))),
+                source_key=f"{artifact.artifact_id}:{raw.get('claim_key', '')}",
+            )
+
+    def create_research_protocol(
+        self, task_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        state = self._fsm.get_task(task_id)
+        if state.current_ring_no != 5:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="研究协议只能在环5设计和审批",
+            )
+        method_value = str(value.get("method", ""))
+        try:
+            method = ResearchMethod(method_value)
+        except ValueError as exc:
+            raise ResearchRegistryError(f"非法研究方法: {method_value}") from exc
+        protocol = ResearchProtocol(
+            title=str(value.get("title", "")),
+            method=method,
+            research_questions=tuple(value.get("research_questions", ()) or ()),
+            procedure_steps=tuple(value.get("procedure_steps", ()) or ()),
+            analysis_plan=tuple(value.get("analysis_plan", ()) or ()),
+            required_outputs=tuple(value.get("required_outputs", ()) or ()),
+            hypotheses=tuple(value.get("hypotheses", ()) or ()),
+            variables=dict(value.get("variables", {}) or {}),
+            materials=tuple(value.get("materials", ()) or ()),
+            ethics_requirements=tuple(value.get("ethics_requirements", ()) or ()),
+            risks=tuple(value.get("risks", ()) or ()),
+        )
+        ring4 = self._artifacts.get_active(
+            task_id=task_id,
+            stage_no=4,
+            kind=ArtifactKind(get_stage_contract(4).runtime_artifact_kind),
+        )
+        if ring4 is None:
+            raise ResearchRegistryError("创建研究协议前缺少环4有效批准产物")
+        artifact = self._artifacts.create_version(
+            task_id=task_id,
+            stage_no=5,
+            kind=ArtifactKind.RESEARCH_PROTOCOL,
+            payload=protocol.to_dict(),
+            dependency_ids=(ring4.artifact_id,),
+            context_manifest=ContextManifest(
+                prompt_id="research_protocol",
+                prompt_version="v1",
+                input_artifact_ids=(ring4.artifact_id,),
+            ),
+        )
+        artifact = self._artifacts.submit_auto_gate(
+            artifact.artifact_id,
+            passed=True,
+            report={"schema_validation": "passed", "requires_author_approval": True},
+        )
+        return Result.ok(data=self._artifact_dict(artifact), msg="研究协议已生成，等待作者审批")
+
+    def review_research_protocol(
+        self, task_id: str, artifact_id: str, *, approved: bool,
+        actor: str = "author", reason: str = "",
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        artifact = self._artifacts.get(artifact_id)
+        if artifact.task_id != task_id or artifact.kind != ArtifactKind.RESEARCH_PROTOCOL:
+            raise ResearchRegistryError("当前任务中不存在该研究协议")
+        decided = self._artifacts.decide(
+            artifact_id, approved=approved, actor=actor, reason=reason
+        )
+        return Result.ok(data=self._artifact_dict(decided), msg="研究协议审批已记录")
+
+    def list_research_protocols(self, task_id: str) -> Result[List[Dict[str, Any]]]:
+        self._require(task_id)
+        return Result.ok(
+            data=[
+                self._artifact_dict(artifact)
+                for artifact in self._artifacts.list_task(task_id)
+                if artifact.kind == ArtifactKind.RESEARCH_PROTOCOL
+            ],
+            msg="研究协议列表",
+        )
+
+    def create_experiment_run(
+        self, task_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        protocol = self._active_research_protocol(task_id)
+        if protocol is None:
+            raise ResearchRegistryError("须先批准研究协议，才能创建实验运行")
+        run = self._research.create_run(
+            task_id=task_id,
+            protocol_artifact_id=protocol.artifact_id,
+            notes=str(value.get("notes", "")),
+        )
+        return Result.ok(data=run.to_dict(), msg="实验运行已创建")
+
+    def update_experiment_run(
+        self, task_id: str, run_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        status_value = str(value.get("status", ""))
+        try:
+            status = ExperimentStatus(status_value)
+        except ValueError as exc:
+            raise ResearchRegistryError(f"非法实验状态: {status_value}") from exc
+        run = self._research.update_run(
+            task_id=task_id,
+            run_id=run_id,
+            status=status,
+            material_file_ids=value.get("material_file_ids"),
+            raw_data_file_ids=value.get("raw_data_file_ids"),
+            code_file_ids=value.get("code_file_ids"),
+            log_file_ids=value.get("log_file_ids"),
+            notes=value.get("notes"),
+            user_attested=value.get("user_attested"),
+        )
+        return Result.ok(data=run.to_dict(), msg="实验运行状态已更新")
+
+    def list_experiment_runs(self, task_id: str) -> Result[List[Dict[str, Any]]]:
+        self._require(task_id)
+        return Result.ok(
+            data=[run.to_dict() for run in self._research.list_runs(task_id)],
+            msg="实验运行列表",
+        )
+
+    def add_result_record(
+        self, task_id: str, run_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        result = self._research.add_result(
+            task_id=task_id,
+            run_id=run_id,
+            metric=str(value.get("metric", "")),
+            value=str(value.get("value", "")),
+            source_file_id=str(value.get("source_file_id", "")),
+            computation=str(value.get("computation", "")),
+            unit=str(value.get("unit", "")),
+            table_or_figure_id=str(value.get("table_or_figure_id", "")),
+        )
+        return Result.ok(data=result.to_dict(), msg="结果记录已登记，等待作者核验")
+
+    def review_result_record(
+        self, task_id: str, result_id: str, *, verified_by_user: bool
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        result = self._research.review_result(
+            task_id, result_id, verified_by_user=verified_by_user
+        )
+        return Result.ok(data=result.to_dict(), msg="结果核验状态已记录")
+
+    def list_result_records(self, task_id: str, run_id: str = "") -> Result[List[Dict[str, Any]]]:
+        self._require(task_id)
+        return Result.ok(
+            data=[
+                result.to_dict()
+                for result in self._research.list_results(task_id, run_id=run_id)
+            ],
+            msg="结果记录列表",
+        )
+
+    def audit_research(self, task_id: str) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        protocol = self._active_research_protocol(task_id)
+        if protocol is None:
+            return Result.ok(
+                data={
+                    "task_id": task_id,
+                    "protocol_artifact_id": "",
+                    "requires_execution": False,
+                    "can_write_results": False,
+                    "blocking_items": ["缺少已批准的研究协议"],
+                },
+                msg="研究实施审计完成",
+            )
+        data = self._research.audit(task_id, protocol.artifact_id)
+        requires_execution = self._method_requires_execution(protocol.payload)
+        blockers: list[str] = []
+        if requires_execution and data["completed_run_count"] == 0:
+            blockers.append("缺少用户确认完成的实验/研究运行")
+        if requires_execution and data["verified_result_count"] == 0:
+            blockers.append("缺少经用户核验、可追溯到原始文件的结果记录")
+        data.update(
+            {
+                "method": str(protocol.payload.get("method", "")),
+                "requires_execution": requires_execution,
+                "can_write_results": not blockers,
+                "blocking_items": blockers,
+            }
+        )
+        return Result.ok(data=data, msg="研究实施审计完成")
+
+    def create_result_ledger(self, task_id: str) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        state = self._fsm.get_task(task_id)
+        if state.current_ring_no != 6:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="结果账本只能在环6生成和审批",
+            )
+        audit = self.audit_research(task_id).data
+        if not audit.get("can_write_results"):
+            raise ResearchRegistryError("研究材料尚未满足结果写作门禁")
+        protocol = self._active_research_protocol(task_id)
+        if protocol is None:
+            raise ResearchRegistryError("缺少已批准的研究协议")
+        outline = self._artifacts.get_active(
+            task_id=task_id, stage_no=5, kind=ArtifactKind.OUTLINE
+        )
+        if outline is None:
+            raise ResearchRegistryError("生成结果账本前缺少已批准大纲")
+        payload = {
+            **audit,
+            "results": [
+                result
+                for result in audit.get("results", [])
+                if bool(result.get("verified_by_user"))
+            ],
+        }
+        artifact = self._artifacts.create_version(
+            task_id=task_id,
+            stage_no=6,
+            kind=ArtifactKind.RESULT_LEDGER,
+            payload=payload,
+            dependency_ids=(protocol.artifact_id, outline.artifact_id),
+            context_manifest=ContextManifest(
+                prompt_id="result_ledger",
+                prompt_version="v1",
+                input_artifact_ids=(protocol.artifact_id, outline.artifact_id),
+            ),
+        )
+        artifact = self._artifacts.submit_auto_gate(
+            artifact.artifact_id,
+            passed=True,
+            report={"research_audit": "passed", "verified_results": len(payload["results"])},
+        )
+        return Result.ok(data=self._artifact_dict(artifact), msg="结果账本已生成，等待作者审批")
+
+    def review_result_ledger(
+        self, task_id: str, artifact_id: str, *, approved: bool,
+        actor: str = "author", reason: str = "",
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        artifact = self._artifacts.get(artifact_id)
+        if artifact.task_id != task_id or artifact.kind != ArtifactKind.RESULT_LEDGER:
+            raise ResearchRegistryError("当前任务中不存在该结果账本")
+        decided = self._artifacts.decide(
+            artifact_id, approved=approved, actor=actor, reason=reason
+        )
+        return Result.ok(data=self._artifact_dict(decided), msg="结果账本审批已记录")
+
+    def _active_research_protocol(self, task_id: str):
+        return self._artifacts.get_active(
+            task_id=task_id, stage_no=5, kind=ArtifactKind.RESEARCH_PROTOCOL
+        )
+
+    def _active_argument_map(self, task_id: str):
+        return self._artifacts.get_active(
+            task_id=task_id, stage_no=5, kind=ArtifactKind.ARGUMENT_MAP
+        )
+
+    @staticmethod
+    def _method_requires_execution(payload: Dict[str, Any]) -> bool:
+        return str(payload.get("method", "")) in {
+            ResearchMethod.QUANTITATIVE.value,
+            ResearchMethod.QUALITATIVE.value,
+            ResearchMethod.MIXED.value,
+            ResearchMethod.SYSTEM_BUILD.value,
+        }
+
+    @staticmethod
+    def _artifact_dict(artifact) -> Dict[str, Any]:
+        return {
+            "artifact_id": artifact.artifact_id,
+            "task_id": artifact.task_id,
+            "stage_no": artifact.stage_no,
+            "kind": artifact.kind.value,
+            "version": artifact.version,
+            "status": artifact.status.value,
+            "payload": artifact.payload,
+            "dependency_ids": list(artifact.dependency_ids),
+            "gate_report": artifact.gate_report,
+            "stale_reason": artifact.stale_reason,
+            "created_at": artifact.created_at,
+            "updated_at": artifact.updated_at,
+        }
+
+    def _project_pending_artifacts(self, task_id: str) -> list[str]:
+        """重放 FSM Outbox；投影失败不丢事件，由下次调用继续恢复。"""
+        state = self._fsm.get_task(task_id)
+        outbox = state.aux_artifacts.get("artifact_outbox", [])
+        if not isinstance(outbox, list):
+            return ["artifact_outbox 状态损坏"]
+        issues: list[str] = []
+        for event in outbox:
+            if not isinstance(event, dict) or event.get("projection_status") == "PROJECTED":
+                continue
+            event_id = str(event.get("event_id", ""))
+            try:
+                artifact = self._artifact_projector.project(event)
+                if artifact.stage_no == 3 and artifact.status == ArtifactStatus.APPROVED:
+                    self._register_literature_sources(
+                        task_id=task_id,
+                        payload=artifact.payload,
+                        artifact_id=artifact.artifact_id,
+                        source_event_id=event_id,
+                    )
+                self._fsm.mark_artifact_event_projected(
+                    task_id,
+                    event_id,
+                    artifact.artifact_id,
+                )
+            except Exception as exc:  # noqa: BLE001 - Outbox 保留供下次重试
+                logger.warning("产物 Outbox 投影失败 %s: %s", event_id, exc)
+                issues.append(f"{event_id}: {exc}")
+        return issues
+
+    def _sync_approved_literature_artifacts(self, task_id: str) -> None:
+        """为升级前已投影的环3产物补登记来源；重复调用保持幂等。"""
+        for artifact in self._artifacts.list_task(task_id):
+            if artifact.stage_no == 3 and artifact.status == ArtifactStatus.APPROVED:
+                self._register_literature_sources(
+                    task_id=task_id,
+                    payload=artifact.payload,
+                    artifact_id=artifact.artifact_id,
+                    source_event_id=artifact.source_event_id,
+                )
+
+    def _register_literature_sources(
+        self, *, task_id: str, payload: Dict[str, Any], artifact_id: str,
+        source_event_id: str,
+    ) -> None:
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        if not isinstance(items, list):
+            raise EvidenceLedgerError("环3文献产物 items 必须是列表")
+        for item in items:
+            if not isinstance(item, dict):
+                raise EvidenceLedgerError("环3文献条目必须是对象")
+            reliability = str(item.get("reliability", "uncertain"))
+            status = (
+                SourceVerificationStatus.METADATA_VERIFIED
+                if reliability in ("verified", "matched")
+                else SourceVerificationStatus.UNVERIFIED
+            )
+            urls = item.get("urls", []) or []
+            url = str(urls[0]) if isinstance(urls, list) and urls else ""
+            self._evidence.register_source(
+                task_id=task_id,
+                title=str(item.get("title", "")),
+                authors=item.get("authors", ()) or (),
+                year=item.get("year"),
+                venue=str(item.get("venue", "")),
+                doi=str(item.get("doi", "")),
+                url=url,
+                provider="ring3",
+                verification_status=status,
+                reliability=reliability,
+                metadata={
+                    "artifact_id": artifact_id,
+                    "source_event_id": source_event_id,
+                    "abstract": str(item.get("abstract", "")),
+                    "category": str(item.get("category", "")),
+                    "citation_count": item.get("citation_count"),
+                    "gbt7714": str(item.get("gbt7714", "")),
+                    "urls": urls if isinstance(urls, list) else [],
+                },
+            )
+
+    def _require_current_ring(self, task_id: str, ring_no: int) -> TaskRecord:
+        """要求任务正处于指定环且允许执行，阻止跨环调用。"""
+        rec = self._require(task_id)
+        state = self._fsm.get_task(task_id)
+        if state.current_ring_no != ring_no:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg=f"当前应执行环{state.current_ring_no}，不能执行环{ring_no}",
+            )
+        if state.phase_state == PhaseState.WAITING_APPROVAL:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg=f"环{ring_no}已有待确认产物，请先确认或拒绝",
+            )
+        if state.phase_state == PhaseState.PASSED:
+            raise BizException(ErrorCode.FSM_INVALID_TRANSITION, msg="任务已经完成")
+        if ring_no > 1:
+            previous = get_stage_contract(ring_no - 1)
+            active_previous = self._artifacts.get_active(
+                task_id=task_id,
+                stage_no=ring_no - 1,
+                kind=ArtifactKind(previous.runtime_artifact_kind),
+            )
+            if active_previous is None:
+                raise BizException(
+                    ErrorCode.FSM_INVALID_TRANSITION,
+                    msg=f"环{ring_no - 1}有效批准产物缺失或已过期，不能执行环{ring_no}",
+                    detail={"required_artifact": previous.runtime_artifact_kind},
+                )
         return rec
 
     def _ensure_literature(self, rec: TaskRecord, theme: str) -> List[Dict[str, Any]]:
@@ -948,30 +2418,6 @@ class MainOrchestration:
             return data.get("items", [])
         except Exception:  # noqa: BLE001 - 检索失败不阻塞大纲/撰写流程
             return []
-
-    def _advance_to(self, task_id: str, biz_req_no: str, target_ring_no: int) -> None:
-        """把 FSM 推进到目标环节号（含跨过 HITL 敏感环节）。
-
-        闭环仅覆盖环1/环5/环6 三个执行环节，环2/4/8/10 为 HITL 通过式网关，
-        advance 每次恰好 +1 环且落在 HITL 环节时置 IN_PROGRESS 等待人工确认。
-        执行体验收通过后，这里自动确认途经的 HITL 网关（环2/4/8/10），直至到达
-        目标环节：run_ring1 → 停在环2、run_ring5 → 环6、run_ring6 → 环7。
-
-        Args:
-            task_id: 任务 ID。
-            biz_req_no: 推进幂等键前缀（实际透传，避免重复推进）。
-            target_ring_no: 目标环节号（2/6/7），到达后停止，不再继续推进。
-        """
-        state = self._fsm.get_task(task_id)
-        while state.current_ring_no < target_ring_no:
-            ring = RING_NO_TO_TYPE[state.current_ring_no]
-            if ring.is_hitl_gate:
-                state = self._fsm.confirm_hitl(task_id, confirmed=True)
-            else:
-                state = self._fsm.advance(
-                    task_id=task_id, biz_req_no=f"{biz_req_no}-to-{state.current_ring_no}",
-                    accept=True,
-                )
 
     @staticmethod
     def _outline_to_text(chapters: List[Dict[str, Any]]) -> str:

@@ -1,21 +1,21 @@
 # -*- coding: utf-8 -*-
-"""全流程演示脚本：一键跑完 10 环（HTTP 走服务 API）。
+"""全流程演示脚本：严格跑完 10 环（HTTP 走服务 API）。
 
 用法：
     1. 启动服务：cd backend && python -m uvicorn main:app --port 8000
     2. 另开终端：python demo_full_10.py
 
-流程：创建任务 → 环1选题 → 环2开题评审 → 环3文献调研 → 环4综述评审 →
-      环5大纲 → 环6撰写 → 环7润色 → 环8引用校验 → 生成docx → 环9排版检查 →
-      环10定稿汇总 → 下载成品 docx 到 demo_output/。
+流程：每一环都执行“生成产物 → 自动验收 → 用户确认”，确认后才进入下一环；
+      环8确认后生成 docx，供环9排版检查使用；环10最终确认后下载成品。
 
 说明：
-    - 环2/4 评审可能判"未通过"（需回退换题/补差异化），脚本会打印建议，
-      真实产品应换题/补后再跑（此处演示全链路可见性）。
+    - 本脚本会真实调用已配置的模型和文献服务，可能产生费用。
+    - 任一环自动验收失败时立即停止，不会为了演示而跨过闸门。
     - 环9 需先生成真实 docx；无用户模板时回退内置模板渲染。
 """
 import json
 import os
+import urllib.error
 import urllib.request
 
 BASE = "http://127.0.0.1:8000"
@@ -61,35 +61,60 @@ def main() -> None:
         return
     print(f"   task_id = {tid}")
 
-    # 2. 环1~10（含 docx）
+    # 2. 环1~10：执行成功后显式确认，禁止跳环。
     steps = [
-        ("环1选题", "/rings/1/execute"),
-        ("环2开题评审", "/rings/2/review"),
-        ("环3文献调研", "/rings/3/execute"),
-        ("环4综述评审", "/rings/4/review"),
-        ("环5大纲", "/rings/5/outline"),
-        ("环6撰写", "/rings/6/chapter"),
-        ("环7润色", "/rings/7/polish"),
-        ("环8引用校验", "/rings/8/validate"),
-        ("生成docx", "/docx/generate"),
-        ("环9排版检查", "/rings/9/layout"),
-        ("环10定稿汇总", "/rings/10/final"),
+        (1, "环1选题", "/rings/1/execute"),
+        (2, "环2开题评审", "/rings/2/review"),
+        (3, "环3文献调研", "/rings/3/execute"),
+        (4, "环4综述评审", "/rings/4/review"),
+        (5, "环5大纲", "/rings/5/outline"),
+        (6, "环6撰写", "/rings/6/chapter"),
+        (7, "环7润色", "/rings/7/polish"),
+        (8, "环8引用校验", "/rings/8/validate"),
+        (9, "环9排版检查", "/rings/9/layout"),
+        (10, "环10定稿汇总", "/rings/10/final"),
     ]
     file_id = ""
-    for name, path in steps:
+    for ring_no, name, path in steps:
+        if ring_no == 9:
+            st, generated = post(
+                f"/api/v1/console/tasks/{tid}/docx/generate?session_id=demo-full-10"
+            )
+            code = generated.get("code", generated.get("error", "?"))
+            print(f"生成docx: {st} code={code} | {_brief(generated.get('msg', ''))}")
+            if code != 0:
+                print("docx 生成失败，流程停止：", generated)
+                return
+            file_id = generated.get("data", {}).get("download_url", "").rsplit("/", 1)[-1] or \
+                      generated.get("data", {}).get("file_id", "")
+
         st, b = post(f"/api/v1/console/tasks/{tid}{path}?session_id=demo-full-10")
         code = b.get("code", b.get("error", "?"))
         msg = _brief(b.get("msg", b.get("error", "")))
         print(f"{name}: {st} code={code} | {msg}")
-        if path == "/docx/generate" and code == 0:
-            file_id = b.get("data", {}).get("download_url", "").rsplit("/", 1)[-1] or \
-                      b.get("data", {}).get("file_id", "")
-            print(f"   docx 下载 url = {b.get('data', {}).get('download_url', '')}")
+        if code != 0:
+            print(f"{name}未通过，流程停止；请根据返回的失败原因修订后重试。")
+            return
+
+        st, progress = get(
+            f"/api/v1/console/tasks/{tid}/progress?session_id=demo-full-10"
+        )
+        phase = progress.get("data", {}).get("phase_state")
+        if progress.get("code") != 0 or phase != "WAITING_APPROVAL":
+            print(f"{name}没有进入待确认状态，流程停止：", progress)
+            return
+
+        st, confirmed = post(
+            f"/api/v1/console/tasks/{tid}/rings/{ring_no}/confirm?session_id=demo-full-10",
+            {"confirmed": True},
+        )
+        if confirmed.get("code") != 0:
+            print(f"{name}确认失败，流程停止：", confirmed)
+            return
+        print(f"   已确认环{ring_no}")
 
     # 3. 下载成品 docx
     if file_id:
-        st, raw = get(f"/api/v1/docx/files/{file_id}?session_id=demo-full-10")
-        # 直接读二进制
         try:
             with urllib.request.urlopen(BASE + f"/api/v1/docx/files/{file_id}?session_id=demo-full-10") as r:
                 data = r.read()
@@ -109,7 +134,11 @@ def main() -> None:
     # 4. 进度
     st, b = get(f"/api/v1/console/tasks/{tid}/progress?session_id=demo-full-10")
     if b.get("code") == 0:
-        print(f"进度: 当前环={b['data'].get('current_ring_no')} 完成度={b['data'].get('complete_percent')}%")
+        print(
+            f"进度: 当前环={b['data'].get('current_ring_no')} "
+            f"状态={b['data'].get('phase_state')} "
+            f"完成度={b['data'].get('complete_percent')}%"
+        )
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>论文写作 Agent — 设计原型</title>
+<link rel="icon" href="data:,">
 <style>
 /* ============================================================
    设计 Token 系统（基于 Claude Code 桌面端官方规范）
@@ -2678,36 +2679,22 @@ a:hover { text-decoration: underline; }
 
           <!-- 输入框（大圆角，发送箭头嵌内部右下） -->
           <div class="input-box">
-            <textarea id="prompt" data-i18n-placeholder="input.placeholder" placeholder="输入 / 作为命令" rows="1"></textarea>
+            <textarea id="prompt" data-i18n-placeholder="input.placeholder" placeholder="输入命令：执行当前环节 / 查看进度 / 确认当前产物" rows="1"></textarea>
             <button class="input-send" id="send-btn" title="发送" disabled aria-label="发送">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
             </button>
           </div>
 
-          <!-- 工具行：左（绕过权限 chip + 加号）右（模型名 + Ultracode + 上下文环） -->
+          <!-- 工具行：只展示真实生效的运行策略；模型由后端环境配置 -->
           <div class="input-controls">
             <div class="input-controls-left">
-              <button class="perm-chip" id="perm-bypass" aria-haspopup="menu" aria-expanded="false">
-                <span id="perm-label" data-i18n="input.bypass">绕过权限</span>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity:0.6; margin-left:2px;"><polyline points="6 9 12 15 18 9"/></svg>
-              </button>
-              <button class="perm-add" id="perm-add" aria-haspopup="menu" aria-expanded="false" title="添加">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              </button>
+              <span class="perm-chip" role="status"><span id="perm-label" data-i18n="input.bypass">逐环确认</span></span>
             </div>
             <div class="input-controls-right">
-              <button class="model-chip" id="model-select" aria-haspopup="menu" aria-expanded="false">
-                <span class="model-name" id="model-name">deepseek-v4-flash-vision-exp</span>
-                <span class="model-cap" id="model-cap">1M</span>
-                <svg class="model-chev" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
-              </button>
-              <button class="uc-slider" id="ultracode-toggle" aria-haspopup="dialog" aria-expanded="false" title="思考深度 Ultracode">
-                <span class="uc-label">Ultracode</span>
-                <span class="uc-track"><span class="uc-thumb" id="uc-thumb"></span></span>
-              </button>
-              <button class="context-ring" id="context-card" role="button" tabindex="0" aria-label="上下文窗口使用情况" title="上下文窗口">
-                <span class="ctx-ring" aria-hidden="true" style="--ctx-pct:54;"><span class="ctx-ring-dot"></span></span>
-              </button>
+              <span class="model-chip" role="status" title="实际模型由后端环境变量配置">
+                <span class="model-name" id="model-name">模型由后端配置</span>
+                <span class="model-cap" id="model-cap" style="display:none"></span>
+              </span>
             </div>
           </div>
         </div>
@@ -3198,15 +3185,15 @@ modelSelect?.addEventListener('click', (e) => {
 const permBypass = document.getElementById('perm-bypass');
 const permLabel = document.getElementById('perm-label');
 const MODE_LABELS = {
-  'zh-CN': { manual: '手动', acceptEdits: '接受编辑', plan: '计划', bypass: '绕过权限' },
-  'en-US': { manual: 'Manual', acceptEdits: 'Accept edits', plan: 'Plan', bypass: 'Bypass perms' },
+  'zh-CN': { manual: '手动', acceptEdits: '接受编辑', plan: '计划', bypass: '逐环确认' },
+  'en-US': { manual: 'Manual', acceptEdits: 'Accept edits', plan: 'Plan', bypass: 'Per-ring confirm' },
 };
 let currentMode = 'bypass';
 function applyMode(mode) {
   currentMode = mode;
   if (permLabel) permLabel.textContent = MODE_LABELS[currentLang][mode] || mode;
   // 逐环确认时显示对勾 + 品牌橙 chip 样式
-  const checkSvg = permBypass.querySelector('svg:first-child');
+  const checkSvg = permBypass?.querySelector('svg:first-child');
   if (checkSvg) checkSvg.style.display = mode === 'bypass' ? '' : 'none';
   // 同步选中态
   document.querySelectorAll('#dd-perm .dd-item').forEach(item => {
@@ -3435,7 +3422,7 @@ document.getElementById('context-card')?.addEventListener('keydown', (e) => {
 /* —— 数字快捷键 1-7 切换模型 / m 切换模式 —— */
 document.addEventListener('keydown', (e) => {
   if (document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
-  if (e.key >= '1' && e.key <= '7') {
+  if (modelSelect && !modelSelect.disabled && e.key >= '1' && e.key <= '7') {
     const items = document.querySelectorAll('#dd-model .dd-item');
     const idx = parseInt(e.key, 10) - 1;
     if (items[idx]) items[idx].click();
@@ -3448,36 +3435,35 @@ if (sbFallback) sbFallback.remove();
 
 /* —— 阶段进度条构建 —— */
 const STAGES = [
-  { name: '选题', state: 'done' },
-  { name: '开题', state: 'done' },
-  { name: '文献', state: 'done' },
-  { name: '综述', state: 'done' },
-  { name: '大纲', state: 'done' },
-  { name: '撰写', state: 'current' },  // 当前
+  { name: '选题', state: 'todo' },
+  { name: '开题', state: 'todo' },
+  { name: '文献', state: 'todo' },
+  { name: '综述', state: 'todo' },
+  { name: '大纲', state: 'todo' },
+  { name: '撰写', state: 'todo' },
   { name: '润色', state: 'todo' },
-  { name: '引用', state: 'gate' },     // 评审关卡
+  { name: '引用', state: 'todo' },
   { name: '排版', state: 'todo' },
   { name: '定稿', state: 'todo' },
 ];
 
 const stageBar = document.getElementById('stage-bar');
-STAGES.forEach((s, i) => {
-  const node = document.createElement('div');
-  let cls = 'stage-node ' + (s.state === 'todo' ? '' : s.state);
-  node.className = cls;
-  node.innerHTML = `
-    <div class="stage-dot">${s.state === 'done' ? '✓' : ''}</div>
-    <div class="stage-label">${i+1}. ${s.name}</div>
-  `;
-  node.title = `${i+1}. ${s.name} · ${ {done:'已完成', current:'当前进行中', todo:'未开始', gate:'人工评审闸门', revert:'已回退'}[s.state] || '' }`;
-  stageBar.appendChild(node);
-
-  if (i < STAGES.length - 1) {
-    const line = document.createElement('div');
-    line.className = 'stage-line' + (s.state === 'done' ? ' done' : '');
-    stageBar.appendChild(line);
-  }
-});
+function renderEmptyStages() {
+  stageBar.innerHTML = '';
+  STAGES.forEach((s, i) => {
+    const node = document.createElement('div');
+    node.className = 'stage-node';
+    node.innerHTML = `<div class="stage-dot"></div><div class="stage-label">${i+1}. ${s.name}</div>`;
+    node.title = `${i+1}. ${s.name} · 未开始`;
+    stageBar.appendChild(node);
+    if (i < STAGES.length - 1) {
+      const line = document.createElement('div');
+      line.className = 'stage-line';
+      stageBar.appendChild(line);
+    }
+  });
+}
+renderEmptyStages();
 
 /* —— 工具卡展开 —— */
 document.querySelectorAll('.tool-card-head').forEach(head => {
@@ -3494,6 +3480,9 @@ document.querySelectorAll('.kb-tab').forEach(tab => {
     tab.classList.add('active');
     const target = tab.dataset.tab;
     document.querySelector(`.kb-pane[data-pane="${target}"]`).classList.add('active');
+    const sid = currentKnowledgeSession || currentSession || 'default';
+    if (target === 'notes') loadNotes(sid);
+    if (target === 'graph') renderGraph(sid);
   });
 });
 
@@ -3536,9 +3525,12 @@ document.getElementById('del-confirm').addEventListener('click', async () => {
     const taskId = pendingDelete.dataset.task;
     const r = await apiDeleteSession(taskId);
     if (r.code === 0) {
-      if (currentSession === taskId) currentSession = null;
+      if (currentSession === taskId) {
+        currentSession = null;
+        currentKnowledgeSession = '';
+      }
       await loadSessions();
-      toast('对话与知识库已删除');
+      toast(r.msg || '对话已删除');
     } else {
       toast('删除失败: ' + (r.msg || ''));
     }
@@ -3596,7 +3588,7 @@ prompt.addEventListener('keydown', (e) => {
 });
 sendBtn.addEventListener('click', sendMessage);
 
-function sendMessage() {
+async function sendMessage() {
   const v = prompt.value.trim();
   if (!v) return;
   const flow = document.getElementById('chat-flow');
@@ -3618,7 +3610,52 @@ function sendMessage() {
   prompt.style.height = 'auto';
   sendBtn.disabled = true;
   flow.scrollTop = flow.scrollHeight;
-  toast('消息已发送');
+
+  if (!currentSession) {
+    appendAIMsg('<p>请先在左侧新建或选择一个论文任务。</p>', '需要任务');
+    return;
+  }
+
+  const command = v.replace(/\s+/g, '');
+  const progress = await apiSessionProgress(currentSession);
+  if (!progress) {
+    appendAIMsg('<p>无法读取当前任务状态，请确认后端服务是否可用。</p>', '连接失败');
+    return;
+  }
+
+  if (/确认|接受|通过当前/.test(command)) {
+    if (!progress.can_confirm) {
+      appendAIMsg('<p>当前没有待确认产物。请先执行当前环节并等待自动验收。</p>', '无法确认');
+      return;
+    }
+    appendGateBlock(progress.current_ring_no);
+    const gateButton = inner.querySelector(`.gate-block[data-ring="${progress.current_ring_no}"] [data-gate]`);
+    await confirmNextRing({ currentTarget: gateButton });
+    return;
+  }
+
+  if (/进度|状态|做到哪/.test(command)) {
+    appendAIMsg(
+      `<p>当前是<strong>环${progress.current_ring_no}（${RING_NAMES[progress.current_ring_no] || ''}）</strong>，状态为 <code>${escapeHtml2(progress.phase_state)}</code>，总体完成 ${progress.complete_percent}%。</p>`,
+      '任务进度'
+    );
+    return;
+  }
+
+  if (/执行|运行|开始|继续/.test(command)) {
+    if (progress.can_confirm) {
+      appendAIMsg('<p>当前产物正在等待确认。请检查产物后输入“确认当前产物”，或点击确认按钮。</p>', '等待确认');
+      appendGateBlock(progress.current_ring_no);
+      return;
+    }
+    await runCurrentRing();
+    return;
+  }
+
+  appendAIMsg(
+    '<p>当前命令入口支持“执行当前环节”“查看进度”“确认当前产物”。开放式论文问答将在分节写作接口完成后接入。</p>',
+    '可用命令'
+  );
 }
 
 function escapeHtml(s) {
@@ -3761,11 +3798,13 @@ function renderRingResult(ringNo, data) {
 function appendGateBlock(ringNo) {
   const flow = document.getElementById('chat-flow');
   const inner = flow.querySelector('.chat-inner');
+  if (inner.querySelector(`.gate-block[data-ring="${ringNo}"]`)) return;
   const gate = document.createElement('div');
   gate.className = 'gate-block';
+  gate.dataset.ring = String(ringNo);
   gate.innerHTML = `<div class="gate-hint"><span class="gate-dot"></span>已完成自动校验，待您确认后进入下一环</div>
     <div class="gate-row"><span class="gate-label">「${RING_NAMES[ringNo] || '环' + ringNo}」环节已通过自动验收</span>
-    <button class="btn btn-primary" data-gate>确认进入下一环</button></div>`;
+    <button class="btn btn-primary" data-gate data-ring="${ringNo}">${ringNo === 10 ? '确认完成论文' : '确认进入下一环'}</button></div>`;
   inner.appendChild(gate);
   const btn = gate.querySelector('[data-gate]');
   if (!btn.dataset.bound) { btn.dataset.bound = '1'; btn.addEventListener('click', confirmNextRing); }
@@ -3786,8 +3825,8 @@ async function runRingShow(taskId, ringNo, path) {
     const fb = (r.data && r.data.fallbackTo) || (r.data && r.data.fallBackTo);
     appendAIMsg(`<div class="warn-card" style="margin:8px 0;"><div class="warn-title">环${ringNo} 评审未通过</div><div style="font-size:13px;">${escapeHtml2(r.msg || '')}</div><div class="warn-actions"><button class="btn btn-primary btn-sm" onclick="runCurrentRing()">重新生成</button>${fb ? `<button class="btn btn-secondary btn-sm" onclick="rollbackRing(${fb})">回退到环${fb}</button>` : ''}</div></div>`, '评审未通过');
   }
-  loadSessionDetail(taskId);
-  loadSessions();
+  await loadSessionDetail(taskId);
+  await loadSessions();
 }
 
 /* —— 回退到目标环（调用 FSM rollback API，真生效） —— */
@@ -3922,7 +3961,7 @@ const I18N = {
     'tasks.all': 'All tasks',
     'search.placeholder': '搜索对话 / 主题 / 文献…',
     'input.bypass': '逐环确认',
-    'input.placeholder': '输入 / 作为命令',
+    'input.placeholder': '输入命令：执行当前环节 / 查看进度 / 确认当前产物',
     'toast.bypass.on': '已切换：逐环确认',
     'toast.bypass.off': '已切换：自动运行',
     'ctx.label': '上下文窗口',
@@ -4013,7 +4052,7 @@ const I18N = {
     'tasks.all': 'All tasks',
     'search.placeholder': 'Search chats / topics / papers…',
     'input.bypass': 'Per-ring confirm',
-    'input.placeholder': 'Type / to command',
+    'input.placeholder': 'Command: run current ring / show progress / confirm artifact',
     'toast.bypass.on': 'Switched: Per-ring confirm',
     'toast.bypass.off': 'Switched: Auto run',
     'ctx.label': 'Context window',
@@ -4382,6 +4421,7 @@ document.addEventListener('keydown', (e) => {
    ============================================================ */
 let currentSession = null;
 let currentSessionTitle = '';
+let currentKnowledgeSession = '';
 
 function sessionItemHtml(s) {
   const degree = DEGREE_LABEL[s.degree] || s.degree || '';
@@ -4413,6 +4453,21 @@ async function loadSessions() {
   const box = document.getElementById('session-items');
   if (!box) return;
   box.innerHTML = items.map(sessionItemHtml).join('') || '<div class="no-sessions" style="padding:16px;color:var(--text-subtle);font-size:12px;">暂无会话</div>';
+  if (!items.length) {
+    currentSession = null;
+    currentSessionTitle = '';
+    currentKnowledgeSession = '';
+    renderEmptyStages();
+    updateRunBtn(null);
+    const kbHead = document.getElementById('kb-head-name');
+    if (kbHead) kbHead.textContent = '知识库';
+    const inner = document.querySelector('#chat-flow .chat-inner');
+    if (inner) {
+      inner.removeAttribute('data-history-task');
+      inner.removeAttribute('data-history-built');
+      inner.innerHTML = '<div class="msg ai"><div class="bubble"><p>欢迎！请点击「新建对话」创建论文任务。执行每个环节后，产物与确认闸门会显示在这里。</p></div></div>';
+    }
+  }
   // 绑定点击切换 + 删除
   box.querySelectorAll('.session-item').forEach(item => {
     item.addEventListener('click', (e) => {
@@ -4427,6 +4482,7 @@ async function loadSessions() {
     if (del) del.addEventListener('click', (e) => {
       e.stopPropagation();
       pendingDelete = item;
+      delName.textContent = item.querySelector('.session-title')?.textContent || '当前对话';
       const dm = document.getElementById('del-modal');
       if (dm) dm.classList.add('show');
     });
@@ -4443,7 +4499,8 @@ async function loadSessions() {
 async function loadSessionDetail(taskId) {
   const prog = await apiSessionProgress(taskId);
   if (prog) { renderStagesFromProgress(prog); updateRunBtn(prog); }
-  await loadKbPanel(taskId);
+  currentKnowledgeSession = prog?.session_id || taskId;
+  await loadKbPanel(currentKnowledgeSession);
   buildHistoryFromProgress(prog);
 }
 
@@ -4452,24 +4509,30 @@ function buildHistoryFromProgress(prog) {
   if (!prog || !prog.rings) return;
   const flow = document.getElementById('chat-flow');
   const inner = flow.querySelector('.chat-inner');
-  // 清掉欢迎语重建（仅一次：检查是否已有历史标记）
-  if (inner.dataset.historyBuilt === '1') return;
+  if (inner.dataset.historyTask !== prog.task_id) {
+    inner.dataset.historyBuilt = '';
+    inner.dataset.historyTask = prog.task_id;
+    inner.replaceChildren();
+  }
+  // 同一任务已重建时仍确保待确认闸门存在。
+  if (inner.dataset.historyBuilt === '1') {
+    if (prog.phase_state === 'WAITING_APPROVAL') appendGateBlock(prog.current_ring_no);
+    return;
+  }
   const finished = prog.rings.filter(r => r.state === 'PASSED');
-  if (!finished.length) return;
   inner.dataset.historyBuilt = '1';
-  // 移除欢迎语
-  inner.querySelectorAll('.msg.ai').forEach(m => {
-    if (m.textContent.includes('欢迎！')) m.remove();
-  });
-  const firstFinished = finished[0];
-  appendUserMsg(`继续论文：${prog.title || '当前任务'}（已完成 ${finished.length}/10 环）`);
+  appendUserMsg(`论文任务：${prog.title || currentSessionTitle || '当前任务'}（已完成 ${finished.length}/10 环）`);
   finished.forEach(r => {
     const name = RING_NAMES[r.ring_no] || ('环' + r.ring_no);
     appendAIMsg(`<p><strong>环${r.ring_no} ${name}</strong> <span style="color:var(--success)">✓ 已通过</span></p><p style="font-size:12px;color:var(--text-subtle);">点击「执行当前环节」继续环${prog.current_ring_no || '下一环'}。</p>`, `${name} · 已通过`);
   });
-  // 若当前环执行中，加执行按钮提示
   const cur = prog.current_ring_no;
-  if (cur <= 10 && finished.length < 10) {
+  if (prog.phase_state === 'WAITING_APPROVAL') {
+    appendAIMsg(`<p style="font-size:13px;">环${cur}（${RING_NAMES[cur] || ''}）已通过自动验收，等待你的确认。</p>`, '待确认');
+    appendGateBlock(cur);
+  } else if (finished.length >= 10) {
+    appendAIMsg('<p><strong>十个环节已全部确认完成。</strong></p>', '流程完成');
+  } else if (cur <= 10) {
     appendAIMsg(`<p style="font-size:13px;">当前环：<strong>环${cur}（${RING_NAMES[cur] || ''}）</strong>，可点击下方执行当前环节。</p>`, '待执行');
   }
 }
@@ -4485,9 +4548,9 @@ function renderStagesFromProgress(prog) {
   rings.forEach(r => {
     let st = 'todo';
     if (r.state === 'PASSED') st = 'done';
+    else if (r.state === 'WAITING_APPROVAL') st = 'gate';
+    else if (r.state === 'FALLBACK') st = 'revert';
     else if (r.state === 'IN_PROGRESS' || (r.state === 'NOT_STARTED' && r.ring_no && r.ring_no === prog.current_ring_no && prog.complete_percent < 100)) st = 'current';
-    // gate 环 2/4/8/10 标注
-    if ([2,4,8,10].includes(r.ring_no) && st !== 'done') st = 'gate';
     states.push({ no: r.ring_no, name: STAGE_MAP[r.ring_no] || ('环'+r.ring_no), state: st });
   });
   // 渲染 stage-bar
@@ -4510,19 +4573,24 @@ function renderStagesFromProgress(prog) {
 }
 
 // —— 确认进入下一环（闸门按钮）——
-async function confirmNextRing() {
+async function confirmNextRing(event) {
   if (!currentSession) return;
-  // 通用推进：advance accept=True（非 HITL 环直接推进；HITL 环由 confirm 落闸门）
-  const r = await apiPost(`/api/v1/tasks/${currentSession}/advance`, { accept: true });
+  const button = event?.currentTarget || document.querySelector('[data-gate]');
+  const progress = await apiSessionProgress(currentSession);
+  const ringNo = Number(button?.dataset.ring || progress?.current_ring_no || 0);
+  if (!ringNo) { toast('无法确定当前环节'); return; }
+  if (button) button.disabled = true;
+  const r = await apiPost(`/api/v1/console/tasks/${currentSession}/rings/${ringNo}/confirm`, {
+    confirmed: true,
+  });
   if (r.code === 0) {
-    toast('已确认，进入下一环');
-    loadSessionDetail(currentSession);
-    loadSessions();
+    toast(r.msg || (ringNo === 10 ? '论文全流程已完成' : '已确认，进入下一环'));
+    button?.closest('.gate-block')?.remove();
+    await loadSessionDetail(currentSession);
+    await loadSessions();
   } else {
-    // fallback: hitl confirm（HITL 环）
-    const r2 = await apiPost(`/api/v1/tasks/${currentSession}/hitl/confirm`, { confirmed: true });
-    if (r2.code === 0) { toast('已确认闸门，进入下一环'); loadSessionDetail(currentSession); loadSessions(); }
-    else toast('确认失败: ' + (r2.msg || r.msg || ''));
+    if (button) button.disabled = false;
+    toast('确认失败: ' + (r.msg || '当前产物状态异常'));
   }
 }
 // —— 执行当前环节 ——
@@ -4542,12 +4610,22 @@ async function runCurrentRing() {
     const pathMap = { 1:'/rings/1/execute', 2:'/rings/2/review', 3:'/rings/3/execute', 4:'/rings/4/review', 5:'/rings/5/outline', 6:'/rings/6/chapter', 7:'/rings/7/polish', 8:'/rings/8/validate', 9:'/rings/9/layout', 10:'/rings/10/final' };
     const path = pathMap[no];
     if (!path) { toast(`环${no} 暂不支持自动执行`); return; }
+    if (no === 9) {
+      const generated = await apiGenerateDocx(currentSession);
+      if (generated.code !== 0) {
+        appendAIMsg(`<div class="warn-card"><div class="warn-title">docx 生成失败</div><div style="font-size:13px;">${escapeHtml2(generated.msg || '')}</div></div>`, '排版准备失败');
+        toast('docx 生成失败，不能执行排版检查');
+        return;
+      }
+      appendAIMsg('<p><strong>待排版 docx 已生成</strong>，开始执行版式检查。</p>', '文档生成');
+    }
     await runRingShow(currentSession, no, path);
   } finally {
     ringRunning = false;
-    if (btn) btn.disabled = false;
     if (label) label.style.display = '';
     if (loading) loading.style.display = 'none';
+    const latest = currentSession ? await apiSessionProgress(currentSession) : null;
+    updateRunBtn(latest);
   }
 }
 
@@ -4555,10 +4633,15 @@ async function runCurrentRing() {
 function updateRunBtn(prog) {
   const btn = document.getElementById('run-cur-ring');
   if (!btn) return;
-  if (!currentSession) { btn.disabled = true; return; }
+  if (!currentSession) {
+    btn.disabled = true;
+    document.getElementById('run-btn-label').textContent = '请先选择论文任务';
+    return;
+  }
   const no = prog ? prog.current_ring_no : 1;
   const finished = prog ? prog.rings.filter(r => r.state === 'PASSED').length : 0;
   if (finished >= 10) { btn.disabled = true; document.getElementById('run-btn-label').textContent = '已全部完成'; }
+  else if (prog?.can_confirm) { btn.disabled = true; document.getElementById('run-btn-label').textContent = `等待确认环${no}产物`; }
   else { btn.disabled = false; document.getElementById('run-btn-label').textContent = `执行当前环节（环${no} ${RING_NAMES[no] || ''}）`; }
 }
 
@@ -4577,8 +4660,7 @@ async function submitNewSession() {
   const subject = document.getElementById('ns-subject').value.trim() || '自然语言处理';
   const scope = document.getElementById('ns-scope')?.value || 'all';
   const r = await apiCreateSession({
-    title, degree, subject_field: subject,
-    session_id: 'default', scope,
+    title, degree, subject_field: subject, scope,
   });
   const modal = document.getElementById('new-session-modal');
   if (modal) modal.classList.remove('show');
@@ -4604,7 +4686,11 @@ function bindNewSessionModal() {
 /* ============================================================
    API 基座（对接后端 http://127.0.0.1:8000）
    ============================================================ */
-const API_BASE = window.API_BASE || 'http://127.0.0.1:8000';
+const API_BASE = (
+  window.API_BASE ||
+  new URLSearchParams(window.location.search).get('apiBase') ||
+  'http://127.0.0.1:8000'
+).replace(/\/$/, '');
 
 async function apiGet(path, params) {
   const url = new URL(API_BASE + path);
@@ -4860,15 +4946,16 @@ async function saveNote() {
   const title = editor.dataset.newTitle || (editor.dataset.noteId ? '' : prompt('笔记标题：', '新笔记'));
   if (!title) { toast('请先设置标题'); return; }
   const content = editor.innerText.trim();
-  const r = await apiPost(`/api/v1/kb/${encodeURIComponent(currentSession || 'default')}/notes`, {
+  const sid = currentKnowledgeSession || currentSession || 'default';
+  const r = await apiPost(`/api/v1/kb/${encodeURIComponent(sid)}/notes`, {
     title, content,
   });
   if (r.code === 0) {
     toast('笔记已保存');
     editor.dataset.noteId = '';
     delete editor.dataset.newTitle;
-    await loadNotes(currentSession);
-    await renderGraph(currentSession);
+    await loadNotes(sid);
+    await renderGraph(sid);
   } else toast('保存失败: ' + (r.msg || ''));
 }
 
@@ -4960,7 +5047,7 @@ function kbCopyGbt(btn) {
 async function kbDownload(btn) {
   const item = btn.closest('.ref-item');
   const fileId = item?.dataset.fileId;
-  const sid = currentSession || 'default';
+  const sid = currentKnowledgeSession || currentSession || 'default';
   if (!fileId) { toast('文件标识缺失'); return; }
   const url = `${API_BASE}/api/v1/kb/${encodeURIComponent(sid)}/files/${encodeURIComponent(fileId)}`;
   try {
@@ -4979,7 +5066,7 @@ async function kbDownload(btn) {
 async function kbDelete(btn) {
   const item = btn.closest('.ref-item');
   const fileId = item?.dataset.fileId;
-  const sid = currentSession || 'default';
+  const sid = currentKnowledgeSession || currentSession || 'default';
   if (!fileId) { toast('文件标识缺失'); return; }
   const r = await apiKbDelete(sid, fileId);
   if (r.code === 0) {
@@ -4991,7 +5078,7 @@ async function kbDelete(btn) {
 
 /* —— 上传知识库文件（多选） —— */
 async function kbUpload(files) {
-  const sid = currentSession || 'default';
+  const sid = currentKnowledgeSession || currentSession || 'default';
   if (!files || !files.length) return;
   let ok = 0, fail = 0;
   for (const f of files) {

@@ -10,8 +10,8 @@ class RingType(str, Enum):
 
     编号与系统设计 M1 一致（应用落地层）：
       RING_1  选题           RING_6  初稿撰写
-      RING_2  开题评审(HITL)  RING_7  万方查重(M7)
-      RING_3  文献综述       RING_8  合规校验(HITL)
+      RING_2  开题评审(HITL)  RING_7  修改润色
+      RING_3  文献调研       RING_8  引用校验(HITL)
       RING_4  综述评审(HITL) RING_9  定稿排版
       RING_5  大纲生成       RING_10 终稿交付(HITL)
     """
@@ -30,18 +30,9 @@ class RingType(str, Enum):
     @property
     def label(self) -> str:
         """中文可读标签。"""
-        return {
-            RingType.RING_1: "选题",
-            RingType.RING_2: "开题评审",
-            RingType.RING_3: "文献综述",
-            RingType.RING_4: "综述评审",
-            RingType.RING_5: "大纲生成",
-            RingType.RING_6: "初稿撰写",
-            RingType.RING_7: "万方查重",
-            RingType.RING_8: "合规校验",
-            RingType.RING_9: "定稿排版",
-            RingType.RING_10: "终稿交付",
-        }[self]
+        from common.workflow_contracts import get_stage_contract
+
+        return get_stage_contract(int(self.value.split("_")[-1])).label
 
     @property
     def is_hitl_gate(self) -> bool:
@@ -53,11 +44,11 @@ class RingType(str, Enum):
 RING_TYPE_DEFAULT_DURATION: dict[RingType, int] = {
     RingType.RING_1: 300,      # 选题
     RingType.RING_2: 3600,     # 开题评审（HITL，等待人工）
-    RingType.RING_3: 1800,     # 文献综述
+    RingType.RING_3: 1800,     # 文献调研
     RingType.RING_4: 3600,     # 综述评审（HITL）
     RingType.RING_5: 900,      # 大纲生成
     RingType.RING_6: 3600,     # 初稿撰写
-    RingType.RING_7: 1800,     # 万方查重（M7，预留）
+    RingType.RING_7: 1800,     # 修改润色
     RingType.RING_8: 3600,     # 合规校验（HITL）
     RingType.RING_9: 1800,     # 定稿排版
     RingType.RING_10: 3600,    # 终稿交付（HITL）

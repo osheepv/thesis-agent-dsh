@@ -176,7 +176,7 @@ class Ring10DeliveryExecutor(RingExecutor):
             "验收报告（全部环通过）",
         ]
 
-        all_pass = not failed_rings and not consistency
+        all_pass = not failed_rings and not consistency and not missing
         summary = (
             f"全部环节通过（环1~9），材料齐备，可提交换导师/学校审核。"
             if all_pass else

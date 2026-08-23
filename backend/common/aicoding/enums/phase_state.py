@@ -10,11 +10,13 @@ class PhaseState(str, Enum):
 
     - NOT_STARTED  未开始
     - IN_PROGRESS  执行中
-    - PASSED       已通过（含自动通过与 HITL 通过）
+    - WAITING_APPROVAL 已生成产物，等待用户确认
+    - PASSED       已由用户确认通过
     - FALLBACK     已回退/降级（遇人工拒绝或重试上限触发）
     """
 
     NOT_STARTED = "NOT_STARTED"
     IN_PROGRESS = "IN_PROGRESS"
+    WAITING_APPROVAL = "WAITING_APPROVAL"
     PASSED = "PASSED"
     FALLBACK = "FALLBACK"

@@ -3,7 +3,7 @@
 
 覆盖维度（与任务要求一致）：
 1. 学位等级路由：本科/硕士/博士在环1创新要求、环4引用深度、环5章节深度上的差异。
-2. 状态推进：advance 通过/拒绝，HITL 敏感环节置 IN_PROGRESS。
+2. 状态推进：执行产物进入 WAITING_APPROVAL，确认后才推进。
 3. 回退栈：前驱指针 + JSON 快照，rollback 恢复历史状态。
 4. 幂等键去重：同 bizReqNo 重复推进不生效。
 5. 验收看门：accept 布尔化，拒绝时记录 FALLBACK Gate。
@@ -39,6 +39,29 @@ def master_task(orch: FsmOrchestrator) -> FsmState:
         degree=Degree.MASTER,
         subject_field="计算机科学与技术",
         template_id="TPL-001",
+    )
+
+
+def submit_and_advance(
+    orch: FsmOrchestrator,
+    task_id: str,
+    biz_req_no: str,
+    accept: bool = True,
+    reject_reason: str | None = None,
+    artifact: str | None = None,
+) -> FsmState:
+    """测试辅助：先提交当前环产物，再执行用户确认。"""
+    state = orch.get_task(task_id)
+    orch.submit_execution(
+        task_id,
+        artifact or f"doc://ring-{state.current_ring_no}.json",
+        accepted=True,
+    )
+    return orch.advance(
+        task_id,
+        biz_req_no=biz_req_no,
+        accept=accept,
+        reject_reason=reject_reason,
     )
 
 
@@ -94,10 +117,12 @@ class TestAdvance:
         assert t.current_ring_no == 1
         assert t.phase_state == PhaseState.NOT_STARTED
 
-        st = orch.advance(t.task_id, biz_req_no="R1", accept=True, artifact_uri="doc://topic.json")
+        pending = orch.submit_execution(t.task_id, "doc://topic.json", accepted=True)
+        assert pending.current_ring_no == 1
+        assert pending.phase_state == PhaseState.WAITING_APPROVAL
+        st = orch.advance(t.task_id, biz_req_no="R1", accept=True)
         assert st.current_ring_no == 2
-        # 环2是 HITL 敏感 → 进入 IN_PROGRESS 等待人工确认
-        assert st.phase_state == PhaseState.IN_PROGRESS
+        assert st.phase_state == PhaseState.NOT_STARTED
         assert st.hitl_confirmed is False
         assert st.prev_ring_no == 1
         # 主产物指针已记录
@@ -105,7 +130,9 @@ class TestAdvance:
 
     def test_advance_reject_sets_fallback(self, orch: FsmOrchestrator, master_task: FsmState):
         t = master_task
-        st = orch.advance(t.task_id, biz_req_no="R1", accept=False, reject_reason="选题范围过大")
+        st = submit_and_advance(
+            orch, t.task_id, "R1", accept=False, reject_reason="选题范围过大"
+        )
         assert st.phase_state == PhaseState.FALLBACK
         assert st.current_ring_no == 1  # 拒绝不推进
         # 看门记录 accepted=False
@@ -114,7 +141,8 @@ class TestAdvance:
 
     def test_advance_hitl_confirm(self, orch: FsmOrchestrator, master_task: FsmState):
         t = master_task
-        orch.advance(t.task_id, biz_req_no="R1", accept=True)  # 进入环2 HITL
+        submit_and_advance(orch, t.task_id, "R1")
+        orch.submit_execution(t.task_id, "doc://ring-2.json", accepted=True)
         st = orch.confirm_hitl(t.task_id, confirmed=True)  # 人工通过 → 推进到环3
         assert st.current_ring_no == 3
         # 环3非HITL → NOT_STARTED
@@ -124,13 +152,17 @@ class TestAdvance:
         t = master_task
         # 一路推进到环10并通过
         for i in range(1, 10):
-            orch.advance(t.task_id, biz_req_no=f"A{i}", accept=True)
-        final = orch.advance(t.task_id, biz_req_no="A10", accept=True)
+            submit_and_advance(orch, t.task_id, f"A{i}")
+        final = submit_and_advance(orch, t.task_id, "A10")
         assert final.current_ring_no == 10
         assert final.is_finished is True
         # 完结后禁止推进
         with pytest.raises(BizException):
             orch.advance(t.task_id, biz_req_no="A11", accept=True)
+
+    def test_advance_without_execution_rejected(self, orch: FsmOrchestrator, master_task: FsmState):
+        with pytest.raises(BizException):
+            orch.advance(master_task.task_id, biz_req_no="NO-ARTIFACT", accept=True)
 
 
 # ============================================================
@@ -140,9 +172,10 @@ class TestRollback:
     def test_rollback_restores_history(self, orch: FsmOrchestrator, master_task: FsmState):
         t = master_task
         # 推进两环：环1→环2
-        orch.advance(t.task_id, biz_req_no="R1", accept=True, artifact_uri="doc://c1.json")
+        submit_and_advance(orch, t.task_id, "R1", artifact="doc://c1.json")
 
         # 推进环2（HITL 需确认，再确认）→ ring3
+        orch.submit_execution(t.task_id, "doc://c2.json", accepted=True)
         orch.confirm_hitl(t.task_id, confirmed=True)
 
         st = orch.get_task(t.task_id)
@@ -157,7 +190,7 @@ class TestRollback:
 
     def test_rollback_invalid_target(self, orch: FsmOrchestrator, master_task: FsmState):
         t = master_task
-        orch.advance(t.task_id, biz_req_no="R1", accept=True)
+        submit_and_advance(orch, t.task_id, "R1")
         # 目标环节 >= 当前环节，应抛错
         with pytest.raises(BizException):
             orch.rollback(t.task_id, 2)
@@ -194,7 +227,7 @@ class TestRollback:
 class TestIdempotency:
     def test_same_biz_req_no_no_double_advance(self, orch: FsmOrchestrator, master_task: FsmState):
         t = master_task
-        orch.advance(t.task_id, biz_req_no="REQ-1", accept=True)
+        submit_and_advance(orch, t.task_id, "REQ-1")
         st_state = orch.get_task(t.task_id)
         assert st_state.current_ring_no == 2
 
@@ -205,13 +238,14 @@ class TestIdempotency:
     def test_different_biz_req_no_advances(self, orch: FsmOrchestrator, master_task: FsmState):
         t = master_task
         # REQ-1：推进环1(HITL非敏感) -> 环2
-        orch.advance(t.task_id, biz_req_no="REQ-1", accept=True)
+        submit_and_advance(orch, t.task_id, "REQ-1")
         assert orch.get_task(t.task_id).current_ring_no == 2
         # 环2 是 HITL 敏感，需人工确认后进入环3
+        orch.submit_execution(t.task_id, "doc://ring-2.json", accepted=True)
         orch.confirm_hitl(t.task_id, confirmed=True)
         assert orch.get_task(t.task_id).current_ring_no == 3
         # REQ-2：推进环3(非HITL) -> 环4
-        orch.advance(t.task_id, biz_req_no="REQ-2", accept=True)
+        submit_and_advance(orch, t.task_id, "REQ-2")
         assert orch.get_task(t.task_id).current_ring_no == 4
 
 
@@ -246,14 +280,16 @@ class TestCreateTask:
 class TestProgress:
     def test_progress_view(self, orch: FsmOrchestrator, master_task: FsmState):
         t = master_task
-        orch.advance(t.task_id, biz_req_no="R1", accept=True)  # 推进到环2 IN_PROGRESS
+        submit_and_advance(orch, t.task_id, "R1")
         p = orch.get_progress(t.task_id)
         assert p["total_rings"] == 10
         assert p["current_ring_no"] == 2
         assert len(p["rings"]) == 10
-        # 环1 PASSED，环2 IN_PROGRESS，其余 NOT_STARTED
+        # 环1 PASSED，环2尚未执行，其余 NOT_STARTED
         assert p["rings"][0]["state"] == PhaseState.PASSED.value
-        assert p["rings"][1]["state"] == PhaseState.IN_PROGRESS.value
+        assert p["rings"][1]["state"] == PhaseState.NOT_STARTED.value
+        assert p["can_execute"] is True
+        assert p["can_confirm"] is False
         assert p["rings"][9]["state"] == PhaseState.NOT_STARTED.value
 
 
@@ -281,7 +317,7 @@ class TestStatePersistence:
         orch = self._make_orch()
         st = orch.create_task(title="DB", degree=Degree.PHD, subject_field="NLP", template_id="T2")
         # 推进落库
-        orch.advance(st.task_id, biz_req_no="DB-1", accept=True, artifact_uri="doc://x.json")
+        submit_and_advance(orch, st.task_id, "DB-1", artifact="doc://x.json")
         got = orch.get_task(st.task_id)
         assert got.current_ring_no == 2
         assert got.degree == Degree.PHD  # 枚举从 DB 回读后仍还原
@@ -303,7 +339,9 @@ class TestStatePersistence:
         orch = FsmOrchestrator(repo)
 
         st = orch.create_task(title="DB2", degree=Degree.MASTER, subject_field="x")
-        orch.advance(st.task_id, biz_req_no="DB-1", accept=False, reject_reason="驳回")
+        submit_and_advance(
+            orch, st.task_id, "DB-1", accept=False, reject_reason="驳回"
+        )
         with Session() as s:
             gates = s.query(AcceptanceGateModel).filter_by(task_id=st.task_id).all()
             assert len(gates) == 1

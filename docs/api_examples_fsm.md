@@ -1,5 +1,9 @@
 # FSM 编排器 API 调用示例
 
+> 本文档是低层 FSM 调试参考，不是前端业务接入文档。业务客户端请使用
+> [工作台 API](api_examples.md) 的“执行当前环 → `WAITING_APPROVAL` → 确认”协议。
+> 当前 `advance` 只确认已经由应用层提交的待确认产物，不能用来生成产物或跳环。
+
 本文档描述 **M1 FSM 编排器** 的 HTTP 接口调用方式。FSM 服务以独立模块提供，
 其路由严格对齐 `backend/application/adapters/route_config.py` 的 M1 内部路由契约
 （无 `/api/v1` 前缀，便于 `application.adapters.m1_fsm_client.FsmClient` 直连）。
@@ -83,7 +87,7 @@ Content-Type: application/json
 GET /tasks/{task_id}
 ```
 
-响应（示例，已推进到环2、处于 HITL 等待人工确认）：
+响应（示例，环1已确认并推进到尚未执行的环2）：
 
 ```json
 {
@@ -94,7 +98,7 @@ GET /tasks/{task_id}
     "current_ring_no": 2,
     "current_ring": "RING_2",
     "current_ring_label": "开题评审",
-    "phase_state": "IN_PROGRESS",
+    "phase_state": "NOT_STARTED",
     "hitl_required": true,
     "hitl_confirmed": false,
     "prev_ring_no": 1,
@@ -121,7 +125,7 @@ GET /tasks/{task_id}
 
 ---
 
-## 3. 推进当前环节（幂等）
+## 3. 确认并推进当前待确认环节（幂等）
 
 ```
 POST /tasks/{task_id}/advance
@@ -134,8 +138,7 @@ Content-Type: application/json
 {
   "biz_req_no": "REQ-2026-0001",
   "accept": true,
-  "artifact_uri": "doc://topic.json",
-  "gate_rule": "internal_acceptance",
+  "gate_rule": "user_confirmation",
   "session_id": "sess-2026-0001"
 }
 ```
@@ -147,8 +150,11 @@ Content-Type: application/json
 | biz_req_no | string | 幂等请求号（必填，同一请求号重复调用不会重复推进） |
 | accept | bool | 验收是否通过，默认 `true` |
 | reject_reason | string? | 驳回原因（`accept=false` 时必填） |
-| artifact_uri | string? | 主产物 URI（同步产物） |
-| gate_rule | string | 验收看门规则名，默认 `internal_acceptance` |
+| artifact_uri | string? | 兼容字段；当前产物已由执行接口提交，通常不传 |
+| gate_rule | string | 确认规则名，工作台使用 `user_confirmation` |
+
+调用前置条件：当前环必须已经执行、自动验收通过，并处于
+`WAITING_APPROVAL`；否则返回非法状态。业务调用方不应直接构造这个前置状态。
 
 通过时（环1 → 环2）：
 
@@ -159,7 +165,7 @@ Content-Type: application/json
   "data": {
     "current_ring_no": 2,
     "current_ring": "RING_2",
-    "phase_state": "IN_PROGRESS",
+    "phase_state": "NOT_STARTED",
     "hitl_required": true,
     "hitl_confirmed": false,
     "prev_ring_no": 1,
@@ -283,7 +289,7 @@ GET /tasks/{task_id}/progress
     "rings": [
       { "ring_no": 1, "ring": "RING_1", "label": "选题", "state": "PASSED", "is_hitl_gate": false, "hitl_required": false },
       { "ring_no": 2, "ring": "RING_2", "label": "开题评审", "state": "IN_PROGRESS", "is_hitl_gate": true, "hitl_required": true },
-      { "ring_no": 3, "ring": "RING_3", "label": "文献综述", "state": "NOT_STARTED", "is_hitl_gate": false, "hitl_required": false }
+      { "ring_no": 3, "ring": "RING_3", "label": "文献调研", "state": "NOT_STARTED", "is_hitl_gate": false, "hitl_required": false }
     ]
   }
 }

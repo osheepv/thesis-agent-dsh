@@ -25,12 +25,13 @@
 - 已实现论证图的有向无环校验与审批；核心论断自动登记到证据账本，大纲对论证版本建立依赖。
 - 环6支持按节最小上下文生成、独立版本、自动验收、逐节审批和完整性汇编；上游失效会使相关分节过期。
 - 新分节链路的环8会审计正文证据/结果标记，生成稳定引文编号、GB/T 7714参考文献和结果交叉引用清单。
+- DOCX 生成器会把明确的 `BOOKMARK/REF` 标记转换为 Word 原生书签与 `REF` 域，并在交付前验证目标完整性；内置模板已修复为严格 OOXML 校验通过。
 - 前端支持十环进度、执行状态、人工确认闸门及刷新后的闸门恢复。
 - `demo_run.py` 提供最小严格流程冒烟；`demo_full_10.py` 按真实闸门协议运行，任一环失败即停止。
 
 当前关键缺口：
 
-- 可视化分节编辑/版本差异、后台可恢复作业，以及 DOCX 原生书签/REF 域交叉引用仍待完成。
+- 可视化分节编辑/版本差异、后台可恢复作业、Token/费用预算和生产级权限仍待完成。
 - UI 仍是单文件原型；后台作业、取消恢复、桌面打包与生产级权限尚未完成。
 - 现有后端已具备分节版本与逐节审批，但前端尚未把证据侧栏、论证图和实验工作台完整呈现出来。
 
@@ -42,9 +43,9 @@
 | M2 | 环节执行体 | `backend/executor/`、`backend/writing/` | 🟡 十环、证据约束分节写作和汇编已接入；可视化编辑待建设 |
 | M3 | 验收 Gate / HITL | `backend/fsm/` | ✅ 执行/验收/确认分离，所有环人工确认 |
 | M4 | 状态存储 | `backend/db/`、`backend/fsm/repository/` | ✅ SQLite（任务/环产物/FSM 状态） |
-| M5/M6 | docx 解析/生成 | `backend/thesis_docx/` | ✅ 已实现（docxtpl + 版式检查器） |
+| M5/M6 | docx 解析/生成 | `backend/thesis_docx/` | ✅ docxtpl、版式检查、原生书签/REF 域及严格 OOXML 验证 |
 | M7 | 查重 | — | 预留（OOS：只提醒人工自建查重） |
-| M8 | Guardrail | `backend/common/`、`backend/evidence/`、`backend/research/` | 🟡 来源/摘录/论断、实验结果血缘和环8强制审计已实现；DOCX 原生域验证待建设 |
+| M8 | Guardrail | `backend/common/`、`backend/evidence/`、`backend/research/` | ✅ 来源/摘录/论断、结果血缘、环8强制审计和 DOCX 域验证 |
 | M9 | 知识库 | `backend/knowledge/` | ✅ 已实现（文件池/笔记双链/图谱 API + RAG 检索） |
 | 公共 | 公共模块 | `backend/common/` | ✅ 已实现（LLM 客户端 / 文献服务 / 引用格式化 / 提示词仓库） |
 
@@ -81,7 +82,7 @@ python -m http.server 8787
 
 ## 运行测试
 
-当前回归基线：**164 项 pytest 全部通过**。
+当前回归基线：**168 项 pytest 全部通过**。
 
 ```bash
 # 项目根执行（conftest 自动注入路径）

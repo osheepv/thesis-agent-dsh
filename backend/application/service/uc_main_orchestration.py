@@ -33,6 +33,7 @@ from common.aicoding.exception.biz_exception import BizException
 from common.aicoding.exception.error_code import ErrorCode
 from common.workflow_contracts import get_stage_contract
 from common.citation import format_gbt7714
+from thesis_docx.cross_reference import normalize_target_id
 
 from artifacts import (
     ArtifactKind,
@@ -155,6 +156,7 @@ class RealDocxRenderer:
                     "filename": outcome.filename,
                     "word_count": outcome.word_count,
                     "template_id": template_id,
+                    "cross_references": outcome.cross_reference_report,
                 }
             )
         return {
@@ -163,6 +165,7 @@ class RealDocxRenderer:
             "filename": outcome.filename,
             "word_count": outcome.word_count,
             "file_path": getattr(outcome, "file_path", ""),
+            "cross_references": outcome.cross_reference_report,
         }
 
 
@@ -1107,11 +1110,23 @@ class MainOrchestration:
         rendered_content = content
         for evidence_id, number in citation_map.items():
             rendered_content = rendered_content.replace(f"[{evidence_id}]", f"[{number}]")
-        cross_reference_map: dict[str, str] = {}
-        for result_id, result in verified_results.items():
-            label = str(result.get("table_or_figure_id", "")) or f"结果 {result_id}"
-            cross_reference_map[result_id] = label
-            rendered_content = rendered_content.replace(f"[{result_id}]", f"（见{label}）")
+        cross_reference_map: dict[str, dict[str, str]] = {}
+        for result_id in sorted(expected_result_ids | marked_result_ids):
+            result = verified_results.get(result_id)
+            if result is None:
+                continue
+            raw_target = str(result.get("table_or_figure_id", "")) or result_id
+            target = normalize_target_id(raw_target)
+            display = self._cross_reference_display(raw_target)
+            if f"[[BOOKMARK:{target}|" not in rendered_content:
+                issues.append(f"结果 {result_id} 缺少交叉引用目标 BOOKMARK:{target}")
+            cross_reference_map[result_id] = {
+                "target": target,
+                "display": display,
+            }
+            rendered_content = rendered_content.replace(
+                f"[{result_id}]", f"[[REF:{target}|{display}]]"
+            )
         if reference_entries:
             references_text = "\n".join(
                 f"[{item['number']}] {item['gbt7714']}" for item in reference_entries
@@ -1690,6 +1705,15 @@ class MainOrchestration:
                 gate_issues.append(f"论断 {claim['claim_id']} 未实际引用其支持证据")
         if requested_result_ids and not set(requested_result_ids).issubset(used_result_ids):
             gate_issues.append("未使用全部指定结果记录")
+        for result_id in used_result_ids:
+            result = allowed_results[result_id]
+            target = normalize_target_id(
+                str(result.get("table_or_figure_id", "")) or result_id
+            )
+            if f"[[BOOKMARK:{target}|" not in generated.content:
+                gate_issues.append(
+                    f"结果 {result_id} 缺少原生交叉引用目标 BOOKMARK:{target}"
+                )
 
         manifest = ContextManifest(
             prompt_id="section_draft",
@@ -2244,6 +2268,15 @@ class MainOrchestration:
         return self._artifacts.get_active(
             task_id=task_id, stage_no=5, kind=ArtifactKind.ARGUMENT_MAP
         )
+
+    @staticmethod
+    def _cross_reference_display(target: str) -> str:
+        upper = target.upper()
+        if upper.startswith("TABLE-"):
+            return "表" + target[6:]
+        if upper.startswith("FIGURE-"):
+            return "图" + target[7:]
+        return target
 
     @staticmethod
     def _method_requires_execution(payload: Dict[str, Any]) -> bool:

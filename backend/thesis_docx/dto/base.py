@@ -96,6 +96,10 @@ class DocxGenerateResult(BaseModel):
         alias="validate",
         description="生成后校验快照",
     )
+    cross_references: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="原生书签/REF 域生成与验证报告",
+    )
 
 
 class DocxValidateRequest(BaseModel):
@@ -138,3 +142,7 @@ class DocxValidateResult(BaseModel):
     warnings: List[Dict[str, Any]] = Field(default_factory=list, description="警告明细")
     validator: str = Field(default="openxml-audit", description="校验器版本")
     file_id: str = Field(default="", description="被校验文件 ID")
+    cross_reference_valid: bool = Field(default=True, description="书签/REF 域是否完整")
+    cross_reference_report: Dict[str, Any] = Field(
+        default_factory=dict, description="书签/REF 域审计报告"
+    )

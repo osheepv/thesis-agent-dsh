@@ -218,3 +218,7 @@ curl -s -X POST http://127.0.0.1:8000/api/v1/console/tasks/TASK_ID/rings/1/confi
 
 生成请求至少包含 `section_id`；实证结果节可额外传 `result_ids`。系统只把该节论断、
 批准证据及指定的已核验结果送入模型，不再把整个文献库塞入一次调用。
+
+结果对象应使用 `[[BOOKMARK:TABLE-4-1|表4-1 实验结果]]` 定义目标；正文使用
+`[[REF:TABLE-4-1|表4-1]]` 引用。环8和 DOCX 生成器会分别检查业务血缘与 OOXML 域，
+生成响应中的 `cross_references` 返回书签数量、REF 数量、目标映射及未解决项。

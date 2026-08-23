@@ -178,6 +178,7 @@ class DocxService:
                 "word_count": outcome.word_count,
                 "template_id": req.template_id,
                 "validate": validate_vo.model_dump(),
+                "cross_references": outcome.cross_reference_report,
             }
         )
         return DocxGenerateResult(
@@ -187,6 +188,7 @@ class DocxService:
             word_count=outcome.word_count,
             file_hash=self._sha256_of_file(outcome.file_path),
             validate=validate_vo,
+            cross_references=outcome.cross_reference_report,
         )
 
     # ================================================================== #
@@ -227,6 +229,8 @@ class DocxService:
             errors=outcome.errors,
             warnings=outcome.warnings,
             validator=outcome.validator,
+            cross_reference_valid=outcome.cross_reference_valid,
+            cross_reference_report=outcome.cross_reference_report,
         )
 
     @staticmethod

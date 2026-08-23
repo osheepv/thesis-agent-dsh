@@ -20,6 +20,7 @@ from docxtpl import DocxTemplate
 from common.aicoding.exception import BizException, ErrorCode
 
 from ..config import DocxConfig
+from ..cross_reference import CrossReferenceError, apply_cross_references
 
 
 @dataclass
@@ -39,6 +40,7 @@ class GenerateOutcome:
     word_count: int = 0
     supplied_keys: List[str] = field(default_factory=list)
     missing_keys: List[str] = field(default_factory=list)
+    cross_reference_report: Dict[str, Any] = field(default_factory=dict)
 
 
 class DocxGenerator:
@@ -105,6 +107,15 @@ class DocxGenerator:
                 detail={"out_path": out_path, "err": str(exc)},
             ) from exc
 
+        try:
+            cross_reference_report = apply_cross_references(out_path).to_dict()
+        except CrossReferenceError as exc:
+            raise BizException(
+                ErrorCode.DOCX_GENERATE_FAILED,
+                "DOCX 原生交叉引用生成失败",
+                detail={"out_path": out_path, "err": str(exc)},
+            ) from exc
+
         word_count = self._estimate_word_count(out_path)
         supplied_keys = list(context.keys())
 
@@ -121,6 +132,7 @@ class DocxGenerator:
             word_count=word_count,
             supplied_keys=supplied_keys,
             missing_keys=missing_keys,
+            cross_reference_report=cross_reference_report,
         )
 
     # ------------------------------------------------------------------ #

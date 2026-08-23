@@ -69,6 +69,16 @@ class _ResearchFlowExecutor:
         self.ring_no = ring_no
 
     def execute(self, ctx) -> ExecResult:
+        if self.ring_no == 7:
+            draft = json.loads(ctx.draft)
+            return ExecResult(
+                output=json.dumps(
+                    {"chapters": draft.get("chapters", []), "total_words": 20},
+                    ensure_ascii=False,
+                ),
+                accept=True,
+                evidence={"source": "test-double"},
+            )
         payloads = {
             1: {"candidates": [{"title": "可复算论文智能体"}], "recommendation": "推荐"},
             2: {"novelty_level": "HIGH", "similar_count": 0, "recommendation": "通过"},
@@ -208,7 +218,15 @@ def test_empirical_protocol_and_result_ledger_gate_ring6(monkeypatch):
     orchestration.review_result_ledger(
         task_id, result_ledger["artifact_id"], approved=True
     )
-    assert orchestration.run_ring6(task_id).is_ok
+    section = orchestration.generate_section_draft(
+        task_id, {"section_id": "1", "result_ids": [result["result_id"]]}
+    ).data
+    assert "[[BOOKMARK:TABLE-4-1|" in section["content"]
+    assert f"[{result['result_id']}]" in section["content"]
+    orchestration.review_section_draft(
+        task_id, section["section_draft_id"], approved=True
+    )
+    assert orchestration.assemble_section_drafts(task_id).is_ok
     orchestration.confirm_ring(task_id, 6)
 
     artifacts = orchestration.list_artifacts(task_id).data
@@ -216,6 +234,18 @@ def test_empirical_protocol_and_result_ledger_gate_ring6(monkeypatch):
     ledger = next(item for item in artifacts if item["kind"] == "RESULT_LEDGER")
     draft = next(item for item in artifacts if item["kind"] == "SECTION_DRAFT")
     assert set(draft["dependency_ids"]) == {outline["artifact_id"], ledger["artifact_id"]}
+
+    orchestration.run_ring7(task_id)
+    orchestration.confirm_ring(task_id, 7)
+    citation = orchestration.run_ring8(task_id)
+    assert citation.is_ok
+    assert citation.data["cross_reference_map"][result["result_id"]] == {
+        "target": "TABLE-4-1",
+        "display": "表4-1",
+    }
+    rendered = orchestration._store.get(task_id).ring8["rendered_content"]
+    assert "[[BOOKMARK:TABLE-4-1|" in rendered
+    assert "[[REF:TABLE-4-1|表4-1]]" in rendered
 
 
 def test_research_endpoints_are_available(monkeypatch):

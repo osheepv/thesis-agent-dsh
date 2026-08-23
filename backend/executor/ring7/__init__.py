@@ -102,6 +102,7 @@ def _extract_draft_chapters(ctx: ExecContext) -> list[Dict[str, Any]]:
 def _facts_fingerprint(text: str) -> Dict[str, Any]:
     """提取文本『事实指纹』：引用集 + 数字 token + 主体词（用于比对润色前后）。"""
     refs = re.findall(r"\[(?:L\d+|EVD-[A-Z0-9]+|RES-[A-Z0-9]+)\]", text)
+    refs.extend(re.findall(r"\[\[(?:BOOKMARK|REF):[^\]]+\]\]", text))
     numbers = re.findall(r"\d+(?:\.\d+)?%?", text)
     # 主体词：含"研究/方法/模型/数据/实验"等的短词（粗略）
     subjects = re.findall(r"[一-鿿A-Za-z]{2,12}(?:研究|方法|模型|数据|实验|算法|系统|框架)", text)

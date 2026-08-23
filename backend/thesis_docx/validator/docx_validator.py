@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 from common.aicoding.exception import BizException, ErrorCode
 
 from ..config import DocxConfig
+from ..cross_reference import audit_cross_references
 
 
 @dataclass
@@ -41,6 +42,8 @@ class ValidateOutcome:
     errors: List[Dict[str, Any]] = field(default_factory=list)
     warnings: List[Dict[str, Any]] = field(default_factory=list)
     validator: str = "openxml-audit"
+    cross_reference_valid: bool = True
+    cross_reference_report: Dict[str, Any] = field(default_factory=dict)
 
 
 class DocxValidator:
@@ -91,7 +94,20 @@ class DocxValidator:
         # 维度3：roundtrip
         roundtrip_valid = self._roundtrip_validate(file_path)
 
-        is_valid = schema_valid and load_valid and roundtrip_valid
+        cross_reference_report = audit_cross_references(file_path).to_dict()
+        cross_reference_valid = bool(cross_reference_report["passed"])
+        if not cross_reference_valid:
+            errors.append(
+                {
+                    "severity": "ERROR",
+                    "description": "DOCX 书签/REF 交叉引用不完整",
+                    "part": "/word/document.xml",
+                    "detail": cross_reference_report,
+                }
+            )
+            error_count += 1
+
+        is_valid = schema_valid and load_valid and roundtrip_valid and cross_reference_valid
         return ValidateOutcome(
             is_valid=is_valid,
             schema_valid=schema_valid,
@@ -102,6 +118,8 @@ class DocxValidator:
             errors=errors,
             warnings=warnings,
             validator=self._version,
+            cross_reference_valid=cross_reference_valid,
+            cross_reference_report=cross_reference_report,
         )
 
     # ------------------------------------------------------------------ #

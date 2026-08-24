@@ -194,3 +194,40 @@ def test_unauthenticated_requests_and_insecure_cors_are_rejected(monkeypatch):
         assert "CORS" in str(exc)
     else:
         raise AssertionError("认证模式不得允许通配 CORS")
+
+    monkeypatch.setenv("THESIS_CORS_ORIGINS", "*,http://localhost:8787")
+    try:
+        build_app(orchestration=MainOrchestration(), security_store=store)
+    except RuntimeError as exc:
+        assert "CORS" in str(exc)
+    else:
+        raise AssertionError("认证模式不得在混合来源列表中允许通配 CORS")
+
+
+def test_default_local_cors_supports_credentialed_ui(monkeypatch):
+    monkeypatch.delenv("THESIS_CORS_ORIGINS", raising=False)
+    monkeypatch.setenv("THESIS_AUTH_ENABLED", "false")
+    monkeypatch.setenv("THESIS_JOB_WORKER_ENABLED", "false")
+    app = build_app(orchestration=MainOrchestration())
+    client = TestClient(app)
+
+    for origin in ("http://127.0.0.1:8787", "http://localhost:8787"):
+        response = client.options(
+            "/api/v1/console/tasks",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == origin
+        assert response.headers["access-control-allow-credentials"] == "true"
+
+    response = client.options(
+        "/api/v1/console/tasks",
+        headers={
+            "Origin": "https://unlisted.example",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert "access-control-allow-origin" not in response.headers

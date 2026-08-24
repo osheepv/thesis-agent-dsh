@@ -123,13 +123,20 @@ def build_app(
     )
 
     # CORS（本地 UI 预览：http://localhost:8787 等前端端口）
-    # 默认放开本地开发；生产用 THESIS_CORS_ORIGINS 逗号分隔收紧（如 http://app.example.com,https://app.example.com）
+    # 默认仅允许项目文档中的本地 UI；生产用 THESIS_CORS_ORIGINS 显式配置真实来源。
     from fastapi.middleware.cors import CORSMiddleware
 
-    origins_env = os.getenv("THESIS_CORS_ORIGINS", "*").strip()
-    if security_settings.enabled and origins_env == "*":
+    origins_env = os.getenv(
+        "THESIS_CORS_ORIGINS",
+        "http://127.0.0.1:8787,http://localhost:8787",
+    ).strip()
+    configured_origins = [
+        origin.strip() for origin in origins_env.split(",") if origin.strip()
+    ]
+    allows_wildcard = "*" in configured_origins
+    if security_settings.enabled and allows_wildcard:
         raise RuntimeError("认证模式禁止 THESIS_CORS_ORIGINS=*")
-    allow_origins = "*" if origins_env == "*" else [o.strip() for o in origins_env.split(",") if o.strip()]
+    allow_origins = ["*"] if allows_wildcard else configured_origins
     app.add_middleware(
         SecurityMiddleware,
         store=security_store,
@@ -138,8 +145,8 @@ def build_app(
     # Starlette 后添加的中间件位于外层；CORS 必须包住 401/403 安全响应。
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allow_origins,  # 本地开发放开；生产按域名收紧
-        allow_credentials=allow_origins != "*",
+        allow_origins=allow_origins,
+        allow_credentials=not allows_wildcard,
         allow_methods=["*"],
         allow_headers=["*"],
     )

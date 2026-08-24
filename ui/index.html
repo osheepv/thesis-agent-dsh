@@ -2792,9 +2792,11 @@ a:hover { text-decoration: underline; }
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
         <div class="sidebar-search">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-subtle)" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input placeholder="搜索对话 / 主题 / 文献…" />
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-subtle)" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <label class="sr-only" for="session-search" data-i18n="search.label">搜索论文任务</label>
+          <input id="session-search" name="session-search" type="search" autocomplete="off" data-i18n-placeholder="search.placeholder" placeholder="搜索对话 / 主题 / 文献…" aria-controls="session-items" aria-describedby="session-search-status" />
         </div>
+        <div id="session-search-status" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
       </div>
 
       <div class="session-list" id="session-list">
@@ -4320,7 +4322,14 @@ const I18N = {
     'common.system': '系统',
     'newChat': '新建对话',
     'tasks.all': 'All tasks',
+    'search.label': '搜索论文任务',
     'search.placeholder': '搜索对话 / 主题 / 文献…',
+    'search.empty': '暂无论文任务',
+    'search.noMatches': '没有匹配的论文任务',
+    'search.count': '共 {total} 个论文任务',
+    'search.countOne': '共 {total} 个论文任务',
+    'search.countFiltered': '显示 {visible} 个，共 {total} 个论文任务',
+    'search.countFilteredOne': '显示 {visible} 个，共 {total} 个论文任务',
     'input.bypass': '逐环确认',
     'input.placeholder': '输入命令：执行当前环节 / 查看进度 / 确认当前产物',
     'toast.bypass.on': '已切换：逐环确认',
@@ -4411,7 +4420,14 @@ const I18N = {
     'common.system': 'System',
     'newChat': 'New chat',
     'tasks.all': 'All tasks',
+    'search.label': 'Search paper tasks',
     'search.placeholder': 'Search chats / topics / papers…',
+    'search.empty': 'No paper tasks yet',
+    'search.noMatches': 'No matching paper tasks',
+    'search.count': '{total} paper tasks',
+    'search.countOne': '{total} paper task',
+    'search.countFiltered': 'Showing {visible} of {total} paper tasks',
+    'search.countFilteredOne': 'Showing {visible} of {total} paper task',
     'input.bypass': 'Per-ring confirm',
     'input.placeholder': 'Command: run current ring / show progress / confirm artifact',
     'toast.bypass.on': 'Switched: Per-ring confirm',
@@ -4476,6 +4492,7 @@ function switchLang(lang) {
   currentLang = lang;
   localStorage.setItem(LANG_KEY, lang);
   applyI18n();
+  if (typeof renderSessionList === 'function') renderSessionList();
   // 重新渲染设置面板（如果打开）
   if (document.getElementById('settings-overlay').classList.contains('show')) {
     renderSettings();
@@ -4827,23 +4844,28 @@ document.addEventListener('keydown', (e) => {
 let currentSession = null;
 let currentSessionTitle = '';
 let currentKnowledgeSession = '';
+let sessionCache = [];
+let sessionListRequest = 0;
+let sessionSearchTimer = null;
 
-function sessionItemHtml(s) {
+function sessionItemHtml(s, isActive = false) {
   const degree = DEGREE_LABEL[s.degree] || s.degree || '';
   const pct = s.complete_percent || 0;
   const ring = s.current_ring_no || 1;
   const doneText = pct >= 100 ? '已完成 · 100%' : `阶段 ${ring}/10 · ${pct}%`;
+  const activeClass = isActive ? ' active' : '';
+  const currentAttribute = isActive ? ' aria-current="true"' : '';
   return `
-    <div class="session-item" data-task="${s.task_id}" role="listitem">
-      <button class="session-main" aria-label="打开论文任务：${escapeHtml(s.title || '未命名')}">
+    <div class="session-item${activeClass}" data-task="${escapeHtml(s.task_id)}" role="listitem">
+      <button class="session-main" type="button" aria-label="打开论文任务：${escapeHtml(s.title || '未命名')}"${currentAttribute}>
         <div class="session-row"><span class="session-title">${escapeHtml(s.title || '未命名')}</span></div>
         <div class="session-meta">
-          <span class="session-degree">${degree}</span>
-          <span class="session-progress-text">${doneText}</span>
+          <span class="session-degree">${escapeHtml(degree)}</span>
+          <span class="session-progress-text">${escapeHtml(doneText)}</span>
         </div>
         <div class="session-progress-bar" aria-hidden="true"><div class="session-progress-fill" style="width:${pct}%${pct >= 100 ? '; background: var(--success)' : ''}"></div></div>
       </button>
-      <button class="session-delete" title="删除对话" aria-label="删除论文任务：${escapeHtml(s.title || '未命名')}">
+      <button class="session-delete" type="button" title="删除对话" aria-label="删除论文任务：${escapeHtml(s.title || '未命名')}">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
       </button>
     </div>`;
@@ -4853,52 +4875,146 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-async function loadSessions() {
-  const items = await apiListSessions();
+function resolveSessionSelection(items, selectedId) {
+  return items.find(item => item.task_id === selectedId) || items[0] || null;
+}
+
+function normalizeSessionSearch(value) {
+  return String(value || '').trim().toLocaleLowerCase();
+}
+
+function filterSessions(items, query) {
+  const normalizedQuery = normalizeSessionSearch(query);
+  if (!normalizedQuery) return items;
+  return items.filter(item => [
+    item.title,
+    item.subject_field,
+    item.degree,
+    DEGREE_LABEL[item.degree],
+    item.current_ring_no,
+  ].some(value => normalizeSessionSearch(value).includes(normalizedQuery)));
+}
+
+function formatI18n(key, values = {}) {
+  return Object.entries(values).reduce(
+    (message, [name, value]) => message.replaceAll(`{${name}}`, String(value)),
+    t(key),
+  );
+}
+
+function updateSessionSearchStatus(visibleCount, totalCount, hasQuery) {
+  const status = document.getElementById('session-search-status');
+  if (!status) return;
+  if (!totalCount) status.textContent = t('search.empty');
+  else if (hasQuery) {
+    const key = totalCount === 1 ? 'search.countFilteredOne' : 'search.countFiltered';
+    status.textContent = formatI18n(key, { visible: visibleCount, total: totalCount });
+  } else {
+    const key = totalCount === 1 ? 'search.countOne' : 'search.count';
+    status.textContent = formatI18n(key, { total: totalCount });
+  }
+}
+
+function renderSessionList() {
   const box = document.getElementById('session-items');
   if (!box) return;
-  box.innerHTML = items.map(sessionItemHtml).join('') || '<div class="no-sessions" style="padding:16px;color:var(--text-subtle);font-size:12px;">暂无会话</div>';
-  if (!items.length) {
-    currentSession = null;
-    currentSessionTitle = '';
-    currentKnowledgeSession = '';
-    renderEmptyStages();
-    updateRunBtn(null);
-    const kbHead = document.getElementById('kb-head-name');
-    if (kbHead) kbHead.textContent = '知识库';
-    const inner = document.querySelector('#chat-flow .chat-inner');
-    if (inner) {
-      inner.removeAttribute('data-history-task');
-      inner.removeAttribute('data-history-built');
-      inner.innerHTML = '<div class="msg ai"><div class="bubble"><p>欢迎！请点击「新建对话」创建论文任务。执行每个环节后，产物与确认闸门会显示在这里。</p></div></div>';
-    }
+  const query = document.getElementById('session-search')?.value || '';
+  const visibleItems = filterSessions(sessionCache, query);
+  const hasQuery = Boolean(normalizeSessionSearch(query));
+  if (visibleItems.length) {
+    box.innerHTML = visibleItems.map(item => sessionItemHtml(item, item.task_id === currentSession)).join('');
+  } else {
+    const message = sessionCache.length ? t('search.noMatches') : t('search.empty');
+    box.innerHTML = `<div class="no-sessions" role="listitem" style="padding:16px;color:var(--text-subtle);font-size:12px;">${escapeHtml(message)}</div>`;
   }
-  // 绑定点击切换 + 删除
+  updateSessionSearchStatus(visibleItems.length, sessionCache.length, hasQuery);
+
   box.querySelectorAll('.session-item').forEach(item => {
     const opener = item.querySelector('.session-main');
     opener.addEventListener('click', () => {
-      box.querySelectorAll('.session-item').forEach(s => s.classList.remove('active'));
-      item.classList.add('active');
-      currentSession = item.dataset.task;
-      currentSessionTitle = item.querySelector('.session-title')?.textContent || '';
+      const selected = sessionCache.find(session => session.task_id === item.dataset.task);
+      if (!selected) return;
+      currentSession = selected.task_id;
+      currentSessionTitle = selected.title || '';
+      renderSessionList();
       loadSessionDetail(currentSession);
     });
     const del = item.querySelector('.session-delete');
-    if (del) del.addEventListener('click', (e) => {
-      e.stopPropagation();
+    if (del) del.addEventListener('click', (event) => {
+      event.stopPropagation();
       pendingDelete = item;
       delName.textContent = item.querySelector('.session-title')?.textContent || '当前对话';
-      const dm = document.getElementById('del-modal');
-      if (dm) showAccessibleDialog(dm, document.getElementById('del-cancel'));
+      const modal = document.getElementById('del-modal');
+      if (modal) showAccessibleDialog(modal, document.getElementById('del-cancel'));
     });
   });
-  // 默认选第一个
-  if (items.length && !currentSession) {
-    box.querySelector('.session-item')?.classList.add('active');
-    currentSession = items[0].task_id;
-    currentSessionTitle = items[0].title || '';
-    loadSessionDetail(currentSession);
+}
+
+function bindSessionSearch() {
+  const input = document.getElementById('session-search');
+  if (!input || input.dataset.bound) return;
+  input.dataset.bound = '1';
+  input.addEventListener('input', () => {
+    clearTimeout(sessionSearchTimer);
+    sessionSearchTimer = setTimeout(renderSessionList, 150);
+  });
+  input.addEventListener('keydown', event => {
+    if (event.key !== 'Escape' || !input.value) return;
+    event.preventDefault();
+    clearTimeout(sessionSearchTimer);
+    input.value = '';
+    renderSessionList();
+    input.focus();
+  });
+}
+
+async function clearSessionContext() {
+  currentSession = null;
+  currentSessionTitle = '';
+  currentKnowledgeSession = '';
+  sessionDetailRequest += 1;
+  renderEmptyStages();
+  updateRunBtn(null);
+  const kbHead = document.getElementById('kb-head-name');
+  if (kbHead) kbHead.textContent = '知识库';
+  const refsPane = document.querySelector('.kb-pane[data-pane="refs"]');
+  refsPane?.querySelectorAll('.ref-item,.ref-kb-none').forEach(element => element.remove());
+  const refCount = refsPane?.querySelector('.count');
+  if (refCount) refCount.textContent = '0';
+  const refsEmpty = document.getElementById('kb-refs-empty');
+  if (refsEmpty) refsEmpty.style.display = '';
+  const notesList = document.getElementById('notes-list');
+  if (notesList) notesList.innerHTML = '<div style="padding:8px;font-size:12px;color:var(--text-subtle);">选择论文任务后查看笔记。</div>';
+  if (cyGraph) { cyGraph.destroy(); cyGraph = null; }
+  const graph = document.getElementById('kb-graph');
+  if (graph) graph.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#888;font-size:12px;">选择论文任务后查看图谱。</div>';
+  const graphCount = document.getElementById('graph-count');
+  if (graphCount) graphCount.textContent = '0 节点';
+  const inner = document.querySelector('#chat-flow .chat-inner');
+  if (inner) {
+    inner.removeAttribute('data-history-task');
+    inner.removeAttribute('data-history-built');
+    inner.innerHTML = '<div class="msg ai"><div class="bubble"><p>欢迎！请点击「新建对话」创建论文任务。执行每个环节后，产物与确认闸门会显示在这里。</p></div></div>';
   }
+  await loadActiveWorkbenchPane();
+}
+
+async function loadSessions() {
+  const requestId = ++sessionListRequest;
+  const items = await apiListSessions();
+  if (requestId !== sessionListRequest) return;
+  sessionCache = Array.isArray(items) ? items : [];
+  const previousSession = currentSession;
+  const selected = resolveSessionSelection(sessionCache, previousSession);
+  if (!items.length) {
+    renderSessionList();
+    await clearSessionContext();
+    return;
+  }
+  currentSession = selected.task_id;
+  currentSessionTitle = selected.title || '';
+  renderSessionList();
+  if (previousSession !== currentSession) await loadSessionDetail(currentSession);
 }
 
 let sessionDetailRequest = 0;
@@ -6433,6 +6549,7 @@ async function kbUpload(files) {
 
 async function initApp() {
   restoreJobBudget();
+  bindSessionSearch();
   await loadSessions();
   // 新建对话按钮（.new-chat-btn 或 sidebar 新建）
   const newBtn = document.querySelector('.new-chat-btn') || document.querySelector('.sidebar-top button.btn-primary, #new-chat');

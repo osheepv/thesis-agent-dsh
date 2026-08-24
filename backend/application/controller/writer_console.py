@@ -34,14 +34,16 @@ def get_orchestration(request: Request) -> MainOrchestration:
 # 创建论文任务（闭环入口）
 # ---------------------------------------------------------------------
 @router.post("/tasks", response_model=None)
-async def create_task(req: Dict[str, Any],
+async def create_task(request: Request, req: Dict[str, Any],
                       orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
     title = req.get("title", "")
     degree = req.get("degree", "MASTER")
     subject_field = req.get("subject_field", "")
     template_id = req.get("template_id")
     session_id = req.get("session_id", "")
-    tenant_id = req.get("tenant_id", "default")
+    principal = getattr(request.state, "principal", None)
+    tenant_id = principal.tenant_id if principal is not None else req.get("tenant_id", "default")
+    owner_user_id = principal.user_id if principal is not None else ""
     scope = req.get("scope", "all")
     try:
         degree = Degree(degree)
@@ -50,7 +52,7 @@ async def create_task(req: Dict[str, Any],
     return orchestration.create_task(
         title=title, degree=degree, subject_field=subject_field,
         template_id=template_id, session_id=session_id, tenant_id=tenant_id,
-        scope=scope,
+        scope=scope, owner_user_id=owner_user_id,
     )
 
 
@@ -66,11 +68,15 @@ async def delete_task(task_id: str, session_id: str = "",
 
 
 @router.get("/tasks", response_model=None)
-async def list_tasks(session_id: str = "",
+async def list_tasks(request: Request, session_id: str = "",
                      orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
     """会话列表（含当前进度）；可按 session 过滤。"""
     try:
-        return orchestration.list_tasks(session_id=session_id)
+        principal = getattr(request.state, "principal", None)
+        return orchestration.list_tasks(
+            session_id=session_id,
+            tenant_id=principal.tenant_id if principal is not None else "",
+        )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 

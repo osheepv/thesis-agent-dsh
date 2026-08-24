@@ -51,6 +51,9 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         'computeLineDiff',
         'AbortController',
         'showAccessibleDialog',
+        'id="login-form"',
+        '/api/v1/auth/login',
+        '/api/v1/auth/audit',
     ):
         assert fragment in html
 

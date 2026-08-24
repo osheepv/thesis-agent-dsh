@@ -39,6 +39,9 @@ from .service.uc_main_orchestration import MainOrchestration
 from .tasks import router as tasks_router
 from thesis_docx.service import DocxService
 from jobs import JobWorker
+from security import SecuritySettings, SecurityStore
+from security.middleware import SecurityMiddleware
+from security.router import router as security_router
 
 logger = logging.getLogger("thesis.application")
 
@@ -73,7 +76,10 @@ def _default_orchestration() -> MainOrchestration:
     return orchestration
 
 
-def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
+def build_app(
+    orchestration: Optional[MainOrchestration] = None,
+    security_store: Optional[SecurityStore] = None,
+) -> FastAPI:
     """构建 FastAPI 应用（主编排闭环）。
 
     Args:
@@ -82,6 +88,17 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
         FastAPI app。
     """
     orchestration = orchestration or _default_orchestration()
+    security_settings = (
+        security_store.settings if security_store is not None else SecuritySettings.from_env()
+    )
+    if security_settings.enabled and len(security_settings.bootstrap_token) < 32:
+        raise RuntimeError(
+            "THESIS_AUTH_ENABLED=true 时必须配置至少32字符的 THESIS_AUTH_BOOTSTRAP_TOKEN"
+        )
+    security_store = security_store or SecurityStore(
+        security_settings.db_path if security_settings.enabled else ":memory:",
+        settings=security_settings,
+    )
     job_worker = JobWorker(
         orchestration._jobs,  # noqa: SLF001 - 应用生命周期托管同一持久化注册表
         orchestration.job_handlers(),
@@ -110,7 +127,15 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
     from fastapi.middleware.cors import CORSMiddleware
 
     origins_env = os.getenv("THESIS_CORS_ORIGINS", "*").strip()
+    if security_settings.enabled and origins_env == "*":
+        raise RuntimeError("认证模式禁止 THESIS_CORS_ORIGINS=*")
     allow_origins = "*" if origins_env == "*" else [o.strip() for o in origins_env.split(",") if o.strip()]
+    app.add_middleware(
+        SecurityMiddleware,
+        store=security_store,
+        orchestration=orchestration,
+    )
+    # Starlette 后添加的中间件位于外层；CORS 必须包住 401/403 安全响应。
     app.add_middleware(
         CORSMiddleware,
         allow_origins=allow_origins,  # 本地开发放开；生产按域名收紧
@@ -121,6 +146,7 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
 
     # 主编排聚合路由（/api/v1/console）
     app.include_router(writer_console_router)
+    app.include_router(security_router)
 
     # 业务模块原生路由（M1 FSM / M5+M6 docx / M9 知识库）：
     # 一期曾因 Result[T] 泛型与 pydantic 2 的兼容问题未挂载；pydantic 2.11.4 下
@@ -146,6 +172,7 @@ def build_app(orchestration: Optional[MainOrchestration] = None) -> FastAPI:
 
     # 应用级编排单例
     app.state.orchestration = orchestration
+    app.state.security_store = security_store
     # docx 业务路由（/api/v1/docx/files 等）与 console 链路共享同一服务/仓储
     app.state.docx_service = getattr(orchestration, "_docx_service", None) or DocxService()
     orchestration._docx_service = app.state.docx_service  # noqa: SLF001 - console 模板链路共享持久化服务

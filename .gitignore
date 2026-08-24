@@ -32,6 +32,8 @@ backend/evidence.db
 backend/research.db
 backend/sections.db
 backend/jobs.db
+backend/security.db
+security.db
 
 # 本项目专属：vendored 依赖副本（由 requirements.txt 管理，不进仓库）
 backend/thesis_docx/.vendor/

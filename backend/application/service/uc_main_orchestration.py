@@ -215,7 +215,8 @@ class TaskRecord:
                  template_path: str = "",
                  template_name: str = "",
                  template_placeholders: Optional[List[str]] = None,
-                 template_mapping: Optional[Dict[str, str]] = None) -> None:
+                 template_mapping: Optional[Dict[str, str]] = None,
+                 owner_user_id: str = "") -> None:
         self.task_id = task_id
         self.title = title
         self.degree = degree
@@ -225,6 +226,7 @@ class TaskRecord:
         self.template_name = template_name
         self.template_placeholders = list(template_placeholders or [])
         self.template_mapping = dict(template_mapping or {})
+        self.owner_user_id = owner_user_id
         self.session_id = session_id
         self.tenant_id = tenant_id
         self.scope = scope
@@ -259,6 +261,7 @@ class TaskRecord:
             "template_name": self.template_name,
             "template_placeholders": list(self.template_placeholders),
             "template_mapping": dict(self.template_mapping),
+            "owner_user_id": self.owner_user_id,
             "session_id": self.session_id,
             "tenant_id": self.tenant_id,
             "scope": getattr(self, "scope", "all"),
@@ -295,6 +298,7 @@ class TaskRecord:
             template_name=str(data.get("template_name", "")),
             template_placeholders=list(data.get("template_placeholders", []) or []),
             template_mapping=dict(data.get("template_mapping", {}) or {}),
+            owner_user_id=str(data.get("owner_user_id", "")),
         )
         for f in cls.RING_FIELDS:
             setattr(rec, f, _load(data.get(f)))
@@ -554,11 +558,15 @@ class MainOrchestration:
     # ------------------------------------------------------------------
     # 步骤 1：创建论文任务（UC-01）
     # ------------------------------------------------------------------
-    def list_tasks(self, session_id: str = "") -> Result[List[Dict[str, Any]]]:
+    def list_tasks(
+        self, session_id: str = "", tenant_id: str = ""
+    ) -> Result[List[Dict[str, Any]]]:
         """会话列表（含当前进度/学位/当前环），供前端左侧栏渲染。"""
         recs = self._store.all()
         if session_id:
             recs = [r for r in recs if r.session_id == session_id]
+        if tenant_id:
+            recs = [r for r in recs if r.tenant_id == tenant_id]
         items = []
         for rec in recs:
             try:
@@ -712,7 +720,8 @@ class MainOrchestration:
 
     def create_task(self, title: str, degree: Degree, subject_field: str,
                     template_id: Optional[str] = None, session_id: str = "",
-                    tenant_id: str = "default", scope: str = "") -> Result[Dict[str, Any]]:
+                    tenant_id: str = "default", scope: str = "",
+                    owner_user_id: str = "") -> Result[Dict[str, Any]]:
         """创建论文任务并初始化 FSM（默认停在环1）。
 
         Args:
@@ -742,6 +751,7 @@ class MainOrchestration:
                 task_id=state.task_id, title=title, degree=degree.value,
                 subject_field=subject_field, session_id=canonical_session_id,
                 tenant_id=tenant_id, template_id=template_id, scope=scope,
+                owner_user_id=owner_user_id,
             )
             self._store.put(rec)
             data = {
@@ -1778,6 +1788,19 @@ class MainOrchestration:
                 ErrorCode.FORBIDDEN, msg="任务不属于当前会话，禁止访问",
                 detail={"task_id": task_id, "session_id": session_id},
             )
+
+    def assert_tenant_access(self, task_id: str, tenant_id: str) -> None:
+        rec = self._require(task_id)
+        if not tenant_id or rec.tenant_id != tenant_id:
+            raise PermissionError("任务不属于当前租户")
+
+    def assert_session_tenant(self, session_id: str, tenant_id: str) -> None:
+        rec = next(
+            (item for item in self._store.all() if item.session_id == session_id),
+            None,
+        )
+        if rec is None or not tenant_id or rec.tenant_id != tenant_id:
+            raise PermissionError("知识库会话不属于当前租户")
 
     # ------------------------------------------------------------------
     # 内部辅助

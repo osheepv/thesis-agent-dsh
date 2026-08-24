@@ -3008,6 +3008,11 @@ a:hover { text-decoration: underline; }
           <p id="job-budget-hint" class="wb-card-meta">0 表示该维度不限制；费用预算需要后端配置当前模型单价。</p>
           <div id="jobs-live" class="wb-live" role="status" aria-live="polite"></div>
           <div id="job-list"><div class="wb-empty">暂无后台作业。</div></div>
+          <details class="wb-card" style="margin-top:10px;">
+            <summary class="wb-card-title">安全审计</summary>
+            <div class="wb-card-actions"><button class="btn btn-secondary btn-sm" id="audit-refresh">加载审计日志</button></div>
+            <div id="security-audit-list"><div class="wb-card-meta">仅租户所有者可查看。</div></div>
+          </details>
         </div>
 
         <!-- 笔记 -->
@@ -3347,6 +3352,19 @@ a:hover { text-decoration: underline; }
     <div class="modal-actions">
       <button class="btn btn-primary" id="inference-close" data-i18n="modal.ok">好的</button>
     </div>
+  </div>
+</div>
+
+<!-- ============ 登录 Modal（认证模式收到 401 时显示） ============ -->
+<div class="modal-mask" id="login-modal">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="login-title">
+    <div class="modal-title" id="login-title">登录论文工作台</div>
+    <form id="login-form" class="wb-form" novalidate>
+      <div class="wb-field"><label for="login-username">用户名</label><input id="login-username" autocomplete="username" maxlength="128" required></div>
+      <div class="wb-field"><label for="login-password">密码</label><input id="login-password" type="password" autocomplete="current-password" maxlength="1024" required></div>
+      <div id="login-error" class="wb-card-meta" style="color:var(--error)" role="alert"></div>
+      <button class="btn btn-primary" id="login-submit" type="submit">登录</button>
+    </form>
   </div>
 </div>
 
@@ -3780,7 +3798,13 @@ function activateWorkbenchTab(target) {
     pane.hidden = !active;
   });
   const sid = currentKnowledgeSession || currentSession || 'default';
-  if (target === 'refs') loadKbPanel(sid);
+  if (target === 'refs') {
+    if (currentSession) loadKbPanel(sid);
+    else {
+      const empty = document.getElementById('kb-refs-empty');
+      if (empty) empty.style.display = '';
+    }
+  }
   if (target === 'notes') loadNotes(sid);
   if (target === 'graph') renderGraph(sid);
   if (target === 'evidence') loadEvidencePanel();
@@ -4504,7 +4528,7 @@ footMenu.querySelectorAll('.menu-item').forEach(item => {
     else if (action === 'inference') { openInferenceModal(); closeFootMenu(); }
     else if (action === 'changelog') { toast(t('toast.changelog')); closeFootMenu(); }
     else if (action === 'about') { toast(t('toast.menu.placeholder')); closeFootMenu(); }
-    else if (action === 'logout') { toast(t('toast.menu.placeholder')); closeFootMenu(); }
+    else if (action === 'logout') { logoutCurrentUser(); closeFootMenu(); }
   });
 });
 
@@ -4732,6 +4756,48 @@ document.getElementById('inference-close').addEventListener('click', closeInfere
 inferenceModal.addEventListener('click', (e) => {
   if (e.target === inferenceModal) closeInferenceModal();
 });
+
+function showLoginModal() {
+  const modal = document.getElementById('login-modal');
+  if (!modal || modal.classList.contains('show')) return;
+  showAccessibleDialog(modal, document.getElementById('login-username'));
+}
+
+async function submitLogin(event) {
+  event.preventDefault();
+  const username = document.getElementById('login-username').value.trim();
+  const passwordInput = document.getElementById('login-password');
+  const error = document.getElementById('login-error');
+  const submit = document.getElementById('login-submit');
+  if (!username || !passwordInput.value) {
+    error.textContent = '请输入用户名和密码。';
+    return;
+  }
+  submit.disabled = true;
+  error.textContent = '';
+  const response = await apiLogin(username, passwordInput.value);
+  passwordInput.value = '';
+  submit.disabled = false;
+  if (response.code !== 0) {
+    error.textContent = response.msg || '登录失败。';
+    passwordInput.focus();
+    return;
+  }
+  hideAccessibleDialog(document.getElementById('login-modal'));
+  const name = document.querySelector('.menu-head-name');
+  if (name) name.textContent = response.data?.username || username;
+  toast('登录成功');
+  currentSession = null;
+  await loadSessions();
+}
+
+async function logoutCurrentUser() {
+  const response = await apiLogout();
+  if (response.code !== 0) { toast(response.msg || '退出失败'); return; }
+  currentSession = null;
+  await loadSessions();
+  showLoginModal();
+}
 
 /* ============================================================
    全局快捷键 & 启动初始化
@@ -5060,11 +5126,13 @@ async function apiRequest(path, options = {}, timeoutMs = 30000) {
     const resp = await fetch(API_BASE + path, {
       ...options,
       signal: controller.signal,
+      credentials: 'include',
       headers: { 'Accept': 'application/json', ...(options.headers || {}) },
     });
     let body;
     try { body = await resp.json(); }
     catch (_) { body = { code: resp.status || -1, msg: '服务返回了无法解析的响应', data: null }; }
+    if (resp.status === 401 && !path.startsWith('/api/v1/auth/login')) showLoginModal();
     if (!resp.ok && (!body || body.code === 0)) {
       return { code: resp.status, msg: `请求失败（HTTP ${resp.status}）`, data: body?.data || null };
     }
@@ -5221,6 +5289,15 @@ async function apiUploadResearchFile(sessionId, file, kind) {
   form.append('title', file.name.replace(/\.[^.]+$/, ''));
   form.append('kind', kind);
   return apiRequest(`/api/v1/kb/${encodeURIComponent(sessionId)}/files`, { method: 'POST', body: form }, 120000);
+}
+async function apiLogin(username, password) {
+  return apiPost('/api/v1/auth/login', { username, password });
+}
+async function apiLogout() {
+  return apiPost('/api/v1/auth/logout');
+}
+async function apiSecurityAudit() {
+  return apiGet('/api/v1/auth/audit', { limit: 200 });
 }
 
 // ---- 知识库 ----
@@ -5405,6 +5482,24 @@ async function handleJobAction(event) {
     : await apiRetryJob(currentSession, jobId);
   toast(response.code === 0 ? response.msg : `${action === 'cancel' ? '取消' : '重试'}失败：${response.msg}`);
   await loadJobsPanel(false);
+}
+
+async function loadSecurityAudit() {
+  const box = document.getElementById('security-audit-list');
+  if (!box) return;
+  box.setAttribute('aria-busy', 'true');
+  const response = await apiSecurityAudit();
+  box.removeAttribute('aria-busy');
+  if (response.code !== 0) {
+    box.innerHTML = `<div class="wb-error">${escapeHtml2(response.msg || '审计日志不可用')}</div>`;
+    return;
+  }
+  const items = response.data || [];
+  box.innerHTML = items.length ? items.slice(0, 100).map(item => `<article class="wb-card">
+    <div class="wb-card-title">${escapeHtml2(item.action)}</div>
+    <div class="wb-card-meta">${escapeHtml2(item.method || '')} ${escapeHtml2(item.path || item.resource_id || '')} · HTTP ${item.status_code || 0}</div>
+    <div class="wb-card-meta">${escapeHtml2(item.created_at)} · ${escapeHtml2(item.request_id || '')}</div>
+  </article>`).join('') : '<div class="wb-empty">暂无审计记录。</div>';
 }
 
 async function loadEvidencePanel() {
@@ -6389,6 +6484,7 @@ async function initApp() {
     ['research-refresh', loadResearchPanel],
     ['sections-refresh', loadSectionsPanel],
     ['jobs-refresh', loadJobsPanel],
+    ['audit-refresh', loadSecurityAudit],
   ];
   refreshBindings.forEach(([id, handler]) => {
     const button = document.getElementById(id);
@@ -6413,6 +6509,11 @@ async function initApp() {
     addClaim.addEventListener('click', () => addArgumentClaimRow());
   }
   if (!document.querySelector('[data-claim-row]')) addArgumentClaimRow();
+  const loginForm = document.getElementById('login-form');
+  if (loginForm && !loginForm.dataset.bound) {
+    loginForm.dataset.bound = '1';
+    loginForm.addEventListener('submit', submitLogin);
+  }
   const researchFileInput = document.getElementById('research-file-input');
   if (researchFileInput && !researchFileInput.dataset.bound) {
     researchFileInput.dataset.bound = '1';

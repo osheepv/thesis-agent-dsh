@@ -269,3 +269,19 @@ Content-Type: application/json
 
 只有配置当前模型的每百万输入/输出 Token 单价后，API 才接受 `cost_budget`；
 `token_budget=0` 或 `cost_budget=0` 表示该维度不限制。
+
+## 13. 认证与审计 API
+
+生产设置 `THESIS_AUTH_ENABLED=true`、非通配 `THESIS_CORS_ORIGINS`、至少32字符的
+`THESIS_AUTH_BOOTSTRAP_TOKEN`，并在 HTTPS 环境保持 `THESIS_AUTH_COOKIE_SECURE=true`。
+
+| 动作 | 方法与路径 |
+|---|---|
+| 首次初始化租户所有者 | `POST /api/v1/auth/bootstrap`（`X-Bootstrap-Token`） |
+| 登录/退出 | `POST /api/v1/auth/login`、`POST /api/v1/auth/logout` |
+| 当前主体 | `GET /api/v1/auth/me` |
+| 创建租户成员（OWNER） | `POST /api/v1/auth/users` |
+| 查看审计日志（OWNER） | `GET /api/v1/auth/audit` |
+
+浏览器会话使用 HttpOnly Cookie；API 客户端也可把同一不透明令牌放在
+`Authorization: Bearer <token>`。认证失败使用统一消息，禁止从响应判断账户是否存在。

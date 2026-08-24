@@ -30,12 +30,13 @@
 - 前端支持十环进度、人工确认闸门、后台作业与预算、证据/论证审计、分节生成/修订/审批，以及刷新后的状态恢复。
 - 研究工作台可视化创建并审批研究协议/论证图，上传实验材料、原始数据、代码和日志，推进实验状态、登记/核验结果及批准结果账本。
 - 分节工作台可选择任意两个版本进行双栏行级差异比较；学校 DOCX 模板会持久化并支持中英文占位符映射，未映射字段会阻断生成。
+- 可选生产认证层提供 HttpOnly 不透明会话、scrypt 密码哈希、登录锁定、owner/editor/reviewer/viewer 授权、任务/知识库租户隔离和不可变操作审计。
 - `demo_run.py` 提供最小严格流程冒烟；`demo_full_10.py` 按真实闸门协议运行，任一环失败即停止。
 
 当前关键缺口：
 
 - 结构化表格/图片编辑器、复杂公式管线和学校模板样式差异诊断仍待完成。
-- UI 仍是单文件原型；桌面打包、独立 Worker 运维和生产级权限尚未完成。
+- UI 仍是单文件原型；桌面打包、独立 Worker 运维、MFA/SSO 和密钥托管尚未完成。
 - 需要补充系统化模型评测、提示词回归和真实长论文压力测试。
 
 ## 模块映射（对齐系统设计 M1~M9 落地状态）
@@ -51,6 +52,7 @@
 | M8 | Guardrail | `backend/common/`、`backend/evidence/`、`backend/research/` | ✅ 来源/摘录/论断、结果血缘、环8强制审计和 DOCX 域验证 |
 | M9 | 知识库 | `backend/knowledge/` | ✅ 已实现（文件池/笔记双链/图谱 API + RAG 检索） |
 | 执行治理 | JobRun/预算 | `backend/jobs/` | ✅ 持久化队列、租约恢复、取消重试、Token/费用登记 |
+| 安全治理 | 认证/授权/审计 | `backend/security/` | ✅ 可选 fail-closed 认证、租户隔离、角色授权、会话撤销和操作审计 |
 | 公共 | 公共模块 | `backend/common/` | ✅ 已实现（LLM 客户端 / 文献服务 / 引用格式化 / 提示词仓库） |
 
 ## 环境准备
@@ -86,7 +88,7 @@ python -m http.server 8787
 
 ## 运行测试
 
-当前回归基线：**184 项 pytest 全部通过**。
+当前回归基线：**188 项 pytest 全部通过**。
 
 ```bash
 # 项目根执行（conftest 自动注入路径）
@@ -120,7 +122,8 @@ Cytoscape.js 3.30.2（知识图谱）· pytest 8.3.5
 `THESIS_TASK_STORE_MEMORY`（测试用）/ `THESIS_ARTIFACT_DB` / `THESIS_EVIDENCE_DB` /
 `THESIS_RESEARCH_DB` / `THESIS_SECTION_DB` / `THESIS_JOB_DB` /
 `THESIS_JOB_WORKER_ENABLED` / `THESIS_LLM_INPUT_COST_PER_MILLION` /
-`THESIS_LLM_OUTPUT_COST_PER_MILLION` / `THESIS_KB_MAX_FILE_MB`。
+`THESIS_LLM_OUTPUT_COST_PER_MILLION` / `THESIS_KB_MAX_FILE_MB` /
+`THESIS_AUTH_ENABLED` / `THESIS_AUTH_BOOTSTRAP_TOKEN` / `THESIS_SECURITY_DB`。
 
 ## API 示例
 

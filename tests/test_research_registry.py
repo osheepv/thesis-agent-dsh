@@ -16,6 +16,7 @@ from research import (
     ResearchExecutionRegistry,
     ResearchRegistryError,
 )
+from writing.generator import SectionGeneration
 
 
 def test_experiment_registry_enforces_state_and_file_lineage():
@@ -71,11 +72,38 @@ class _ResearchFlowExecutor:
     def execute(self, ctx) -> ExecResult:
         if self.ring_no == 7:
             draft = json.loads(ctx.draft)
+            total_words = sum(len(item.get("content", "")) for item in draft.get("chapters", []))
             return ExecResult(
                 output=json.dumps(
-                    {"chapters": draft.get("chapters", []), "total_words": 20},
+                    {"chapters": draft.get("chapters", []), "total_words": total_words},
                     ensure_ascii=False,
                 ),
+                accept=True,
+                evidence={"source": "test-double"},
+            )
+        if self.ring_no == 6:
+            result_markers = []
+            result_ids = []
+            for result in list(getattr(ctx, "results", []) or []):
+                result_id = result["result_id"]
+                target = result.get("table_or_figure_id") or result_id
+                result_ids.append(result_id)
+                result_markers.append(
+                    f"[[BOOKMARK:{target}|结果表]] {result['metric']}={result['value']} [{result_id}]"
+                )
+            content = "准确率实验分析 [L1]。" + " ".join(result_markers) + ("可信实验正文" * 5000)
+            return ExecResult(
+                output=json.dumps({
+                    "chapters": [{
+                        "chapter_no": 1,
+                        "chapter_title": "实验结果",
+                        "content": content,
+                        "word_count": len(content),
+                    }],
+                    "total_words": len(content),
+                    "used_refs": ["[L1]"],
+                    "used_result_ids": result_ids,
+                }, ensure_ascii=False),
                 accept=True,
                 evidence={"source": "test-double"},
             )
@@ -98,23 +126,33 @@ class _ResearchFlowExecutor:
                 "chapters": [{"level": 1, "number": "1", "title": "绪论"}],
                 "summary": "大纲",
             },
-            6: {
-                "chapters": [
-                    {
-                        "chapter_no": 1,
-                        "chapter_title": "实验结果",
-                        "content": "准确率为 90%。",
-                        "word_count": 8,
-                    }
-                ],
-                "total_words": 8,
-                "used_refs": [],
-            },
         }
         return ExecResult(
             output=json.dumps(payloads[self.ring_no], ensure_ascii=False),
             accept=True,
             evidence={"source": "test-double"},
+        )
+
+
+class _ResearchSectionGenerator:
+    def generate(self, context) -> SectionGeneration:
+        results = context.get("results", [])
+        parts = []
+        for result in results:
+            result_id = result["result_id"]
+            target = result.get("table_or_figure_id") or result_id
+            parts.append(
+                f"[[BOOKMARK:{target}|结果表]] {result['metric']}={result['value']} [{result_id}]"
+            )
+        target_words = int(context.get("target_word_count", 300))
+        content = " ".join(parts) + " [L1] " + ("可信实验分节正文" * ((target_words // 8) + 2))
+        return SectionGeneration(
+            title=context.get("title", ""),
+            content=content,
+            covered_claim_ids=[],
+            used_evidence_ids=[],
+            used_result_ids=[result["result_id"] for result in results],
+            generation_source="test-double",
         )
 
 
@@ -138,6 +176,7 @@ def _orchestration(monkeypatch) -> MainOrchestration:
         evidence_ledger=EvidenceLedger(),
         research_registry=ResearchExecutionRegistry(),
         knowledge_store=_KnowledgeStore(),
+        section_generator=_ResearchSectionGenerator(),
     )
 
 

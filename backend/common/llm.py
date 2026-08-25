@@ -113,6 +113,7 @@ class LLMClient:
         model_cls: type[BaseModel],
         temperature: float = 0.6,
         retry: Optional[int] = None,
+        max_output_tokens: int = 4096,
     ) -> BaseModel:
         """调用 DeepSeek 并返回 Pydantic 模型实例。
 
@@ -134,7 +135,12 @@ class LLMClient:
         last_err: Optional[Exception] = None
         for attempt in range(retry_n + 1):
             try:
-                text = self._chat(system=system, prompt=prompt, temperature=temperature)
+                text = self._chat(
+                    system=system,
+                    prompt=prompt,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                )
                 return self._parse_json(text, model_cls)
             except Exception as exc:  # cooperative cancellation/budget must not be retried
                 from jobs.registry import JobBudgetExceededError, JobCancelledError
@@ -157,14 +163,20 @@ class LLMClient:
     # ------------------------------------------------------------------
     # 内部：HTTP 调用 + JSON 解析
     # ------------------------------------------------------------------
-    def _chat(self, system: str, prompt: str, temperature: float) -> str:
+    def _chat(
+        self,
+        system: str,
+        prompt: str,
+        temperature: float,
+        max_output_tokens: int = 4096,
+    ) -> str:
         """单次 chat 调用（带网络层重试）。"""
         from jobs.runtime import get_current_job_runtime
         from jobs.registry import JobBudgetExceededError, JobCancelledError
 
         runtime = get_current_job_runtime()
         estimated_input_tokens = max(1, (len(system) + len(prompt) + 3) // 4)
-        max_output_tokens = 4096
+        max_output_tokens = max(256, int(max_output_tokens))
         if runtime is not None:
             runtime.before_llm(estimated_input_tokens, max_output_tokens)
         if self._client is None:
@@ -191,8 +203,6 @@ class LLMClient:
                     max_tokens=max_output_tokens,
                 )
                 content = resp.choices[0].message.content
-                if not content:
-                    raise LLMError("LLM 返回空内容")
                 if runtime is not None:
                     usage = getattr(resp, "usage", None)
                     input_tokens = int(
@@ -203,6 +213,8 @@ class LLMClient:
                         or max(1, (len(content) + 3) // 4)
                     )
                     runtime.record_llm_usage(input_tokens, output_tokens)
+                if not content:
+                    raise LLMError("LLM 返回空内容")
                 return content
             except (JobBudgetExceededError, JobCancelledError):
                 raise

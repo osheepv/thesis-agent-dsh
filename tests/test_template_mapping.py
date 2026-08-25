@@ -33,14 +33,16 @@ class _Executor:
         self.ring_no = ring_no
 
     def execute(self, ctx) -> ExecResult:
+        draft_content = "正文 " + ("学校模板可信内容" * 3750) + " [L1]"
+        polished_content = "润色正文 " + ("学校模板可信内容" * 3750) + " [L1]"
         payloads = {
             1: {"candidates": [{"title": "学校模板映射研究"}], "recommendation": "推荐"},
             2: {"novelty_level": "HIGH", "similar_count": 0, "recommendation": "通过"},
             3: {"items": [{"title": "真实文献", "doi": "10.1000/template"}], "summary": "1条"},
             4: {"verdict": "顺", "overlap_count": 0, "recommendation": "通过"},
             5: {"theme": "学校模板映射研究", "chapters": [{"level": 1, "number": "1", "title": "绪论"}]},
-            6: {"chapters": [{"chapter_no": 1, "chapter_title": "绪论", "content": "正文 [L1]", "word_count": 7}], "total_words": 7, "used_refs": ["[L1]"]},
-            7: {"chapters": [{"chapter_no": 1, "chapter_title": "绪论", "content": "润色正文 [L1]", "word_count": 9}], "total_words": 9},
+            6: {"chapters": [{"chapter_no": 1, "chapter_title": "绪论", "content": draft_content, "word_count": len(draft_content)}], "total_words": len(draft_content), "used_refs": ["[L1]"]},
+            7: {"chapters": [{"chapter_no": 1, "chapter_title": "绪论", "content": polished_content, "word_count": len(polished_content)}], "total_words": len(polished_content)},
             8: {"total": 1, "passed": 1, "uncertain": 0, "failed": 0, "summary": "通过"},
         }
         return ExecResult(
@@ -109,7 +111,9 @@ def test_uploaded_school_template_is_used_for_final_render(tmp_path, monkeypatch
     text = "\n".join(paragraph.text for paragraph in output.paragraphs)
     assert "学校题目：学校模板映射研究" in text
     assert "学校正文：" in text
-    assert "润色正文 [L1]" in text
+    assert "润色正文" in text and "[1]" in text
+    assert "参考文献" in text and "[L1]" not in text
+    assert "None" not in text
     assert "{{ 学校题目 }}" not in text
 
 

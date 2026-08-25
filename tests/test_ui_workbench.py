@@ -11,6 +11,7 @@ import pytest
 
 
 UI_PATH = Path(__file__).resolve().parents[1] / "ui" / "index.html"
+CYTOSCAPE_PATH = UI_PATH.parent / "vendor" / "cytoscape.min.js"
 
 
 class _IdParser(HTMLParser):
@@ -29,6 +30,11 @@ def test_ui_has_no_duplicate_static_ids():
     parser.feed(UI_PATH.read_text(encoding="utf-8"))
     duplicates = sorted({value for value in parser.ids if parser.ids.count(value) > 1})
     assert duplicates == []
+
+
+def test_cytoscape_is_vendored_locally():
+    assert CYTOSCAPE_PATH.is_file()
+    assert CYTOSCAPE_PATH.stat().st_size > 300_000
 
 
 def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
@@ -61,6 +67,13 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         'bindSessionSearch',
         'resolveSessionSelection',
         'filterSessions',
+        'apiSelectCandidate',
+        'apiCurateLiterature',
+        'apiReopenStage',
+        'const form = event.currentTarget',
+        'Math.min(pollDelay * 1.6, 5000)',
+        'data-action="generate-all-sections"',
+        './vendor/cytoscape.min.js',
     ):
         assert fragment in html
 

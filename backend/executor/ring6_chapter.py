@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -58,6 +59,7 @@ class ChapterWriteResult(BaseModel):
     chapters: list[ChapterDraft] = Field(default_factory=list, description="章节草稿列表")
     total_words: int = Field(default=0, description="总字数估算")
     used_refs: list[str] = Field(default_factory=list, description="实际引用的文献池编号 [L1] 等")
+    used_result_ids: list[str] = Field(default_factory=list, description="实际引用的已核验结果 ID")
 
 
 class LLMChapterWriteOut(BaseModel):
@@ -178,23 +180,10 @@ class Ring6ChapterExecutor(RingExecutor):
         )
 
     def _llm_generate(self, ctx: ExecContext, theme: str) -> ChapterWriteResult:
-        """调用 DeepSeek 生成章节草稿（LLM 分支）。"""
-        degree_gen = {
-            Degree.BACHELOR: "本科：每章 2~3 段（约 0.8k 字/章）",
-            Degree.MASTER: "硕士：每章 3~4 段（约 1.5k 字/章）",
-            Degree.PHD: "博士：每章 5~6 段（约 2.5k 字/章）",
-        }[ctx.degree]
-        # 从 outline（JSON 或文本）提取章节标题，供 LLM 逐章生成
-        chapter_titles: list[str] = []
-        try:
-            outline_data = json.loads(ctx.outline) if ctx.outline else {}
-            for node in outline_data.get("chapters", []):
-                if node.get("level") == 1:
-                    chapter_titles.append(node.get("title", ""))
-        except Exception:  # noqa: BLE001 - 容错，outline 可能为纯文本
-            pass
-        titles_hint = "；".join(f"{i + 1}.{t}" for i, t in enumerate(chapter_titles)) if chapter_titles else (
-            f"参照{ctx.degree.label}论文常规结构"
+        """逐章调用 DeepSeek，避免整篇输出被单次 Token 上限截断。"""
+        chapter_meta = _extract_chapters(ctx.outline)
+        target_per_chapter = math.ceil(
+            ctx.degree.min_word_requirement / max(len(chapter_meta), 1)
         )
         # 文献池注入（仅可引用池内条目，防止 AI 编造引文）
         pool_block = lit_pool_block(
@@ -210,29 +199,51 @@ class Ring6ChapterExecutor(RingExecutor):
             kb_block = ""
         if kb_block:
             pool_block = pool_block + "\n" + kb_block
-        tpl = prompt_repo.render("ring6_chapter", {
-            "theme": theme,
-            "subject_field": ctx.subject_field,
-            "degree_label": ctx.degree.label,
-            "degree_gen": degree_gen,
-            "titles_hint": titles_hint,
-            "pool_block": pool_block,
-        })
-        raw = get_llm_client().generate_json(
-            system=tpl["system"],
-            prompt=tpl["prompt"],
-            model_cls=LLMChapterWriteOut,
-        )
-        # 从正文提取实际引用的文献池编号 [L1] 等（用于审计/后续引文生成）
+        verified_results = list(getattr(ctx, "results", []) or [])
+        result_block = _verified_result_block(verified_results)
+        chapters: list[ChapterDraft] = []
+        for chapter_no, (number, title) in enumerate(chapter_meta, start=1):
+            degree_gen = (
+                f"全文最低 {ctx.degree.min_word_requirement} 字；当前仅写第{chapter_no}章，"
+                f"该章不少于 {target_per_chapter} 字，不得用提纲或占位句代替正文"
+            )
+            tpl = prompt_repo.render("ring6_chapter", {
+                "theme": theme,
+                "subject_field": ctx.subject_field,
+                "degree_label": ctx.degree.label,
+                "degree_gen": degree_gen,
+                "titles_hint": f"{number} {title}",
+                "pool_block": pool_block,
+                "result_block": result_block,
+            })
+            raw = get_llm_client().generate_json(
+                system=tpl["system"],
+                prompt=tpl["prompt"],
+                model_cls=LLMChapterWriteOut,
+                temperature=0.35,
+                max_output_tokens=8192,
+            )
+            if not raw.chapters:
+                raise StructuredOutputError(f"第{chapter_no}章返回空章节")
+            selected = raw.chapters[0]
+            selected.chapter_no = chapter_no
+            selected.chapter_title = selected.chapter_title or f"{number} {title}"
+            selected.word_count = _count_words(selected.content)
+            chapters.append(selected)
+
+        _append_verified_results(chapters, verified_results)
         used_refs: list[str] = []
-        for ch in raw.chapters:
+        used_result_ids: list[str] = []
+        for ch in chapters:
             used_refs.extend(re.findall(r"\[L\d+\]", ch.content))
+            used_result_ids.extend(re.findall(r"\[(RES-[A-Z0-9]+)\]", ch.content))
         return ChapterWriteResult(
-            theme=raw.theme or theme,
+            theme=theme,
             degree=ctx.degree,
-            chapters=raw.chapters,
-            total_words=raw.total_words or sum(c.word_count for c in raw.chapters),
-            used_refs=used_refs,
+            chapters=chapters,
+            total_words=sum(_count_words(ch.content) for ch in chapters),
+            used_refs=list(dict.fromkeys(used_refs)),
+            used_result_ids=list(dict.fromkeys(used_result_ids)),
         )
 
     def _fallback_mock(self, ctx: ExecContext, theme: str) -> ExecResult:
@@ -258,9 +269,9 @@ class Ring6ChapterExecutor(RingExecutor):
         )
         return ExecResult(
             output=chapter_result.model_dump_json(indent=2),
-            accept=True,
-            fallbackTo=None,
-            issues=[],
+            accept=False,
+            fallbackTo=6,
+            issues=["真实模型不可用，降级模板稿禁止进入作者审批"],
             evidence={
                 "degree": ctx.degree.value,
                 "chapter_count": len(drafts),
@@ -269,3 +280,52 @@ class Ring6ChapterExecutor(RingExecutor):
                 "source": "mock",
             },
         )
+
+
+def _verified_result_block(results: list[dict]) -> str:
+    if not results:
+        return "【已核验实验结果】无。不得编造任何实验数字。"
+    lines = ["【已核验实验结果】仅可使用以下结果；正文保留 [RES-*] 标记并定义 BOOKMARK："]
+    for item in results:
+        result_id = str(item.get("result_id", ""))
+        target = str(item.get("table_or_figure_id", "")) or result_id
+        lines.append(
+            f"- {result_id}: {item.get('metric')}={item.get('value')}{item.get('unit', '')}; "
+            f"目标={target}; 来源文件={item.get('source_file_id', '')}; "
+            f"复算={item.get('computation', '')}"
+        )
+    return "\n".join(lines)
+
+
+def _append_verified_results(chapters: list[ChapterDraft], results: list[dict]) -> None:
+    if not chapters or not results:
+        return
+    target_chapter = next(
+        (
+            chapter
+            for chapter in chapters
+            if any(token in chapter.chapter_title for token in ("实验", "结果", "分析", "讨论"))
+        ),
+        chapters[-1],
+    )
+    additions: list[str] = []
+    for item in results:
+        result_id = str(item.get("result_id", ""))
+        target = str(item.get("table_or_figure_id", "")) or result_id
+        display = target.replace("TABLE-", "表").replace("FIGURE-", "图")
+        if f"[{result_id}]" in target_chapter.content:
+            continue
+        additions.append(
+            f"[[BOOKMARK:{target}|{display} {item.get('metric')}结果]]\n"
+            f"根据作者批准的结果账本，{item.get('metric')}="
+            f"{item.get('value')}{item.get('unit', '')} [{result_id}]。"
+            f"该结果来源于文件 {item.get('source_file_id', '')}，"
+            f"复算方法为：{item.get('computation', '按结果账本复算')}。"
+        )
+    if additions:
+        target_chapter.content = (
+            target_chapter.content.rstrip()
+            + "\n\n## 经核验实验结果\n\n"
+            + "\n\n".join(additions)
+        )
+        target_chapter.word_count = _count_words(target_chapter.content)

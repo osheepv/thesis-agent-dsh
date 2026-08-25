@@ -416,7 +416,9 @@ class MainOrchestration:
         store: 任务暂存（默认进程内实例）。
     """
 
-    _JOB_OPERATIONS = {"ring.execute", "section.generate", "docx.generate"}
+    _JOB_OPERATIONS = {
+        "ring.execute", "section.generate", "sections.generate_all", "docx.generate"
+    }
 
     def __init__(
         self,
@@ -641,6 +643,7 @@ class MainOrchestration:
         return {
             "ring.execute": self._job_execute_ring,
             "section.generate": self._job_generate_section,
+            "sections.generate_all": self._job_generate_all_sections,
             "docx.generate": self._job_generate_docx,
         }
 
@@ -697,6 +700,12 @@ class MainOrchestration:
                     "recovered": True,
                 }
         result = self.generate_section_draft(job.task_id, dict(job.payload))
+        if not result.is_ok:
+            raise PermanentJobError(result.msg)
+        return result.model_dump()
+
+    def _job_generate_all_sections(self, job) -> Dict[str, Any]:
+        result = self.generate_all_section_drafts(job.task_id)
         if not result.is_ok:
             raise PermanentJobError(result.msg)
         return result.model_dump()
@@ -840,13 +849,57 @@ class MainOrchestration:
             )
         data = json.loads(res.output)
         candidates = data.get("candidates", [])
-        chosen_title = candidates[0]["title"] if candidates else data.get("theme", rec.title)
-        rec.ring1 = {"candidates": candidates, "chosen": chosen_title, "compliant": True}
+        if not candidates:
+            raise BizException(
+                ErrorCode.FSM_ACCEPTANCE_REJECTED,
+                msg="环1没有生成可供作者选择的候选题目",
+            )
+        single_candidate = len(candidates) == 1
+        rec.ring1 = {
+            "candidates": candidates,
+            "chosen": str(candidates[0].get("title", "")) if single_candidate else "",
+            "selected_candidate_index": 0 if single_candidate else None,
+            "selection_confirmed": single_candidate,
+            "compliant": True,
+        }
         self._store.put(rec)
         self._fsm.submit_execution(task_id, res.output, accepted=True)
-        return Result.ok(data={"candidates": candidates, "chosen": chosen_title,
+        return Result.ok(data={"candidates": candidates, "chosen": rec.ring1["chosen"],
                                "recommendation": data.get("recommendation", "")},
                          msg="环1选题完成")
+
+    def select_ring1_candidate(
+        self, task_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        """把作者选择写入任务事实，不能只停留在浏览器本地状态。"""
+        rec = self._require(task_id)
+        state = self._fsm.get_task(task_id)
+        if state.current_ring_no != 1 or state.phase_state != PhaseState.WAITING_APPROVAL:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="只能在环1产物待确认时选择候选题目",
+            )
+        candidates = list((rec.ring1 or {}).get("candidates", []) or [])
+        try:
+            index = int(value.get("candidate_index"))
+        except (TypeError, ValueError) as exc:
+            raise BizException(ErrorCode.INVALID_PARAM, msg="candidate_index 必须是整数") from exc
+        if index < 0 or index >= len(candidates):
+            raise BizException(ErrorCode.INVALID_PARAM, msg="候选题目序号超出范围")
+        chosen = str(candidates[index].get("title", "")).strip()
+        if not chosen:
+            raise BizException(ErrorCode.INVALID_PARAM, msg="候选题目标题为空")
+        expected_title = str(value.get("title", "")).strip()
+        if expected_title and expected_title != chosen:
+            raise BizException(ErrorCode.INVALID_PARAM, msg="候选序号与标题不一致")
+        rec.ring1["chosen"] = chosen
+        rec.ring1["selected_candidate_index"] = index
+        rec.ring1["selection_confirmed"] = True
+        self._store.put(rec)
+        return Result.ok(
+            data={"chosen": chosen, "candidate_index": index},
+            msg="作者选择已登记",
+        )
 
     # ------------------------------------------------------------------
     # 步骤 3.5：环2 开题评审（UC-02 延续）
@@ -942,8 +995,15 @@ class MainOrchestration:
                 msg="环3未检索到可用文献，禁止继续写作",
                 detail={"fallbackTo": 3, "issues": ["文献池为空"]},
             )
+        rec.ring3["candidate_items"] = list(rec.ring3.get("items", []) or [])
+        single_candidate = len(rec.ring3["candidate_items"]) == 1
+        rec.ring3["curated"] = single_candidate
+        rec.ring3["included_indexes"] = [0] if single_candidate else []
+        rec.ring3["excluded_items"] = []
         rec.ring3["compliant"] = True
         self._store.put(rec)
+        if single_candidate:
+            self._register_curated_literature(rec, rec.ring3["candidate_items"])
         self._fsm.submit_execution(
             task_id, json.dumps(rec.ring3, ensure_ascii=False), accepted=True
         )
@@ -951,7 +1011,106 @@ class MainOrchestration:
             "total": len(pool),
             "items": rec.ring3.get("items", []) if rec.ring3 else [],
             "summary": rec.ring3.get("summary", "") if rec.ring3 else "文献池为空",
+            "curated": single_candidate,
         }, msg="环3文献调研完成" if rec.ring3 else "环3文献检索失败/禁用，池为空")
+
+    def curate_literature(
+        self, task_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        """保存作者的纳入/排除决定，并把纳入题录登记到项目知识库。"""
+        rec = self._require(task_id)
+        state = self._fsm.get_task(task_id)
+        if state.current_ring_no != 3 or state.phase_state != PhaseState.WAITING_APPROVAL:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="只能在环3文献产物待确认时执行筛选",
+            )
+        ring3 = rec.ring3 or {}
+        candidates = list(ring3.get("candidate_items") or ring3.get("items") or [])
+        raw_indexes = value.get("included_indexes", []) or []
+        try:
+            included_indexes = list(dict.fromkeys(int(item) for item in raw_indexes))
+        except (TypeError, ValueError) as exc:
+            raise BizException(ErrorCode.INVALID_PARAM, msg="文献筛选序号必须是整数") from exc
+        if not included_indexes:
+            raise BizException(ErrorCode.INVALID_PARAM, msg="至少纳入一条文献")
+        if min(included_indexes) < 0 or max(included_indexes) >= len(candidates):
+            raise BizException(ErrorCode.INVALID_PARAM, msg="文献筛选序号超出范围")
+        included = [candidates[index] for index in included_indexes]
+        included_set = set(included_indexes)
+        excluded = [
+            {"index": index, "item": item, "reason": "作者排除"}
+            for index, item in enumerate(candidates)
+            if index not in included_set
+        ]
+        ring3["items"] = included
+        ring3["included_indexes"] = included_indexes
+        ring3["excluded_items"] = excluded
+        ring3["curated"] = True
+        ring3["summary"] = f"候选 {len(candidates)} 条，纳入 {len(included)} 条，排除 {len(excluded)} 条"
+        rec.ring3 = ring3
+        self._store.put(rec)
+        self._register_curated_literature(rec, included)
+        return Result.ok(
+            data={
+                "included_count": len(included),
+                "excluded_count": len(excluded),
+                "items": included,
+            },
+            msg="文献筛选已保存并登记到项目知识库",
+        )
+
+    def _register_curated_literature(
+        self, rec: TaskRecord, items: List[Dict[str, Any]]
+    ) -> None:
+        from knowledge.store import get_kb_store
+
+        store = self._knowledge_store or get_kb_store()
+        if not hasattr(store, "save_document"):
+            return
+        existing_keys = {
+            str(document.get("metadata", {}).get("ring3_item_key", ""))
+            for document in store.list_documents(rec.session_id)
+        }
+        for index, item in enumerate(items, start=1):
+            key = self._literature_item_key(item)
+            if key in existing_keys:
+                continue
+            title = str(item.get("title", "") or item.get("ref_title", "")).strip()
+            doi = str(item.get("doi", "")).strip()
+            authors = item.get("authors", []) or []
+            if isinstance(authors, str):
+                authors = [authors]
+            ris_lines = ["TY  - JOUR", f"TI  - {title}"]
+            ris_lines.extend(f"AU  - {author}" for author in authors if str(author).strip())
+            if item.get("year"):
+                ris_lines.append(f"PY  - {item.get('year')}")
+            if doi:
+                ris_lines.append(f"DO  - {doi}")
+            ris_lines.extend(["ER  - ", ""])
+            store.save_document(
+                rec.session_id,
+                f"ring3_{index:03d}.ris",
+                "\n".join(ris_lines).encode("utf-8"),
+                metadata={
+                    "kind": "literature",
+                    "source": "ring3",
+                    "ring3_item_key": key,
+                    "title": title,
+                    "authors": list(authors),
+                    "year": item.get("year"),
+                    "doi": doi,
+                    "reliability": item.get("reliability", ""),
+                    "gbt7714": item.get("gbt7714", ""),
+                },
+            )
+            existing_keys.add(key)
+
+    @staticmethod
+    def _literature_item_key(item: Dict[str, Any]) -> str:
+        doi = str(item.get("doi", "")).strip().lower()
+        title = str(item.get("title", "") or item.get("ref_title", "")).strip().lower()
+        return f"doi:{doi}" if doi else f"title:{title}"
 
     # ------------------------------------------------------------------
     # 步骤 4：环5 大纲（UC-03）
@@ -1036,10 +1195,10 @@ class MainOrchestration:
             return self.assemble_section_drafts(task_id)
         rec = self._require_current_ring(task_id, 6)
         protocol = self._active_research_protocol(task_id)
+        result_ledger = self._artifacts.get_active(
+            task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
+        )
         if protocol is not None and self._method_requires_execution(protocol.payload):
-            result_ledger = self._artifacts.get_active(
-                task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
-            )
             if result_ledger is None:
                 raise BizException(
                     ErrorCode.FSM_INVALID_TRANSITION,
@@ -1047,32 +1206,73 @@ class MainOrchestration:
                     detail={"required_artifact": ArtifactKind.RESULT_LEDGER.value},
                 )
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
-        outline_text = (rec.ring5 or {}).get("outline", "")
+        outline_json = json.dumps(
+            {"chapters": (rec.ring5 or {}).get("chapters", [])},
+            ensure_ascii=False,
+        )
         pool = self._ensure_literature(rec, chosen)
+        verified_results = [
+            item
+            for item in (result_ledger.payload.get("results", []) if result_ledger else [])
+            if bool(item.get("verified_by_user"))
+        ]
         ctx = ExecContext(
             subject_field=rec.subject_field,
             degree=Degree(rec.degree),
             theme=chosen,
-            outline=outline_text,
+            outline=outline_json,
             literature=pool,
             session_id=rec.session_id,
             tenant_id=rec.tenant_id,
         )
+        ctx.results = verified_results
         res = get_executor(6).execute(ctx)
         if not res.accept:
+            self._fsm.submit_execution(task_id, res.output, accepted=False)
             raise BizException(
-                ErrorCode.FSM_ACCEPTANCE_REJECTED, msg="环6初稿未通过验收",
+                ErrorCode.FSM_ACCEPTANCE_REJECTED,
+                msg="环6初稿未通过验收：" + "；".join(res.issues or ["质量不达标"]),
                 detail={"fallbackTo": res.fallbackTo, "issues": res.issues},
             )
         draft = json.loads(res.output)
         chapters = draft.get("chapters", [])
         full_content = self._draft_to_text(chapters)
+        draft["content"] = full_content
+        draft["used_refs"] = list(dict.fromkeys(
+            list(draft.get("used_refs", []) or [])
+            + re.findall(r"\[L\d+\]", full_content)
+        ))
+        draft["used_result_ids"] = list(dict.fromkeys(
+            list(draft.get("used_result_ids", []) or [])
+            + re.findall(r"\[(RES-[A-Z0-9]+)\]", full_content)
+        ))
+        actual_words, quality_issues = self._manuscript_quality_issues(
+            rec,
+            draft,
+            source=str((res.evidence or {}).get("source", "")),
+            literature=pool,
+            verified_results=verified_results,
+        )
+        if quality_issues:
+            self._fsm.submit_execution(
+                task_id,
+                json.dumps({"quality_issues": quality_issues}, ensure_ascii=False),
+                accepted=False,
+            )
+            raise BizException(
+                ErrorCode.FSM_ACCEPTANCE_REJECTED,
+                msg="环6稿件质量验收失败：" + "；".join(quality_issues),
+                detail={"fallbackTo": 6, "issues": quality_issues},
+            )
         rec.ring6 = {"chapters": chapters, "content": full_content,
-                     "total_words": draft.get("total_words", 0),
-                     "used_refs": draft.get("used_refs", []), "compliant": True}
+                     "total_words": actual_words,
+                     "used_refs": draft.get("used_refs", []),
+                     "used_result_ids": draft.get("used_result_ids", []),
+                     "generation_source": str((res.evidence or {}).get("source", "")),
+                     "compliant": True}
         self._store.put(rec)
         self._fsm.submit_execution(task_id, res.output, accepted=True)
-        return Result.ok(data={"chapters": chapters, "total_words": draft.get("total_words", 0),
+        return Result.ok(data={"chapters": chapters, "total_words": actual_words,
                                "content_preview": full_content[:200]}, msg="环6撰写完成")
 
     # ------------------------------------------------------------------
@@ -1093,22 +1293,76 @@ class MainOrchestration:
             session_id=rec.session_id,
             tenant_id=rec.tenant_id,
         )
+        checkpoint = rec.ring7 if isinstance(rec.ring7, dict) and rec.ring7.get("checkpoint") else {}
+        ctx.polished_checkpoint = list(checkpoint.get("chapters", []) or [])
+        ctx.polish_notes_checkpoint = list(checkpoint.get("notes", []) or [])
+
+        def _save_polish_checkpoint(chapters: List[Dict[str, Any]], notes: List[str]) -> None:
+            latest = self._require(task_id)
+            latest.ring7 = {
+                "checkpoint": True,
+                "chapters": chapters,
+                "notes": notes,
+                "completed_chapter_count": len(chapters),
+            }
+            self._store.put(latest)
+
+        ctx.checkpoint_callback = _save_polish_checkpoint
         res = get_executor(7).execute(ctx)
         if not res.accept:
+            self._fsm.submit_execution(task_id, res.output, accepted=False)
             raise BizException(
-                ErrorCode.FSM_ACCEPTANCE_REJECTED, msg="环7润色未通过验收",
+                ErrorCode.FSM_ACCEPTANCE_REJECTED,
+                msg="环7润色未通过验收：" + "；".join(res.issues or ["质量不达标"]),
                 detail={"fallbackTo": res.fallbackTo, "issues": res.issues},
             )
         data = json.loads(res.output)
         polished = data.get("chapters", [])
         full_content = self._draft_to_text(polished)
+        quality_payload = {
+            **data,
+            "chapters": polished,
+            "content": full_content,
+            "used_refs": list((rec.ring6 or {}).get("used_refs", []) or []),
+            "used_result_ids": list((rec.ring6 or {}).get("used_result_ids", []) or []),
+        }
+        result_ledger = self._artifacts.get_active(
+            task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
+        )
+        verified_results = [
+            item
+            for item in (result_ledger.payload.get("results", []) if result_ledger else [])
+            if bool(item.get("verified_by_user"))
+        ]
+        actual_words, quality_issues = self._manuscript_quality_issues(
+            rec,
+            quality_payload,
+            source=str((res.evidence or {}).get("source", "")),
+            literature=self._ensure_literature(rec, chosen),
+            verified_results=verified_results,
+        )
+        if quality_issues:
+            self._fsm.submit_execution(
+                task_id,
+                json.dumps({"quality_issues": quality_issues}, ensure_ascii=False),
+                accepted=False,
+            )
+            raise BizException(
+                ErrorCode.FSM_ACCEPTANCE_REJECTED,
+                msg="环7润色质量验收失败：" + "；".join(quality_issues),
+                detail={"fallbackTo": 6, "issues": quality_issues},
+            )
         rec.ring7 = {"chapters": polished, "content": full_content,
-                     "total_words": data.get("total_words", 0), "compliant": True}
+                     "total_words": actual_words,
+                     "used_refs": quality_payload["used_refs"],
+                     "used_result_ids": quality_payload["used_result_ids"],
+                     "generation_source": str((res.evidence or {}).get("source", "")),
+                     "compliant": True}
         self._store.put(rec)
         self._fsm.submit_execution(task_id, res.output, accepted=True)
         return Result.ok(data={
             "chapters": polished,
-            "total_words": data.get("total_words", 0),
+            "total_words": actual_words,
             "applied_terms": data.get("applied_terms", []),
             "issues_found": data.get("issues_found", []),
         }, msg="环7润色完成（只改表达不改事实）")
@@ -1197,12 +1451,19 @@ class MainOrchestration:
         ):
             return self._run_ledger_citation_audit(task_id, rec)
         refs = []
-        for ref in used_refs:
+        for ref in dict.fromkeys(str(item) for item in used_refs):
             m = re.match(r"\[L(\d+)\]", ref)
             if m and int(m.group(1)) in pool_by_idx:
                 it = pool_by_idx[int(m.group(1))]
-                refs.append({"title": it.get("title", "") or it.get("ref_title", ""),
-                             "doi": it.get("doi", "")})
+                refs.append({
+                    "marker": ref,
+                    "title": it.get("title", "") or it.get("ref_title", ""),
+                    "authors": it.get("authors", []),
+                    "year": it.get("year"),
+                    "venue": it.get("venue", ""),
+                    "item_type": it.get("item_type", "article"),
+                    "doi": it.get("doi", ""),
+                })
         ctx = ExecContext(
             subject_field=rec.subject_field,
             degree=Degree(rec.degree),
@@ -1214,6 +1475,35 @@ class MainOrchestration:
         res = get_executor(8).execute(ctx)
         data = json.loads(res.output)
         data["compliant"] = bool(res.accept)
+        if res.accept:
+            checked_items = list(data.get("items", []) or [])
+            reference_entries: list[dict[str, Any]] = []
+            citation_map: dict[str, int] = {}
+            for number, ref in enumerate(refs, start=1):
+                checked = checked_items[number - 1] if number <= len(checked_items) else {}
+                gbt = str(checked.get("gbt7714", "")) or format_gbt7714(ref)
+                reference_entries.append({
+                    "number": number,
+                    "marker": ref["marker"],
+                    "title": ref["title"],
+                    "doi": ref["doi"],
+                    "gbt7714": gbt,
+                })
+                citation_map[ref["marker"]] = number
+            rendered_content = str((rec.ring7 or ring6).get("content", ""))
+            for marker, number in citation_map.items():
+                rendered_content = rendered_content.replace(marker, f"[{number}]")
+            if reference_entries:
+                references_text = "\n".join(
+                    f"[{item['number']}] {item['gbt7714']}"
+                    for item in reference_entries
+                )
+                rendered_content = (
+                    f"{rendered_content.rstrip()}\n\n# 参考文献\n\n{references_text}"
+                )
+            data["reference_entries"] = reference_entries
+            data["citation_map"] = citation_map
+            data["rendered_content"] = rendered_content
         rec.ring8 = data
         self._store.put(rec)
         self._fsm.submit_execution(task_id, res.output, accepted=res.accept)
@@ -1222,6 +1512,8 @@ class MainOrchestration:
             "passed": data.get("passed", 0),
             "uncertain": data.get("uncertain", 0),
             "failed": data.get("failed", 0),
+            "reference_entries": data.get("reference_entries", []),
+            "citation_map": data.get("citation_map", {}),
             "fallbackTo": res.fallbackTo,
         }
         if not res.accept:
@@ -1559,6 +1851,24 @@ class MainOrchestration:
                 "artifact_projection_pending": bool(projection_issues),
                 "artifact_projection_issues": projection_issues,
             })
+            decision_ready = True
+            decision_blocker = ""
+            if data.get("phase_state") == PhaseState.WAITING_APPROVAL.value:
+                if data.get("current_ring_no") == 1:
+                    decision_ready = bool((rec.ring1 or {}).get("selection_confirmed"))
+                    decision_blocker = "请先选择候选题目" if not decision_ready else ""
+                elif data.get("current_ring_no") == 3:
+                    decision_ready = bool((rec.ring3 or {}).get("curated"))
+                    decision_blocker = "请先完成文献筛选" if not decision_ready else ""
+            data["author_decision_ready"] = decision_ready
+            data["author_decision_blocker"] = decision_blocker
+            if (
+                data.get("phase_state") == PhaseState.WAITING_APPROVAL.value
+                and data.get("current_ring_no") in {1, 3}
+            ):
+                data["author_decision_payload"] = getattr(
+                    rec, f"ring{data['current_ring_no']}"
+                ) or {}
             return Result.ok(data=data, msg="进度查询成功")
         except BizException:
             raise
@@ -1661,6 +1971,19 @@ class MainOrchestration:
                 ErrorCode.FSM_INVALID_TRANSITION,
                 msg="当前环没有待确认产物，请先执行该环节",
             )
+        rec = self._require(task_id)
+        if confirmed and ring_no == 1 and not bool(
+            (rec.ring1 or {}).get("selection_confirmed")
+        ):
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="请先选择候选题目，再确认环1",
+            )
+        if confirmed and ring_no == 3 and not bool((rec.ring3 or {}).get("curated")):
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="请先完成文献筛选并保存纳入/排除决定，再确认环3",
+            )
         if confirmed and ring_no == 5:
             protocols = [
                 artifact
@@ -1684,7 +2007,6 @@ class MainOrchestration:
                     msg="论证图尚未获作者批准，不能确认环5",
                     detail={"required_artifact": ArtifactKind.ARGUMENT_MAP.value},
                 )
-        rec = self._require(task_id)
         payload = getattr(rec, f"ring{ring_no}", None) or {}
         contract = get_stage_contract(ring_no)
         event_id = f"EVT-{uuid.uuid4().hex[:20].upper()}"
@@ -1841,6 +2163,44 @@ class MainOrchestration:
                 if projection_issues
                 else "产物列表"
             ),
+        )
+
+    def reopen_stage(
+        self, task_id: str, target_ring_no: int, *, reason: str = ""
+    ) -> Result[Dict[str, Any]]:
+        """从失败 Gate 安全回到契约允许的上游环节，并清除待重建运行产物。"""
+        rec = self._require(task_id)
+        state = self._fsm.get_task(task_id)
+        allowed = get_stage_contract(state.current_ring_no).reentry_targets
+        failed_job = any(
+            job.status.value == "FAILED"
+            and job.operation == "ring.execute"
+            and int(job.payload.get("ring_no", 0) or 0) == state.current_ring_no
+            for job in self._jobs.list_task(task_id, limit=100)
+        )
+        if state.phase_state != PhaseState.FALLBACK and not failed_job:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg="只有失败回退状态或当前环失败作业可以重新打开上游环节",
+            )
+        if target_ring_no not in allowed:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg=f"环{state.current_ring_no}只允许回到: {list(allowed)}",
+            )
+        restored = self._fsm.rollback(task_id, target_ring_no)
+        for ring_no in range(target_ring_no, 11):
+            setattr(rec, f"ring{ring_no}", None)
+        if target_ring_no <= 9:
+            rec.docx = None
+        self._store.put(rec)
+        return Result.ok(
+            data={
+                "current_ring_no": restored.current_ring_no,
+                "phase_state": restored.phase_state.value,
+                "reason": reason,
+            },
+            msg=f"已回到环{target_ring_no}，请修订后重新执行",
         )
 
     # ------------------------------------------------------------------
@@ -2056,6 +2416,11 @@ class MainOrchestration:
             "evidence": list(evidence_details.values()),
             "results": [allowed_results[result_id] for result_id in requested_result_ids],
             "instruction": str(value.get("instruction", "")),
+            "target_word_count": max(
+                300,
+                (Degree(rec.degree).min_word_requirement + max(len(catalog), 1) - 1)
+                // max(len(catalog), 1),
+            ),
         }
         generated = self._section_generator.generate(context)
         expected_claim_ids = {str(claim["claim_id"]) for claim in claim_rows}
@@ -2064,6 +2429,13 @@ class MainOrchestration:
         used_evidence_ids = set(generated.used_evidence_ids)
         used_result_ids = set(generated.used_result_ids)
         gate_issues: list[str] = []
+        actual_words = len(re.sub(r"[\s#*`-]+", "", generated.content))
+        if generated.generation_source == "mock":
+            gate_issues.append("真实模型不可用，降级分节禁止进入作者审批")
+        if actual_words < context["target_word_count"]:
+            gate_issues.append(
+                f"实际字数 {actual_words} 低于本节目标 {context['target_word_count']}"
+            )
         if not expected_claim_ids.issubset(covered_claim_ids):
             gate_issues.append(
                 f"未覆盖论断: {sorted(expected_claim_ids - covered_claim_ids)}"
@@ -2127,6 +2499,9 @@ class MainOrchestration:
                 "claim_count": len(expected_claim_ids),
                 "evidence_count": len(used_evidence_ids),
                 "result_count": len(used_result_ids),
+                "actual_words": actual_words,
+                "target_word_count": context["target_word_count"],
+                "generation_source": generated.generation_source,
             },
         )
         if gate_issues:
@@ -2136,6 +2511,94 @@ class MainOrchestration:
                 data=draft.to_dict(),
             )
         return Result.ok(data=draft.to_dict(), msg="分节草稿已生成，等待作者审批")
+
+    def generate_all_section_drafts(self, task_id: str) -> Result[Dict[str, Any]]:
+        """按大纲批量生成全部缺失分节，结果相关章节自动注入已批准结果。"""
+        self._require_current_ring(task_id, 6)
+        catalog = self._outline_section_catalog(task_id)
+        existing = self._sections.list_task(task_id)
+        ready_sections = {
+            draft.section_id
+            for draft in existing
+            if draft.status in {
+                SectionDraftStatus.WAITING_APPROVAL,
+                SectionDraftStatus.APPROVED,
+            }
+        }
+        result_ledger = self._artifacts.get_active(
+            task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
+        )
+        verified_result_ids = [
+            str(item.get("result_id", ""))
+            for item in (result_ledger.payload.get("results", []) if result_ledger else [])
+            if bool(item.get("verified_by_user")) and str(item.get("result_id", ""))
+        ]
+        generated: list[str] = []
+        failures: list[dict[str, str]] = []
+        for section_id, title in catalog.items():
+            if section_id in ready_sections:
+                continue
+            use_results = any(
+                token in f"{section_id} {title}"
+                for token in ("实验", "结果", "分析", "讨论", "4.", "5.")
+            )
+            result = self.generate_section_draft(
+                task_id,
+                {
+                    "section_id": section_id,
+                    "title": title,
+                    "result_ids": verified_result_ids if use_results else [],
+                    "instruction": "按批准大纲完成本节，达到目标字数并保留证据/结果标记",
+                },
+            )
+            if result.is_ok:
+                generated.append(section_id)
+            else:
+                failures.append({"section_id": section_id, "message": result.msg})
+        if failures:
+            return Result.fail(
+                code=101200,
+                msg=f"批量分节生成有 {len(failures)} 节未通过自动验收",
+                data={"generated_section_ids": generated, "failures": failures},
+            )
+        return Result.ok(
+            data={
+                "generated_section_ids": generated,
+                "skipped_section_ids": sorted(ready_sections),
+                "total": len(catalog),
+            },
+            msg=f"已生成 {len(generated)} 个分节，等待作者审批",
+        )
+
+    def review_all_section_drafts(
+        self, task_id: str, *, approved: bool, actor: str = "author"
+    ) -> Result[Dict[str, Any]]:
+        """批量审批当前全部 WAITING_APPROVAL 分节，减少机械重复点击。"""
+        self._require_current_ring(task_id, 6)
+        drafts = [
+            draft
+            for draft in self._sections.list_task(task_id)
+            if draft.status == SectionDraftStatus.WAITING_APPROVAL
+        ]
+        decided = [
+            self._sections.decide(
+                task_id,
+                draft.section_draft_id,
+                approved=approved,
+                actor=actor,
+                reason="批量批准" if approved else "批量驳回",
+            )
+            for draft in drafts
+        ]
+        audit = self.audit_section_drafts(task_id).data
+        return Result.ok(
+            data={
+                "decided_count": len(decided),
+                "approved": approved,
+                "audit": audit,
+            },
+            msg=f"已批量{'批准' if approved else '驳回'} {len(decided)} 个分节",
+        )
 
     def review_section_draft(
         self, task_id: str, section_draft_id: str, *, approved: bool,
@@ -2286,10 +2749,35 @@ class MainOrchestration:
         result_ids = sorted(
             {result_id for draft in drafts if draft for result_id in draft.result_ids}
         )
+        result_ledger = self._artifacts.get_active(
+            task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
+        )
+        verified_results = [
+            item
+            for item in (result_ledger.payload.get("results", []) if result_ledger else [])
+            if bool(item.get("verified_by_user"))
+        ]
+        quality_payload = {
+            "chapters": chapters,
+            "content": full_content,
+            "used_refs": evidence_ids,
+            "used_result_ids": result_ids,
+        }
+        actual_words, quality_issues = self._manuscript_quality_issues(
+            rec,
+            quality_payload,
+            source="approved-sections",
+            literature=self._ensure_literature(
+                rec, (rec.ring1 or {}).get("chosen", rec.title)
+            ),
+            verified_results=verified_results,
+        )
+        if quality_issues:
+            raise SectionDraftRegistryError("；".join(quality_issues))
         rec.ring6 = {
             "chapters": chapters,
             "content": full_content,
-            "total_words": sum(item["word_count"] for item in chapters),
+            "total_words": actual_words,
             "used_refs": evidence_ids,
             "used_result_ids": result_ids,
             "section_draft_ids": [draft.section_draft_id for draft in drafts if draft],
@@ -2961,6 +3449,92 @@ class MainOrchestration:
             return data.get("items", [])
         except Exception:  # noqa: BLE001 - 检索失败不阻塞大纲/撰写流程
             return []
+
+    def _manuscript_quality_issues(
+        self,
+        rec: TaskRecord,
+        draft: Dict[str, Any],
+        *,
+        source: str,
+        literature: List[Dict[str, Any]],
+        verified_results: List[Dict[str, Any]],
+    ) -> tuple[int, List[str]]:
+        """学位论文写作硬 Gate：真实字数、章节、引用、结果和降级状态。"""
+        chapters = [item for item in (draft.get("chapters", []) or []) if isinstance(item, dict)]
+        content = str(draft.get("content", "")) or self._draft_to_text(chapters)
+        actual_words = len(re.sub(r"[\s#*`-]+", "", content))
+        issues: list[str] = []
+        degree = Degree(rec.degree)
+        if source in {"mock", "none", "fingerprint_reject", "fallback"}:
+            issues.append(f"生成来源为降级模式 {source or 'unknown'}")
+        if actual_words < degree.min_word_requirement:
+            issues.append(
+                f"实际字数 {actual_words} 低于{degree.label}最低要求 "
+                f"{degree.min_word_requirement}"
+            )
+        expected_chapters = [
+            item
+            for item in ((rec.ring5 or {}).get("chapters", []) or [])
+            if isinstance(item, dict) and int(item.get("level", 1) or 1) == 1
+        ]
+        if expected_chapters and len(chapters) < len(expected_chapters):
+            issues.append(
+                f"正文仅覆盖 {len(chapters)}/{len(expected_chapters)} 个一级章节"
+            )
+        placeholder_hits = sum(
+            content.count(fragment)
+            for fragment in (
+                "本节梳理第",
+                "明确本章要解决的核心问题",
+                "为后续章节奠定基础",
+            )
+        )
+        if placeholder_hits > 2:
+            issues.append(f"检测到 {placeholder_hits} 处重复占位模板句")
+
+        used_refs = {
+            str(item) for item in (draft.get("used_refs", []) or []) if str(item)
+        }
+        used_refs.update(re.findall(r"\[L\d+\]", content))
+        if literature:
+            baseline = {Degree.BACHELOR: 3, Degree.MASTER: 5, Degree.PHD: 10}[degree]
+            required = min(len(literature), baseline)
+            if len(used_refs) < required:
+                issues.append(f"正文仅使用 {len(used_refs)} 条文献，最低需要 {required} 条")
+            invalid_pool_refs = sorted(
+                ref
+                for ref in used_refs
+                if (match := re.fullmatch(r"\[L(\d+)\]", ref))
+                and int(match.group(1)) > len(literature)
+            )
+            if invalid_pool_refs:
+                issues.append(f"正文引用了文献池外编号: {invalid_pool_refs}")
+        missing_ref_markers = sorted(ref for ref in used_refs if ref not in content)
+        if missing_ref_markers:
+            issues.append(f"正文缺少已登记引用标记: {missing_ref_markers}")
+
+        expected_result_ids = {
+            str(item.get("result_id", ""))
+            for item in verified_results
+            if str(item.get("result_id", ""))
+        }
+        used_result_ids = {
+            str(item) for item in (draft.get("used_result_ids", []) or []) if str(item)
+        }
+        used_result_ids.update(re.findall(r"\[(RES-[A-Z0-9]+)\]", content))
+        missing_results = sorted(expected_result_ids - used_result_ids)
+        if missing_results:
+            issues.append(f"正文未使用全部已批准结果: {missing_results}")
+        for item in verified_results:
+            result_id = str(item.get("result_id", ""))
+            if result_id not in used_result_ids:
+                continue
+            target = normalize_target_id(
+                str(item.get("table_or_figure_id", "")) or result_id
+            )
+            if f"[[BOOKMARK:{target}|" not in content:
+                issues.append(f"结果 {result_id} 缺少交叉引用目标 BOOKMARK:{target}")
+        return actual_words, issues
 
     @staticmethod
     def _outline_to_text(chapters: List[Dict[str, Any]]) -> str:

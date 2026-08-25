@@ -115,8 +115,44 @@ class TestRing7Polish:
         assert data["chapters"][0]["content"] == "## 1 引言\n该方法非常有效，准确率达 95%，详见 [L1]。\n## 小结\n综上。"
         assert res.evidence["source"] == "fingerprint_reject"
 
-    def test_no_draft_ok(self):
+    def test_no_draft_is_rejected(self):
         ctx = ExecContext(subject_field="CV", degree=Degree.MASTER, theme="T")
         res = get_executor(7).execute(ctx)
-        assert res.accept is True
+        assert res.accept is False
+        assert res.fallbackTo == 6
         assert "未提供草稿" in json.loads(res.output)["issues_found"][0]
+
+    def test_polish_resumes_from_chapter_checkpoint(self, monkeypatch):
+        from backend.executor import ring7
+
+        class CountingLLM(_FakeLLM):
+            def __init__(self):
+                super().__init__(drop_facts=False)
+                self.calls = 0
+
+            def generate_json(self, *args, **kwargs):
+                self.calls += 1
+                return super().generate_json(*args, **kwargs)
+
+        llm = CountingLLM()
+        monkeypatch.setattr(ring7, "get_llm_client", lambda: llm)
+        monkeypatch.setattr(ring7, "get_llm_settings", lambda: _FakeSettings())
+        original = "## 1 引言\n该方法非常有效，准确率达 95%，详见 [L1]。\n## 小结\n综上。"
+        draft = json.dumps({"chapters": [
+            {"chapter_no": 1, "chapter_title": "第1章 绪论", "content": original},
+            {"chapter_no": 2, "chapter_title": "第2章 方法", "content": original},
+        ]}, ensure_ascii=False)
+        ctx = ExecContext(subject_field="CV", degree=Degree.MASTER, theme="T", draft=draft)
+        ctx.polished_checkpoint = [{
+            "chapter_no": 1,
+            "chapter_title": "第1章 绪论",
+            "content": original,
+            "word_count": 60,
+        }]
+        saved = []
+        ctx.checkpoint_callback = lambda chapters, notes: saved.append(len(chapters))
+        result = get_executor(7).execute(ctx)
+        assert result.accept is True
+        assert llm.calls == 1
+        assert len(json.loads(result.output)["chapters"]) == 2
+        assert saved == [2]

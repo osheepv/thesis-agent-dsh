@@ -217,6 +217,42 @@ def test_llm_client_records_provider_usage_in_current_job():
         client.generate_json(system="Return JSON", prompt="JSON answer", model_cls=Output)
 
 
+def test_llm_client_records_usage_for_billed_empty_responses():
+    class Output(BaseModel):
+        answer: str
+
+    registry = JobRegistry()
+    job = registry.create(
+        task_id="empty", session_id="session", operation="ring.execute",
+        token_budget=10_000,
+    )
+    registry.claim_next("worker")
+    runtime = JobRuntime(
+        registry=registry,
+        job_id=job.job_id,
+        worker_id="worker",
+        pricing=Pricing(),
+    )
+    client = LLMClient(LLMSettings(enabled=True, api_key="test-key", retry_max=0))
+    client._client = SimpleNamespace(  # noqa: SLF001
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                create=lambda **kwargs: SimpleNamespace(
+                    choices=[SimpleNamespace(message=SimpleNamespace(content=""))],
+                    usage=SimpleNamespace(prompt_tokens=12, completion_tokens=1),
+                )
+            )
+        )
+    )
+
+    with job_runtime_context(runtime), pytest.raises(Exception, match="空内容"):
+        client.generate_json(system="Return JSON", prompt="JSON answer", model_cls=Output)
+
+    usage = registry.get_by_id(job.job_id)
+    assert usage.input_tokens == 24
+    assert usage.output_tokens == 2
+
+
 class _Ring1Executor:
     def execute(self, ctx) -> ExecResult:
         return ExecResult(

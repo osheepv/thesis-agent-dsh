@@ -13,6 +13,7 @@ from evidence import EvidenceLedger
 from executor.base import ExecResult
 from research import ResearchExecutionRegistry
 from writing import SectionDraftRegistry, SectionDraftStatus
+from writing.generator import SectionGeneration
 
 
 class _Executor:
@@ -52,6 +53,27 @@ class _Executor:
         )
 
 
+class _SectionGenerator:
+    def generate(self, context) -> SectionGeneration:
+        evidence_ids = [
+            evidence_id
+            for claim in context.get("claims", [])
+            for evidence_id in claim.get("supporting_evidence_ids", [])
+        ]
+        claim_text = " ".join(claim.get("text", "") for claim in context.get("claims", []))
+        markers = " ".join(f"[{evidence_id}]" for evidence_id in evidence_ids)
+        target = int(context.get("target_word_count", 300))
+        content = f"{claim_text} {markers} " + ("可信分节正文" * ((target // 6) + 2))
+        return SectionGeneration(
+            title=context.get("title", ""),
+            content=content,
+            covered_claim_ids=[claim.get("claim_id", "") for claim in context.get("claims", [])],
+            used_evidence_ids=evidence_ids,
+            used_result_ids=[],
+            generation_source="test-double",
+        )
+
+
 def _orchestration(monkeypatch) -> MainOrchestration:
     monkeypatch.setattr(
         "application.service.uc_main_orchestration.get_executor",
@@ -62,6 +84,7 @@ def _orchestration(monkeypatch) -> MainOrchestration:
         evidence_ledger=EvidenceLedger(),
         research_registry=ResearchExecutionRegistry(),
         section_registry=SectionDraftRegistry(),
+        section_generator=_SectionGenerator(),
     )
 
 

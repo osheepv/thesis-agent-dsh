@@ -10,7 +10,7 @@
        润色前后对原文提取『事实指纹』——[L序号] 引用集 + 数字 token + 句首主体词；
        指纹丢失率超阈值 → 判定润色改动了事实，拒绝（fallback 原稿）。
     3. 术语统一：预置术语表（规范用词 → 规范值），LLM 输出后再做确定性替换兜底。
-    4. 失败/离线：回退原稿（accept=True），不阻塞闭环。
+    4. 失败/离线：保留原稿供恢复，但 accept=False，禁止伪装成润色通过。
 
 注意：环7 自动执行（非 HITL），M7 万方查重为环10 定稿的检查项，此处不做查重。
 """
@@ -162,8 +162,8 @@ class Ring7PolishExecutor(RingExecutor):
                     theme=getattr(ctx, "theme", ""),
                     issues_found=["未提供草稿（draft 为空），跳过润色"],
                 ).model_dump_json(indent=2),
-                accept=True,
-                fallbackTo=None,
+                accept=False,
+                fallbackTo=6,
                 issues=["未提供草稿，无内容可润色"],
                 evidence={"polished": 0, "source": "none"},
             )
@@ -238,28 +238,49 @@ class Ring7PolishExecutor(RingExecutor):
         return self._fallback_original(src_chapters, issue="LLM 不可用，保留原稿", source="mock")
 
     def _llm_polish(self, ctx: ExecContext, src_chapters: List[Dict[str, Any]]) -> LLMPolishOut:
-        """LLM 润色分支。"""
-        chapters_text = "\n\n".join(
-            f"### {ch.get('chapter_title', ch.get('chapter_no', ''))}\n{ch.get('content', '')}"
-            for ch in src_chapters
-        )
+        """逐章润色，避免整篇长文超过单次上下文或输出上限。"""
         term_hint = "；".join(f"{b}→{g}" for b, g in _TERMS)
-        tpl = prompt_repo.render("ring7_polish", {
-            "theme": getattr(ctx, "theme", ""),
-            "degree_label": ctx.degree.label,
-            "term_hint": term_hint,
-            "chapters_text": chapters_text,
-        })
-        raw = get_llm_client().generate_json(
-            system=tpl["system"],
-            prompt=tpl["prompt"],
-            model_cls=LLMPolishOut,
-        )
-        return raw
+        checkpoint = list(getattr(ctx, "polished_checkpoint", []) or [])
+        chapters = [PolishedChapter.model_validate(item) for item in checkpoint]
+        if len(chapters) > len(src_chapters):
+            chapters = []
+        notes: list[str] = list(getattr(ctx, "polish_notes_checkpoint", []) or [])
+        checkpoint_callback = getattr(ctx, "checkpoint_callback", None)
+        for index, chapter in enumerate(src_chapters[len(chapters):], start=len(chapters) + 1):
+            chapters_text = (
+                f"### {chapter.get('chapter_title', chapter.get('chapter_no', ''))}\n"
+                f"{chapter.get('content', '')}"
+            )
+            tpl = prompt_repo.render("ring7_polish", {
+                "theme": getattr(ctx, "theme", ""),
+                "degree_label": ctx.degree.label,
+                "term_hint": term_hint,
+                "chapters_text": chapters_text,
+            })
+            raw = get_llm_client().generate_json(
+                system=tpl["system"],
+                prompt=tpl["prompt"],
+                model_cls=LLMPolishOut,
+                temperature=0.2,
+                max_output_tokens=8192,
+            )
+            if not raw.chapters:
+                raise StructuredOutputError(f"第{index}章润色返回空章节")
+            polished = raw.chapters[0]
+            polished.chapter_no = int(chapter.get("chapter_no", index) or index)
+            polished.chapter_title = polished.chapter_title or str(chapter.get("chapter_title", ""))
+            chapters.append(polished)
+            notes.extend(raw.notes)
+            if callable(checkpoint_callback):
+                checkpoint_callback(
+                    [item.model_dump() for item in chapters],
+                    list(notes),
+                )
+        return LLMPolishOut(chapters=chapters, notes=notes)
 
     @staticmethod
     def _fallback_original(src_chapters: List[Dict[str, Any]], issue: str, source: str) -> ExecResult:
-        """回退原稿（未润色直接返回），算通过。"""
+        """保留原稿供作者恢复，但不得算作润色通过。"""
         chapters = [
             PolishedChapter(
                 chapter_no=ch.get("chapter_no", i + 1),
@@ -277,8 +298,8 @@ class Ring7PolishExecutor(RingExecutor):
         )
         return ExecResult(
             output=result.model_dump_json(indent=2),
-            accept=True,
-            fallbackTo=None,
-            issues=[],
+            accept=False,
+            fallbackTo=6,
+            issues=[issue],
             evidence={"polished": len(chapters), "source": source, "note": issue},
         )

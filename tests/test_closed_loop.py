@@ -24,14 +24,16 @@ class FakeRingExecutor:
         self.ring_no = ring_no
 
     def execute(self, ctx) -> ExecResult:
+        draft_content = "正文 " + ("可信学术内容" * 5000) + " [L1]"
+        polished_content = "润色正文 " + ("可信学术内容" * 5000) + " [L1]"
         payloads = {
             1: {"candidates": [{"title": "可信论文题目"}], "recommendation": "推荐"},
             2: {"novelty_level": "HIGH", "similar_count": 0, "recommendation": "通过"},
             3: {"items": [{"title": "真实文献", "doi": "10.1000/test"}], "summary": "1条"},
             4: {"verdict": "顺", "overlap_count": 0, "recommendation": "通过"},
             5: {"theme": "可信论文题目", "chapters": [{"level": 1, "number": "1", "title": "绪论"}], "summary": "大纲"},
-            6: {"chapters": [{"chapter_no": 1, "chapter_title": "绪论", "content": "正文 [L1]", "word_count": 8}], "total_words": 8, "used_refs": ["[L1]"]},
-            7: {"chapters": [{"chapter_no": 1, "chapter_title": "绪论", "content": "润色正文 [L1]", "word_count": 10}], "total_words": 10},
+            6: {"chapters": [{"chapter_no": 1, "chapter_title": "绪论", "content": draft_content, "word_count": len(draft_content)}], "total_words": len(draft_content), "used_refs": ["[L1]"]},
+            7: {"chapters": [{"chapter_no": 1, "chapter_title": "绪论", "content": polished_content, "word_count": len(polished_content)}], "total_words": len(polished_content)},
             8: {"total": 1, "passed": 1, "uncertain": 0, "failed": 0, "summary": "通过"},
             9: {"issues": [], "summary": "版式通过"},
             10: {"rings": [{"ring_no": i, "status": "通过"} for i in range(1, 10)], "materials_missing": [], "summary": "可交付"},

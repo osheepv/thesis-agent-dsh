@@ -2737,7 +2737,7 @@ a:hover { text-decoration: underline; }
 }
 
 </style>
-<script src="https://unpkg.com/cytoscape@3.30.2/dist/cytoscape.min.js"></script>
+<script src="./vendor/cytoscape.min.js"></script>
 </head>
 <body>
 
@@ -3000,14 +3000,14 @@ a:hover { text-decoration: underline; }
           <div class="wb-budget-grid">
             <div class="wb-field">
               <label for="job-token-budget">单次 Token 上限</label>
-              <input id="job-token-budget" type="number" min="0" step="1000" value="20000" inputmode="numeric" aria-describedby="job-budget-hint">
+              <input id="job-token-budget" type="number" min="0" step="1000" value="120000" inputmode="numeric" aria-describedby="job-budget-hint">
             </div>
             <div class="wb-field">
               <label for="job-cost-budget">单次费用上限</label>
               <input id="job-cost-budget" type="number" min="0" step="0.1" value="0" inputmode="decimal" aria-describedby="job-budget-hint">
             </div>
           </div>
-          <p id="job-budget-hint" class="wb-card-meta">0 表示该维度不限制；费用预算需要后端配置当前模型单价。</p>
+          <p id="job-budget-hint" class="wb-card-meta">长论文采用逐章/逐节调用；默认 120,000 Token。0 表示不限制；费用预算需要后端配置当前模型单价。</p>
           <div id="jobs-live" class="wb-live" role="status" aria-live="polite"></div>
           <div id="job-list"><div class="wb-empty">暂无后台作业。</div></div>
           <details class="wb-card" style="margin-top:10px;">
@@ -3960,7 +3960,15 @@ async function sendMessage() {
       appendAIMsg('<p>当前没有待确认产物。请先执行当前环节并等待自动验收。</p>', '无法确认');
       return;
     }
-    appendGateBlock(progress.current_ring_no);
+    if (progress.author_decision_ready === false) {
+      appendAIMsg(`<p>${escapeHtml2(progress.author_decision_blocker || '请先完成当前阶段的作者决策。')}</p>`, '需要作者操作');
+      return;
+    }
+    appendGateBlock(
+      progress.current_ring_no,
+      progress.author_decision_ready !== false,
+      progress.author_decision_blocker || '',
+    );
     const gateButton = inner.querySelector(`.gate-block[data-ring="${progress.current_ring_no}"] [data-gate]`);
     await confirmNextRing({ currentTarget: gateButton });
     return;
@@ -3977,7 +3985,11 @@ async function sendMessage() {
   if (/执行|运行|开始|继续/.test(command)) {
     if (progress.can_confirm) {
       appendAIMsg('<p>当前产物正在等待确认。请检查产物后输入“确认当前产物”，或点击确认按钮。</p>', '等待确认');
-      appendGateBlock(progress.current_ring_no);
+      appendGateBlock(
+        progress.current_ring_no,
+        progress.author_decision_ready !== false,
+        progress.author_decision_blocker || '',
+      );
       return;
     }
     await runCurrentRing();
@@ -4034,34 +4046,96 @@ function renderRingResult(ringNo, data) {
   if (ringNo === 1) {
     // 选题：候选题目卡（可点选）
     const cands = (data && data.candidates) || [];
+    const selectedIndex = Number.isInteger(data?.selected_candidate_index)
+      ? data.selected_candidate_index : null;
     const rec = data && data.recommendation ? `<p style="color:var(--text-subtle);font-size:13px;">${escapeHtml2(data.recommendation)}</p>` : '';
-    appendAIMsg(`<p><strong>环1 选题完成</strong>，生成以下候选题目（点击选中）：</p>` +
-      cands.map((c, i) => `<button class="cand-item" data-title="${escapeHtml2(c.title)}" style="display:block;width:100%;text-align:start;margin:6px 0;padding:8px 10px;border:1px solid var(--border-divider);border-radius:8px;cursor:pointer;transition:border-color .15s,background .15s;"><span style="display:block"><strong>${i+1}. ${escapeHtml2(c.title)}</strong></span><span style="display:block;color:var(--text-subtle);font-size:13px;">创新点：${escapeHtml2(c.innovation)}</span></button>`).join('') + rec,
+    appendAIMsg(`<p><strong>环1 选题完成</strong>，请选择一个候选题目后再确认：</p>` +
+      cands.map((c, i) => `<button class="cand-item" type="button" aria-pressed="false" data-candidate-index="${i}" data-title="${escapeHtml2(c.title)}" style="display:block;width:100%;text-align:start;margin:6px 0;padding:8px 10px;border:1px solid var(--border-divider);border-radius:8px;cursor:pointer;transition:border-color .15s,background .15s;"><span style="display:block"><strong>${i+1}. ${escapeHtml2(c.title)}</strong></span><span style="display:block;color:var(--text-subtle);font-size:13px;">创新点：${escapeHtml2(c.innovation)}</span></button>`).join('') + rec,
       `${name} · 已完成`);
     // 绑定点选
     document.querySelectorAll('.cand-item').forEach(el => {
-      el.addEventListener('click', () => {
+      el.addEventListener('click', async () => {
+        const buttons = [...document.querySelectorAll('.cand-item')];
+        buttons.forEach(button => { button.disabled = true; });
+        const response = await apiSelectCandidate(
+          currentSession,
+          Number(el.dataset.candidateIndex),
+          el.dataset.title,
+        );
+        buttons.forEach(button => { button.disabled = false; });
+        if (response.code !== 0) {
+          toast(`题目选择保存失败：${response.msg}`);
+          return;
+        }
         document.querySelectorAll('.cand-item').forEach(x => x.style.borderColor = 'var(--border-divider)');
+        document.querySelectorAll('.cand-item').forEach(x => {
+          x.style.background = '';
+          x.setAttribute('aria-pressed', 'false');
+        });
         el.style.borderColor = 'var(--claude)';
         el.style.background = 'var(--claude-soft)';
-        if (currentSession) {
-          // 记录选中（localStorage 持久化，后续环5/6 用）
-          localStorage.setItem(`chosen-${currentSession}`, el.dataset.title);
-          toast('已选题目：' + el.dataset.title);
-        }
+        el.setAttribute('aria-pressed', 'true');
+        setGateReady(1, true);
+        toast('作者选择已保存：' + el.dataset.title);
       });
     });
+    if (selectedIndex !== null) {
+      const selected = document.querySelector(`.cand-item[data-candidate-index="${selectedIndex}"]`);
+      if (selected) {
+        selected.style.borderColor = 'var(--claude)';
+        selected.style.background = 'var(--claude-soft)';
+        selected.setAttribute('aria-pressed', 'true');
+      }
+    }
   } else if (ringNo === 3) {
     // 文献调研：文献卡（跳转下载真链接 + 真复制 GB/T 7714）
-    const items = (data && (data.items || [])) || [];
-    appendAIMsg(`<p><strong>环3 文献调研完成</strong>，检索到 <strong>${items.length}</strong> 篇文献：</p>` +
-      items.map(it => {
+    const items = (data && (data.candidate_items || data.items || [])) || [];
+    const curated = Boolean(data?.curated);
+    const includedIndexes = new Set(data?.included_indexes || []);
+    appendAIMsg(`<p><strong>环3 文献调研完成</strong>，检索到 <strong>${items.length}</strong> 篇候选文献。请取消低相关条目并保存筛选：</p>` +
+      items.map((it, index) => {
         const url = it.urls && it.urls[0] ? it.urls[0] : '';
         const doiUrl = it.doi ? `https://doi.org/${encodeURIComponent(it.doi)}` : '';
         const href = url || doiUrl || '';
-        return `<div class="ref-card" style="margin:8px 0;"><div class="ref-head"><div class="ref-title">${escapeHtml2(it.title)}</div><span class="badge ${it.reliability || 'matched'}">${escapeHtml2(it.reliability || 'matched')}</span></div><div class="ref-citation">${escapeHtml2(it.gbt7714 || '')}</div><div class="ref-actions">${href ? `<a class="link-btn" href="${escapeHtml2(href)}" target="_blank" rel="noopener">跳转下载</a>` : ''}<button class="icon-btn" onclick="copyText(${JSON.stringify(escapeHtml2(it.gbt7714 || ''))})">复制 GB/T 7714</button></div></div>`;
-      }).join(''),
+        const checked = !curated || includedIndexes.has(index);
+        return `<div class="ref-card" data-literature-card style="margin:8px 0;"><label class="file-choice"><input type="checkbox" class="ring3-include" data-literature-index="${index}" ${checked ? 'checked' : ''} ${curated ? 'disabled' : ''}> 纳入论文项目</label><div class="ref-head"><div class="ref-title">${escapeHtml2(it.title)}</div><span class="badge ${it.reliability || 'matched'}">${escapeHtml2(it.reliability || 'matched')}</span></div><div class="ref-citation">${escapeHtml2(it.gbt7714 || '')}</div><div class="ref-actions">${href ? `<a class="link-btn" href="${escapeHtml2(href)}" target="_blank" rel="noopener">跳转下载</a>` : ''}<button class="icon-btn" type="button" onclick="copyText(${JSON.stringify(escapeHtml2(it.gbt7714 || ''))})">复制 GB/T 7714</button>${curated ? '' : `<button class="icon-btn literature-move" type="button" data-literature-move="up" aria-label="上移文献：${escapeHtml2(it.title)}">上移</button><button class="icon-btn literature-move" type="button" data-literature-move="down" aria-label="下移文献：${escapeHtml2(it.title)}">下移</button>`}</div></div>`;
+      }).join('') + `<div class="wb-card-actions"><button class="btn btn-primary btn-sm" type="button" id="save-literature-curation" ${curated ? 'disabled' : ''}>${curated ? `已保存：纳入 ${includedIndexes.size} 条` : '保存文献筛选并登记知识库'}</button></div><div id="literature-curation-error" class="wb-card-meta" role="alert" style="color:var(--error)"></div>`,
       `${name} · 已完成`);
+    document.getElementById('save-literature-curation')?.addEventListener('click', async event => {
+      const button = event.currentTarget;
+      const included = [...document.querySelectorAll('.ring3-include:checked')]
+        .map(input => Number(input.dataset.literatureIndex));
+      const error = document.getElementById('literature-curation-error');
+      if (!included.length) {
+        error.textContent = '至少保留一条文献。';
+        return;
+      }
+      button.disabled = true;
+      error.textContent = '';
+      const response = await apiCurateLiterature(currentSession, included);
+      if (response.code !== 0) {
+        button.disabled = false;
+        error.textContent = response.msg;
+        return;
+      }
+      document.querySelectorAll('.ring3-include').forEach(input => { input.disabled = true; });
+      button.textContent = `已保存：纳入 ${response.data?.included_count || included.length} 条`;
+      setGateReady(3, true);
+      await loadKbPanel(currentKnowledgeSession || currentSession);
+      toast(response.msg);
+    });
+    document.querySelectorAll('.literature-move').forEach(button => {
+      button.addEventListener('click', () => {
+        const card = button.closest('[data-literature-card]');
+        if (!card) return;
+        if (button.dataset.literatureMove === 'up' && card.previousElementSibling?.matches('[data-literature-card]')) {
+          card.parentElement.insertBefore(card, card.previousElementSibling);
+        } else if (button.dataset.literatureMove === 'down' && card.nextElementSibling?.matches('[data-literature-card]')) {
+          card.parentElement.insertBefore(card.nextElementSibling, card);
+        }
+      });
+    });
+    if (curated) setGateReady(3, true);
   } else if (ringNo === 2 || ringNo === 4) {
     // 评审卡（新颖度/综述评审）
     const level = (data && data.novelty_level) || '';
@@ -4127,20 +4201,32 @@ function renderRingResult(ringNo, data) {
 }
 
 // —— 追加"确认进入下一环"闸门 ——
-function appendGateBlock(ringNo) {
+function appendGateBlock(ringNo, ready = true, blocker = '') {
   const flow = document.getElementById('chat-flow');
   const inner = flow.querySelector('.chat-inner');
-  if (inner.querySelector(`.gate-block[data-ring="${ringNo}"]`)) return;
+  if (inner.querySelector(`.gate-block[data-ring="${ringNo}"]`)) {
+    setGateReady(ringNo, ready, blocker);
+    return;
+  }
   const gate = document.createElement('div');
   gate.className = 'gate-block';
   gate.dataset.ring = String(ringNo);
   gate.innerHTML = `<div class="gate-hint"><span class="gate-dot"></span>已完成自动校验，待您确认后进入下一环</div>
     <div class="gate-row"><span class="gate-label">「${RING_NAMES[ringNo] || '环' + ringNo}」环节已通过自动验收</span>
-    <button class="btn btn-primary" data-gate data-ring="${ringNo}">${ringNo === 10 ? '确认完成论文' : '确认进入下一环'}</button></div>`;
+    <button class="btn btn-primary" data-gate data-ring="${ringNo}" ${ready ? '' : 'disabled'}>${ready ? (ringNo === 10 ? '确认完成论文' : '确认进入下一环') : escapeHtml2(blocker || '请先完成作者决策')}</button></div>`;
   inner.appendChild(gate);
   const btn = gate.querySelector('[data-gate]');
   if (!btn.dataset.bound) { btn.dataset.bound = '1'; btn.addEventListener('click', confirmNextRing); }
   flow.scrollTop = flow.scrollHeight;
+}
+
+function setGateReady(ringNo, ready, blocker = '') {
+  const button = document.querySelector(`.gate-block[data-ring="${ringNo}"] [data-gate]`);
+  if (!button) return;
+  button.disabled = !ready;
+  button.textContent = ready
+    ? (ringNo === 10 ? '确认完成论文' : '确认进入下一环')
+    : (blocker || '请先完成作者决策');
 }
 
 // —— 执行环 + 追加消息 ——
@@ -4150,7 +4236,11 @@ async function runRingShow(taskId, ringNo, path) {
   if (r.code === 0) {
     renderRingResult(ringNo, r.data);
     // 追加"确认进入下一环"闸门（双重验证）
-    appendGateBlock(ringNo);
+    appendGateBlock(
+      ringNo,
+      ![1, 3].includes(ringNo),
+      ringNo === 1 ? '请先选择候选题目' : '请先完成文献筛选',
+    );
     toast(r.msg || `环${ringNo} 完成`);
   } else {
     // 评审未通过：警告卡 + 回退/重新生成
@@ -4161,28 +4251,23 @@ async function runRingShow(taskId, ringNo, path) {
   await loadSessions();
 }
 
-/* —— 回退到目标环（调用 FSM rollback API，真生效） —— */
+/* —— 从失败 Gate 安全回到契约允许的上游环节 —— */
 async function rollbackRing(targetRingNo) {
   if (!currentSession) return;
-  try {
-    const r = await apiPost(`/api/v1/tasks/${currentSession}/rollback`, {
-      target_ring_no: targetRingNo,
-      trace_id: currentSession,
-    });
-    if (r.code === 0) {
-      toast(`已回退到环${targetRingNo}`);
-      // 重新加载进度（阶段条 + 消息历史）以反映回退
-      const prog = await apiSessionProgress(currentSession);
-      if (prog) { renderStagesFromProgress(prog); updateRunBtn(prog); }
-      await loadSessionDetail(currentSession);
-      // 追加提示消息
-      appendAIMsg(`<p><strong>已回退到环${targetRingNo}</strong>（${RING_NAMES[targetRingNo] || ''}），可重新执行。</p>`, `回退 · 环${targetRingNo}`);
-    } else {
-      toast('回退失败: ' + (r.msg || ''));
-    }
-  } catch (e) {
-    toast('回退失败: ' + e.message);
+  const r = await apiReopenStage(
+    currentSession,
+    targetRingNo,
+    `作者从失败环节回到环${targetRingNo}修订`,
+  );
+  if (r.code !== 0) {
+    toast('回退失败: ' + (r.msg || ''));
+    return;
   }
+  document.querySelectorAll('.gate-block').forEach(element => element.remove());
+  toast(r.msg);
+  await loadSessionDetail(currentSession);
+  await loadSessions();
+  appendAIMsg(`<p><strong>已回到环${targetRingNo}</strong>（${RING_NAMES[targetRingNo] || ''}）。请完成修订后重新执行。</p>`, `恢复 · 环${targetRingNo}`);
 }
 
 
@@ -5035,6 +5120,10 @@ function buildHistoryFromProgress(prog) {
   if (!prog || !prog.rings) return;
   const flow = document.getElementById('chat-flow');
   const inner = flow.querySelector('.chat-inner');
+  const finished = prog.rings.filter(r => r.state === 'PASSED');
+  const summaryText = finished.length >= 10
+    ? `论文任务：${prog.title || currentSessionTitle || '当前任务'}（10/10 环已完成）`
+    : `论文任务：${prog.title || currentSessionTitle || '当前任务'}（已完成 ${finished.length}/10 环，当前环${prog.current_ring_no} ${RING_NAMES[prog.current_ring_no] || ''}）`;
   if (inner.dataset.historyTask !== prog.task_id) {
     inner.dataset.historyBuilt = '';
     inner.dataset.historyTask = prog.task_id;
@@ -5042,20 +5131,30 @@ function buildHistoryFromProgress(prog) {
   }
   // 同一任务已重建时仍确保待确认闸门存在。
   if (inner.dataset.historyBuilt === '1') {
-    if (prog.phase_state === 'WAITING_APPROVAL') appendGateBlock(prog.current_ring_no);
+    const summary = inner.querySelector('[data-progress-summary] .bubble');
+    if (summary) summary.textContent = summaryText;
+    if (prog.phase_state === 'WAITING_APPROVAL') appendGateBlock(
+      prog.current_ring_no,
+      prog.author_decision_ready !== false,
+      prog.author_decision_blocker || '',
+    );
     return;
   }
-  const finished = prog.rings.filter(r => r.state === 'PASSED');
   inner.dataset.historyBuilt = '1';
-  appendUserMsg(`论文任务：${prog.title || currentSessionTitle || '当前任务'}（已完成 ${finished.length}/10 环）`);
+  const summary = appendUserMsg(summaryText);
+  summary.dataset.progressSummary = 'true';
   finished.forEach(r => {
     const name = RING_NAMES[r.ring_no] || ('环' + r.ring_no);
     appendAIMsg(`<p><strong>环${r.ring_no} ${name}</strong> <span style="color:var(--success)">✓ 已通过</span></p><p style="font-size:12px;color:var(--text-subtle);">点击「执行当前环节」继续环${prog.current_ring_no || '下一环'}。</p>`, `${name} · 已通过`);
   });
   const cur = prog.current_ring_no;
   if (prog.phase_state === 'WAITING_APPROVAL') {
-    appendAIMsg(`<p style="font-size:13px;">环${cur}（${RING_NAMES[cur] || ''}）已通过自动验收，等待你的确认。</p>`, '待确认');
-    appendGateBlock(cur);
+    if ([1, 3].includes(cur) && prog.author_decision_payload) {
+      renderRingResult(cur, prog.author_decision_payload);
+    } else {
+      appendAIMsg(`<p style="font-size:13px;">环${cur}（${RING_NAMES[cur] || ''}）已通过自动验收，等待你的确认。</p>`, '待确认');
+    }
+    appendGateBlock(cur, prog.author_decision_ready !== false, prog.author_decision_blocker || '');
   } else if (finished.length >= 10) {
     appendAIMsg('<p><strong>十个环节已全部确认完成。</strong></p>', '流程完成');
   } else if (cur <= 10) {
@@ -5147,10 +5246,19 @@ async function runCurrentRing() {
     const result = await enqueueJobAndWait('ring.execute', { ring_no: no }, `环${no} ${RING_NAMES[no] || ''}`);
     if (result.code === 0) {
       renderRingResult(no, result.data);
-      appendGateBlock(no);
+      appendGateBlock(
+        no,
+        ![1, 3].includes(no),
+        no === 1 ? '请先选择候选题目' : '请先完成文献筛选',
+      );
       toast(result.msg || `环${no} 完成`);
     } else {
-      appendAIMsg(`<div class="warn-card"><div class="warn-title">环${no} 执行未完成</div><div style="font-size:13px;">${escapeHtml2(result.msg || '')}</div><div class="warn-actions"><button class="btn btn-secondary btn-sm" onclick="document.querySelector('.kb-tab[data-tab=jobs]')?.click()">查看后台作业</button></div></div>`, '后台作业失败');
+      const recovery = no === 8
+        ? '<button class="btn btn-primary btn-sm" onclick="rollbackRing(6)">回到环6修订正文与引用</button><button class="btn btn-secondary btn-sm" onclick="rollbackRing(3)">回到环3整理文献</button>'
+        : no === 7
+        ? '<button class="btn btn-primary btn-sm" onclick="rollbackRing(6)">回到环6修订初稿</button>'
+        : '';
+      appendAIMsg(`<div class="warn-card"><div class="warn-title">环${no} 执行未完成</div><div style="font-size:13px;">${escapeHtml2(result.msg || '')}</div><div class="warn-actions">${recovery}<button class="btn btn-secondary btn-sm" onclick="document.querySelector('.kb-tab[data-tab=jobs]')?.click()">查看后台作业</button></div></div>`, '后台作业失败');
     }
     await loadSessionDetail(currentSession);
     await loadSessions();
@@ -5294,9 +5402,23 @@ async function apiSessionProgress(taskId) {
 async function apiRunRing(taskId, ringPath) {
   return apiPost(`/api/v1/console/tasks/${taskId}${ringPath}`);
 }
+async function apiSelectCandidate(taskId, candidateIndex, title) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/rings/1/select`, {
+    candidate_index: candidateIndex, title,
+  });
+}
+async function apiCurateLiterature(taskId, includedIndexes) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/rings/3/curate`, {
+    included_indexes: includedIndexes,
+  });
+}
+async function apiReopenStage(taskId, targetRingNo, reason) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/reopen`, {
+    target_ring_no: targetRingNo, reason,
+  });
+}
 async function apiDeleteSession(taskId) {
-  const resp = await fetch(`${API_BASE}/api/v1/console/tasks/${taskId}`, { method: 'DELETE', headers: { 'Accept': 'application/json' } });
-  return resp.json();
+  return apiRequest(`/api/v1/console/tasks/${taskId}`, { method: 'DELETE' });
 }
 
 async function apiGenerateDocx(taskId) {
@@ -5324,6 +5446,11 @@ async function apiSectionAudit(taskId) {
 }
 async function apiReviewSection(taskId, draftId, approved, reason = '') {
   return apiPost(`/api/v1/console/tasks/${taskId}/writing/sections/${draftId}/review`, { approved, reason });
+}
+async function apiReviewAllSections(taskId, approved) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/writing/sections/review-all`, {
+    approved, actor: 'author',
+  });
 }
 async function apiReviseSection(taskId, draftId, content, title = '') {
   return apiPost(`/api/v1/console/tasks/${taskId}/writing/sections/${draftId}/revise`, { content, title, actor: 'author' });
@@ -5425,12 +5552,10 @@ async function apiKbUpload(sessionId, file) {
   const fd = new FormData();
   fd.append('file', file);
   fd.append('title', file.name.replace(/\.\w+$/, ''));
-  const resp = await fetch(`${API_BASE}/api/v1/kb/${encodeURIComponent(sessionId)}/files`, { method: 'POST', body: fd });
-  return resp.json();
+  return apiRequest(`/api/v1/kb/${encodeURIComponent(sessionId)}/files`, { method: 'POST', body: fd }, 120000);
 }
 async function apiKbDelete(sessionId, fileId) {
-  const resp = await fetch(`${API_BASE}/api/v1/kb/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}`, { method: 'DELETE', headers: { 'Accept': 'application/json' } });
-  return resp.json();
+  return apiRequest(`/api/v1/kb/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
 }
 
 // ---- 工具 ----
@@ -5510,6 +5635,7 @@ async function enqueueJobAndWait(operation, payload, label) {
 async function waitForJob(taskId, jobId, label) {
   const deadline = Date.now() + 30 * 60 * 1000;
   let networkFailures = 0;
+  let pollDelay = 900;
   while (Date.now() < deadline) {
     const response = await apiGetJob(taskId, jobId);
     if (response.code !== 0) {
@@ -5517,7 +5643,8 @@ async function waitForJob(taskId, jobId, label) {
       if (networkFailures >= 5) {
         return { code: response.code, msg: `${label}仍在后台执行，但状态查询连续失败：${response.msg}` };
       }
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      await new Promise(resolve => setTimeout(resolve, Math.max(1500, pollDelay)));
+      pollDelay = Math.min(pollDelay * 1.6, 5000);
       continue;
     }
     networkFailures = 0;
@@ -5532,7 +5659,9 @@ async function waitForJob(taskId, jobId, label) {
       if (job.status === 'SUCCEEDED') return job.result || { code: 0, msg: `${label}完成`, data: null };
       return { code: 1, msg: job.error || `${label}${JOB_STATUS_LABEL[job.status]}`, data: { job } };
     }
-    await new Promise(resolve => setTimeout(resolve, 900));
+    const effectiveDelay = document.hidden ? Math.max(pollDelay, 10000) : pollDelay;
+    await new Promise(resolve => setTimeout(resolve, effectiveDelay));
+    pollDelay = Math.min(pollDelay * 1.6, 5000);
   }
   return { code: 1, msg: `${label}超过30分钟仍未完成，可在“作业”页继续查看或取消` };
 }
@@ -5891,6 +6020,8 @@ async function handleResearchAction(event) {
 
 async function submitProtocolForm(event) {
   event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector('button[type="submit"]');
   const error = document.getElementById('protocol-error');
   const payload = {
     title: document.getElementById('protocol-title').value.trim(),
@@ -5906,9 +6037,17 @@ async function submitProtocolForm(event) {
   const missing = !payload.title || !payload.research_questions.length || !payload.procedure_steps.length || !payload.analysis_plan.length || !payload.required_outputs.length;
   if (missing) { error.textContent = '请填写协议名称、研究问题、实施步骤、分析计划和必须产物。'; return; }
   error.textContent = '';
+  submit.disabled = true;
   const response = await apiCreateProtocol(currentSession, payload);
-  if (response.code !== 0) error.textContent = response.msg;
-  else { toast(response.msg); event.currentTarget.reset(); document.getElementById('protocol-builder').open = false; await loadResearchPanel(); }
+  if (response.code !== 0) {
+    error.textContent = response.msg;
+    submit.disabled = false;
+  } else {
+    toast(response.msg);
+    form.reset();
+    document.getElementById('protocol-builder').open = false;
+    await loadResearchPanel();
+  }
 }
 
 async function submitArgumentForm(event) {
@@ -6000,12 +6139,19 @@ async function loadSectionsPanel() {
   }
   const audit = auditResponse.data || {};
   const drafts = draftResponse.data || [];
+  const waitingDraftCount = drafts.filter(draft => draft.status === 'WAITING_APPROVAL').length;
   renderTemplateConfig(templateResponse);
   sectionDraftCache = new Map(drafts.map(draft => [draft.section_draft_id, draft]));
   auditBox.className = 'wb-card';
   auditBox.innerHTML = `<div class="wb-card-title">已批准 ${(audit.approved_section_ids || []).length}/${(audit.expected_section_ids || []).length} 节</div>
     <div class="wb-card-meta">${audit.can_assemble ? '全部分节已就绪，可以汇编环6初稿。' : `待完成：${escapeHtml2((audit.missing_section_ids || []).join('、') || '等待大纲')}`}</div>
-    <div class="wb-card-actions">${audit.can_assemble ? '<button class="btn btn-primary btn-sm" id="assemble-sections">汇编环6初稿</button>' : ''}</div>`;
+    <div class="wb-card-actions">
+      ${(audit.missing_section_ids || []).length ? '<button class="btn btn-primary btn-sm" data-action="generate-all-sections">批量生成全部缺失分节</button>' : ''}
+      ${waitingDraftCount ? `<button class="btn btn-secondary btn-sm" data-action="approve-all-sections">批量批准 ${waitingDraftCount} 个待审分节</button>` : ''}
+      ${audit.can_assemble ? '<button class="btn btn-primary btn-sm" id="assemble-sections">汇编环6初稿</button>' : ''}
+    </div>`;
+  auditBox.querySelector('[data-action="generate-all-sections"]')?.addEventListener('click', generateAllSectionsFromPanel);
+  auditBox.querySelector('[data-action="approve-all-sections"]')?.addEventListener('click', approveAllSectionsFromPanel);
   document.getElementById('assemble-sections')?.addEventListener('click', assembleSectionsFromPanel);
   const latestBySection = new Map();
   const versionsBySection = new Map();
@@ -6045,6 +6191,24 @@ async function loadSectionsPanel() {
   });
   listBox.querySelectorAll('[data-section-action]').forEach(button => button.addEventListener('click', handleSectionAction));
   document.getElementById('sections-live').textContent = `已加载 ${drafts.length} 个分节版本`;
+}
+
+async function generateAllSectionsFromPanel(event) {
+  event.currentTarget.disabled = true;
+  const response = await enqueueJobAndWait(
+    'sections.generate_all',
+    {},
+    '批量生成全部分节',
+  );
+  toast(response.code === 0 ? response.msg : `批量生成失败：${response.msg}`);
+  await loadSectionsPanel();
+}
+
+async function approveAllSectionsFromPanel(event) {
+  event.currentTarget.disabled = true;
+  const response = await apiReviewAllSections(currentSession, true);
+  toast(response.code === 0 ? response.msg : `批量批准失败：${response.msg}`);
+  await loadSectionsPanel();
 }
 
 function renderTemplateConfig(response) {
@@ -6499,7 +6663,7 @@ async function kbDownload(btn) {
   if (!fileId) { toast('文件标识缺失'); return; }
   const url = `${API_BASE}/api/v1/kb/${encodeURIComponent(sid)}/files/${encodeURIComponent(fileId)}`;
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(url, { credentials: 'include' });
     if (!resp.ok) { toast('下载失败: HTTP ' + resp.status); return; }
     const blob = await resp.blob();
     const a = document.createElement('a');
@@ -6535,6 +6699,7 @@ async function kbUpload(files) {
     try {
       const resp = await fetch(`${API_BASE}/api/v1/kb/${encodeURIComponent(sid)}/files`, {
         method: 'POST', headers: { 'Accept': 'application/json' }, body: fd,
+        credentials: 'include',
       });
       const r = await resp.json();
       if (r.code === 0) ok++; else fail++;

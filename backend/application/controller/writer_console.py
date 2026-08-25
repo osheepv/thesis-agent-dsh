@@ -260,6 +260,26 @@ async def list_artifacts(task_id: str, session_id: str = "",
         return _err(exc)
 
 
+@router.post("/tasks/{task_id}/rings/3/curate", response_model=None)
+async def ring3_curate(task_id: str, req: Dict[str, Any], session_id: str = "",
+                       orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.curate_literature(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/rings/1/select", response_model=None)
+async def ring1_select_candidate(task_id: str, req: Dict[str, Any], session_id: str = "",
+                                 orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.select_ring1_candidate(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 # ---------------------------------------------------------------------
 # 证据账本（来源 → 摘录 → 论断 → 链接 → 审计）
 # ---------------------------------------------------------------------
@@ -406,6 +426,20 @@ async def review_section_draft(task_id: str, section_draft_id: str, req: Dict[st
             approved=bool(req.get("approved", True)),
             actor=str(req.get("actor", "author")),
             reason=str(req.get("reason", "")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/writing/sections/review-all", response_model=None)
+async def review_all_section_drafts(task_id: str, req: Dict[str, Any], session_id: str = "",
+                                    orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.review_all_section_drafts(
+            task_id,
+            approved=bool(req.get("approved", True)),
+            actor=str(req.get("actor", "author")),
         )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -678,6 +712,20 @@ async def confirm_ring(task_id: str, ring_no: int, req: Dict[str, Any],
             ring_no=ring_no,
             confirmed=bool(req.get("confirmed", True)),
             reject_reason=str(req.get("reject_reason", "")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/reopen", response_model=None)
+async def reopen_stage(task_id: str, req: Dict[str, Any], session_id: str = "",
+                       orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.reopen_stage(
+            task_id,
+            int(req.get("target_ring_no", 0)),
+            reason=str(req.get("reason", "")),
         )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)

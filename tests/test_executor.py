@@ -91,7 +91,8 @@ class TestRing6Chapter:
     def test_four_field_return(self):
         res = get_executor(6).execute(self._build_ctx(Degree.MASTER))
         assert isinstance(res, ExecResult)
-        assert res.output and res.accept is True and res.fallbackTo is None
+        assert res.output and res.accept is False and res.fallbackTo == 6
+        assert "降级模板稿禁止" in res.issues[0]
         assert isinstance(res.issues, list) and isinstance(res.evidence, dict)
         data = json.loads(res.output)
         assert len(data["chapters"]) > 0

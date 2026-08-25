@@ -81,8 +81,8 @@ def _fallback_format(item: Dict[str, Any]) -> str:
     """自研 GB/T 7714 格式化（pybtex 不可用时）。"""
     title = item.get("title", "")
     authors = item.get("authors") or []
-    year = item.get("year", "")
-    venue = item.get("venue", "")
+    year = item.get("year") or ""
+    venue = item.get("venue") or ""
     item_type = item.get("item_type", "article")
     doi = item.get("doi", "")
 

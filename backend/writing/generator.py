@@ -18,6 +18,7 @@ class SectionGeneration(BaseModel):
     covered_claim_ids: list[str] = Field(default_factory=list)
     used_evidence_ids: list[str] = Field(default_factory=list)
     used_result_ids: list[str] = Field(default_factory=list)
+    generation_source: str = ""
 
 
 class SectionDraftGenerator:
@@ -28,12 +29,15 @@ class SectionDraftGenerator:
                 "section_draft",
                 {"section_context": json.dumps(context, ensure_ascii=False)},
             )
-            return get_llm_client().generate_json(
+            generated = get_llm_client().generate_json(
                 system=tpl["system"],
                 prompt=tpl["prompt"],
                 model_cls=SectionGeneration,
                 temperature=0.2,
+                max_output_tokens=8192,
             )
+            generated.generation_source = "deepseek"
+            return generated
         if not settings.fallback_to_mock:
             raise LLMError("分节写作需要可用的 LLM；正式模式禁止静默回退 Mock")
         return self._fallback(context)
@@ -69,6 +73,7 @@ class SectionDraftGenerator:
             covered_claim_ids=[str(item.get("claim_id", "")) for item in claims],
             used_evidence_ids=list(dict.fromkeys(evidence_ids)),
             used_result_ids=[str(item.get("result_id", "")) for item in results],
+            generation_source="mock",
         )
 
 

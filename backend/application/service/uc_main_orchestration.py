@@ -588,6 +588,27 @@ class MainOrchestration:
             })
         return Result.ok(data=items, msg="会话列表")
 
+    def get_task_view(self, task_id: str) -> Result[Dict[str, Any]]:
+        """返回所有任务API共用的持久化任务视图。"""
+        rec = self._require(task_id)
+        progress = self._fsm.get_progress(task_id)
+        return Result.ok(
+            data={
+                "task_id": rec.task_id,
+                "task_no": rec.task_id,
+                "title": rec.title,
+                "degree": rec.degree,
+                "subject_field": rec.subject_field,
+                "session_id": rec.session_id,
+                "tenant_id": rec.tenant_id,
+                "status": progress.get("phase_state", "NOT_STARTED"),
+                "current_ring_no": progress.get("current_ring_no", 1),
+                "current_ring": progress.get("current_ring", "RING_1"),
+                "complete_percent": progress.get("complete_percent", 0),
+            },
+            msg="任务查询成功",
+        )
+
     # ------------------------------------------------------------------
     # 持久化后台作业与预算
     # ------------------------------------------------------------------

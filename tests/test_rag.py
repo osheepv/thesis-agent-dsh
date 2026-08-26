@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from common.rag import _split_chunks, rag_enabled, search_kb_blocks, kb_blocks_text
+from common.rag import _extract_text, _split_chunks, rag_enabled, search_kb_blocks, kb_blocks_text
 
 
 def test_split_chunks_basic():
@@ -27,6 +27,25 @@ def test_split_chunks_collapses_whitespace():
     chunks = _split_chunks(text, size=150)
     assert len(chunks) >= 2  # 201 字按 150 切（重叠 step=100）
     assert " " in "".join(chunks)  # 空白被折叠成单空格
+
+
+def test_extract_text_supports_docx(tmp_path):
+    from docx import Document
+
+    path = tmp_path / "paper.docx"
+    document = Document()
+    document.add_heading("实验结果", level=1)
+    document.add_paragraph("精确指标为 mIoU 0.812。")
+    table = document.add_table(rows=1, cols=2)
+    table.cell(0, 0).text = "模型"
+    table.cell(0, 1).text = "结果"
+    document.save(path)
+
+    text = _extract_text(str(path))
+
+    assert "实验结果" in text
+    assert "mIoU 0.812" in text
+    assert "模型" in text and "结果" in text
 
 
 @pytest.mark.skipif(not rag_enabled(), reason="RAG 已禁用")
@@ -52,10 +71,35 @@ def test_search_mock_via_inline_vectors(tmp_path, monkeypatch):
     assert hits, "应返回检索结果"
     assert hits[0]["file"] == "a.txt"  # 与查询最相似
     assert hits[0]["score"] >= 0.9  # 与查询向量一致（余弦≈1）
+    assert hits[0]["retrieval_mode"] == "hybrid"
     # kb_blocks_text 拼接含 file 与 score 标注
     txt = kb_blocks_text(sid, "模型加速", k=2)
     assert "a.txt" in txt
     assert "[KB1|" in txt
+
+
+@pytest.mark.skipif(not rag_enabled(), reason="RAG 已禁用")
+def test_keyword_search_works_without_embedding_model(monkeypatch):
+    import json
+    from knowledge.store import _session_dir
+
+    sid = "rag-keyword-only"
+    sdir = _session_dir(sid)
+    sdir.mkdir(parents=True, exist_ok=True)
+    blocks = [
+        {"file": "citation.docx", "text": "GB/T 7714 参考文献著录规则与顺序编码制", "vector": []},
+        {"file": "vision.pdf", "text": "卷积神经网络图像分类与数据增强", "vector": []},
+    ]
+    (sdir / "vectors.json").write_text(
+        json.dumps({"blocks": blocks, "hashes": {}}), encoding="utf-8"
+    )
+    monkeypatch.setattr("common.rag._get_model", lambda: None)
+
+    hits = search_kb_blocks(sid, "GB/T 7714 顺序编码", k=2)
+
+    assert hits[0]["file"] == "citation.docx"
+    assert hits[0]["retrieval_mode"] == "keyword"
+    assert hits[0]["keyword_score"] == 1.0
 
 
 class _FakeModel:

@@ -116,6 +116,18 @@ def test_security_middleware_enforces_tenant_and_roles(monkeypatch):
     assert record.tenant_id == boot["data"]["tenant_id"]
     assert record.owner_user_id == boot["data"]["user_id"]
 
+    native_created = owner_client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "Native Shared Task",
+            "degree": "BACHELOR",
+            "discipline": "AI",
+        },
+    )
+    assert native_created.status_code == 200
+    native_task_id = native_created.json()["data"]["task_id"]
+    assert app.state.orchestration._store.get(native_task_id).tenant_id == boot["data"]["tenant_id"]  # noqa: SLF001
+
     reviewer = owner_client.post(
         "/api/v1/auth/users",
         json={

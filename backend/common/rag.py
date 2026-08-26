@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""RAG：本地语义检索（零成本方案）。
+"""RAG：本地向量 + 关键词混合检索（零成本方案）。
 
 设计（对齐爸爸决策：本地嵌入模型 + numpy 向量，不用 Chroma/Faiss）：
     - 嵌入：BAAI/bge-small-zh-v1.5（约 100MB，装好永久免费，用户本地 CPU 出算力）。
-    - 检索：numpy 余弦相似度（万级块毫秒级），不引入独立向量库。
+    - 检索：numpy 余弦 + 轻量BM25；嵌入模型不可用时仍可关键词检索。
     - 数据：用户知识库文件（files/*.pdf 等）提取全文 → 分块（500 字/块）→ 嵌入
       → 持久化 storage/kb/{session_id}/vectors.json（增量：块哈希不变跳过）。
     - 降级：模型不可用 / 无文件 → 返回空结果（写作提示"知识库内容不可用"，不阻塞）。
@@ -17,9 +17,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import threading
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -72,7 +74,7 @@ def _get_model():
 # 文本提取 / 分块
 # ---------------------------------------------------------------------
 def _extract_text(path: str) -> str:
-    """从文件提取纯文本（支持 pdf/txt/md；docx 暂以 stubs 降级）。"""
+    """从文件提取纯文本（支持pdf/docx/txt/md）。"""
     ext = Path(path).suffix.lower()
     try:
         if ext == ".pdf":
@@ -80,6 +82,15 @@ def _extract_text(path: str) -> str:
 
             reader = PdfReader(path)
             return "\n".join((page.extract_text() or "") for page in reader.pages)
+        if ext == ".docx":
+            from docx import Document
+
+            document = Document(path)
+            parts = [paragraph.text for paragraph in document.paragraphs if paragraph.text]
+            for table in document.tables:
+                for row in table.rows:
+                    parts.extend(cell.text for cell in row.cells if cell.text)
+            return "\n".join(parts)
         if ext in (".txt", ".md"):
             return Path(path).read_text(encoding="utf-8", errors="ignore")
     except Exception as exc:  # noqa: BLE001
@@ -130,6 +141,50 @@ def _hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _keyword_tokens(text: str) -> List[str]:
+    """中英文轻量分词：英文单词/编号 + 中文2字gram。"""
+    normalized = (text or "").casefold()
+    tokens = re.findall(r"[a-z0-9][a-z0-9_./-]{1,}", normalized)
+    for sequence in re.findall(r"[一-鿿]{2,}", normalized):
+        if len(sequence) <= 12:
+            tokens.append(sequence)
+        tokens.extend(
+            sequence[index:index + 2]
+            for index in range(len(sequence) - 1)
+        )
+    return tokens
+
+
+def _bm25_scores(query: str, texts: List[str]) -> List[float]:
+    """对少量本地块即时计算BM25，不引入额外索引依赖。"""
+    query_tokens = list(dict.fromkeys(_keyword_tokens(query)))
+    documents = [_keyword_tokens(text) for text in texts]
+    if not query_tokens or not documents:
+        return [0.0] * len(texts)
+    average_length = sum(len(tokens) for tokens in documents) / max(len(documents), 1)
+    document_frequency = {
+        token: sum(token in set(document) for document in documents)
+        for token in query_tokens
+    }
+    scores: List[float] = []
+    k1, b = 1.5, 0.75
+    for document in documents:
+        counts = Counter(document)
+        length_norm = 1 - b + b * len(document) / max(average_length, 1.0)
+        score = 0.0
+        for token in query_tokens:
+            frequency = counts.get(token, 0)
+            if not frequency:
+                continue
+            idf = math.log(
+                1 + (len(documents) - document_frequency[token] + 0.5)
+                / (document_frequency[token] + 0.5)
+            )
+            score += idf * frequency * (k1 + 1) / (frequency + k1 * length_norm)
+        scores.append(score)
+    return scores
+
+
 def _embed(model, texts: List[str]) -> List[List[float]]:
     """批量嵌入（无 stride 开销；CPU 一次几百字很快）。"""
     if not texts:
@@ -146,8 +201,6 @@ def index_session(session_id: str) -> int:
     if not rag_enabled():
         return 0
     model = _get_model()
-    if model is None:
-        return 0
     from knowledge.store import get_kb_store
 
     store = get_kb_store()
@@ -160,21 +213,26 @@ def index_session(session_id: str) -> int:
 
     if files_dir.exists():
         for f in sorted(files_dir.iterdir()):
-            if not f.is_file() or f.suffix.lower() not in (".pdf", ".txt", ".md"):
+            if not f.is_file() or f.suffix.lower() not in (".pdf", ".docx", ".txt", ".md"):
                 continue
             try:
                 mtime_s = str(int(f.stat().st_mtime))
             except OSError:
                 continue
             key = f.name
-            if hashes.get(key) == mtime_s and any(b.get("file") == key for b in blocks):
+            existing = [block for block in blocks if block.get("file") == key]
+            if (
+                hashes.get(key) == mtime_s
+                and existing
+                and (model is None or all(block.get("vector") for block in existing))
+            ):
                 continue  # 未变化，跳过
             text = _extract_text(str(f))
             chunks = _split_chunks(text)
             if not chunks:
                 hashes[key] = mtime_s
                 continue
-            vecs = _embed(model, chunks)
+            vecs = _embed(model, chunks) if model is not None else [[] for _ in chunks]
             # 移除该文件旧块，追加新块
             blocks = [b for b in blocks if b.get("file") != key]
             for cd, cv in zip(chunks, vecs):
@@ -198,10 +256,10 @@ def index_session(session_id: str) -> int:
 # ---------------------------------------------------------------------
 def search_kb_blocks(session_id: str, query: str, k: int = _DEFAULT_K,
                      min_score: float = _DEFAULT_MIN_SCORE) -> List[Dict[str, Any]]:
-    """在会话知识库全文块中做语义检索，返回 Top-K 块（降序）。
+    """在会话知识库全文块中做混合检索，返回Top-K块（降序）。
 
     Returns:
-        [{file, text, score}]；模型不可用/无块时返回 []。
+        [{file, text, score, vector_score, keyword_score, retrieval_mode}]。
     """
     if not rag_enabled() or not query:
         return []
@@ -220,30 +278,58 @@ def search_kb_blocks(session_id: str, query: str, k: int = _DEFAULT_K,
             logger.warning("懒索引失败: %s", exc)
     if not blocks:
         return []
+    texts = [str(block.get("text", "")) for block in blocks]
+    keyword_raw = _bm25_scores(query, texts)
+    keyword_max = max(keyword_raw, default=0.0)
+    keyword_scores = [
+        score / keyword_max if keyword_max > 0 else 0.0
+        for score in keyword_raw
+    ]
+    vector_scores: Optional[List[float]] = None
     model = _get_model()
-    if model is None:
-        return []
     try:
-        import numpy as np
+        if model is not None and all(block.get("vector") for block in blocks):
+            import numpy as np
 
-        qvec = _embed(model, [query])[0]
-        matrix = np.array([b["vector"] for b in blocks], dtype=np.float32)
-        q = np.array(qvec, dtype=np.float32)
-        scores = (matrix @ q) / (
-            np.linalg.norm(matrix, axis=1) * (np.linalg.norm(q) + 1e-9) + 1e-9
-        )
-        order = np.argsort(-scores)[:k]
-        results = []
-        for idx in order:
-            sc = float(scores[idx])
-            if sc < min_score:
-                continue
-            b = blocks[int(idx)]
-            results.append({"file": b.get("file", ""), "text": b.get("text", ""), "score": round(sc, 4)})
-        return results
+            qvec = _embed(model, [query])[0]
+            matrix = np.array([block["vector"] for block in blocks], dtype=np.float32)
+            q = np.array(qvec, dtype=np.float32)
+            cosine = (matrix @ q) / (
+                np.linalg.norm(matrix, axis=1) * (np.linalg.norm(q) + 1e-9) + 1e-9
+            )
+            vector_scores = [max(0.0, float(score)) for score in cosine]
     except Exception as exc:  # noqa: BLE001
-        logger.warning("RAG 检索失败: %s", exc)
-        return []
+        logger.warning("向量检索失败，降级关键词检索: %s", exc)
+        vector_scores = None
+
+    if vector_scores is not None and keyword_max > 0:
+        combined = [
+            vector * 0.7 + keyword * 0.3
+            for vector, keyword in zip(vector_scores, keyword_scores)
+        ]
+        mode = "hybrid"
+    elif vector_scores is not None:
+        combined = vector_scores
+        mode = "vector"
+    else:
+        combined = keyword_scores
+        mode = "keyword"
+    order = sorted(range(len(blocks)), key=lambda index: combined[index], reverse=True)[:k]
+    results = []
+    for index in order:
+        score = combined[index]
+        if score < min_score:
+            continue
+        block = blocks[index]
+        results.append({
+            "file": block.get("file", ""),
+            "text": block.get("text", ""),
+            "score": round(score, 4),
+            "vector_score": round(vector_scores[index], 4) if vector_scores is not None else None,
+            "keyword_score": round(keyword_scores[index], 4),
+            "retrieval_mode": mode,
+        })
+    return results
 
 
 def kb_blocks_text(session_id: str, query: str, k: int = _DEFAULT_K,
@@ -252,7 +338,7 @@ def kb_blocks_text(session_id: str, query: str, k: int = _DEFAULT_K,
     hits = search_kb_blocks(session_id, query, k=k)
     if not hits:
         return ""
-    lines = ["【知识库相关段落（语义检索，仅可参考，不可编造未给内容）】"]
+    lines = ["【知识库相关段落（混合检索，仅可参考，不可编造未给内容）】"]
     budget = max_chars
     for i, h in enumerate(hits, start=1):
         if budget <= 0:

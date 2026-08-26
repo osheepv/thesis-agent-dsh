@@ -1,47 +1,5 @@
-# ============================================================
-# thesis-agent-dsh 后端依赖（系统设计 §3.1.5 锁定版本）
-# 注意：DSH 仅作为 SDK 依赖引入，不 fork 不改源码。
-# ============================================================
+-r requirements-runtime.txt
 
-# ---- Web 框架 ----
-fastapi==0.115.12
-uvicorn[standard]==0.34.2
-starlette==0.46.1
-
-# ---- LLM（DeepSeek 直调，二期决策 D1；OpenAI 兼容接口）----
-openai>=1.40,<2
-
-# ---- 数据校验 / 序列化 ----
-pydantic==2.11.4
-pydantic-settings==2.9.1
-
-# ---- 数据库（PostgreSQL 16）----
-SQLAlchemy==2.0.41
-psycopg2-binary==2.9.10
-asyncpg==0.30.0
-alembic==1.16.1
-
-# ---- 缓存 / 调度 ----
-redis==7.2.0
-APScheduler==3.11.0
-
-# ---- docx 模板解析 / 生成校验 ----
-# 注：docxtpl 0.17.4 在 PyPI 不存在（仅 0.17.0 / 0.18.0...0.20.x），
-#     与 backend/thesis_docx/.vendor/ 里 vendored 的 docxtpl-0.20.2 对齐。
-docxtpl==0.20.2
-python-docx==1.1.2
-openxml-audit==0.7.5
-
-# ---- 工具 ----
-python-multipart==0.0.20
-httpx==0.28.1
-tenacity==9.1.2
-
-# ---- RAG（本地语义检索：嵌入 bge-small-zh + numpy 余弦，零成本）----
-sentence-transformers==3.4.1
-pypdf>=5.0
-numpy>=1.26
-
-# ---- 测试 ----
+# 测试
 pytest==8.3.5
 pytest-cov==6.0.0

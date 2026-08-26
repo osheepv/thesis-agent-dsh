@@ -18,7 +18,6 @@ _PUBLIC_PATHS = {
     "/docs", "/openapi.json", "/redoc",
 }
 _TASK_RE = re.compile(r"^/api/v1/console/tasks/([^/]+)")
-_NATIVE_TASK_RE = re.compile(r"^/api/v1/tasks(?:/|$)")
 _NATIVE_TASK_ID_RE = re.compile(r"^/api/v1/tasks/([^/]+)(?:/|$)")
 _KB_RE = re.compile(r"^/api/v1/kb/([^/]+)")
 _DOCX_FILE_RE = re.compile(r"^/api/v1/docx/files/([^/]+)$")
@@ -78,8 +77,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             self.orchestration.assert_tenant_access(
                 native_task.group(1), principal.tenant_id
             )
-        elif _NATIVE_TASK_RE.match(path):
-            raise AuthorizationError("安全模式下请使用 /api/v1/console/tasks 创建和列出任务")
+        # 集合级原生任务API已与控制台共用同一持久化编排；租户过滤由路由执行。
         task_match = _TASK_RE.match(path)
         if task_match:
             self.orchestration.assert_tenant_access(

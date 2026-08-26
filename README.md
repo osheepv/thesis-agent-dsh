@@ -25,6 +25,8 @@
 - 环8无可核验引用时失败，环10材料缺失时失败；外部元数据命中不等同于全文事实已核验。
 - 知识库与会话 1:1 绑定，包含文献文件、笔记、双链、图谱和本地 RAG 基础。
 - 任务、各环产物和 FSM 状态使用 SQLite 持久化；docx 生成、下载与版式检查已串联。
+- `/api/v1/tasks`与`/api/v1/console/tasks`共用同一编排、FSM和持久化任务记录；`db.models`只重导出唯一运行时ORM，不再维护冲突表定义。
+- RAG支持PDF、DOCX、TXT和Markdown提取，采用向量余弦+轻量BM25混合检索；嵌入模型不可用时仍可关键词检索。
 - 阶段审批通过事务 Outbox 投影为不可变版本产物；上游改版会递归将下游标记为过期。
 - 已实现来源、可定位摘录、论断和证据链接账本；未经作者复核的摘录不能支撑正文论断。
 - 已实现研究协议、实验运行状态机、原始材料血缘和结果账本；实证类任务未批准结果账本时禁止生成初稿。
@@ -46,6 +48,7 @@
 - 分节工作台可选择任意两个版本进行双栏行级差异比较；学校 DOCX 模板会持久化并支持中英文占位符映射，未映射字段会阻断生成。
 - 可选生产认证层提供 HttpOnly 不透明会话、scrypt 密码哈希、登录锁定、owner/editor/reviewer/viewer 授权、任务/知识库租户隔离和不可变操作审计。
 - `demo_run.py` 提供最小严格流程冒烟；`demo_full_10.py`/`scripts/real_full_flow_acceptance.py`按真实Job预算、作者选题、文献筛选和逐环确认协议运行，并生成不含正文与密钥的验收报告。
+- 后端可构建标准wheel，提示词和内置DOCX模板随包分发；核心运行依赖与可选PostgreSQL/Redis基础设施依赖已分离。
 
 当前关键缺口：
 
@@ -88,7 +91,12 @@
 python -m venv .venv
 # PowerShell
 .\.venv\Scripts\Activate.ps1
+# 开发与测试
 python -m pip install -r backend/requirements.txt
+# 或安装运行包
+python -m pip install ./backend
+# 需要PostgreSQL/Redis/Alembic时再安装可选依赖
+python -m pip install -r backend/requirements-production.txt
 ```
 
 默认使用 SQLite，不需要 PostgreSQL。真实模型与文献服务由环境变量启用。
@@ -117,26 +125,20 @@ python -m http.server 8787
 
 ## 运行测试
 
-当前回归基线：**207 项 pytest 全部通过**（2026-08-26）。
+当前回归基线：**214 项 pytest 全部通过**（2026-08-27）。
 
 ```bash
 # 项目根执行（conftest 自动注入路径）
 python -m pytest tests -v
 ```
 
-## 数据库 DDL
+## 数据库结构
 
-PostgreSQL 16 原生语法（`GENERATED ALWAYS AS IDENTITY` / `BOOLEAN` / `CREATE INDEX` /
-`tsvector` 生成列 + GIN），严格禁用 MySQL 语法。见 `backend/db/ddl.sql`。
+当前运行时唯一ORM定义位于`backend/fsm/state/orm.py`，默认使用SQLite并由SQLAlchemy在开发期建表。`backend/db/ddl.sql`是早期PostgreSQL目标设计，仅作参考；在完成正式Alembic基线和迁移演练前，**不要直接用于生产数据库**。
 
-```bash
-psql -U <user> -d <db> -f backend/db/ddl.sql
-```
+下一阶段会把FSM、任务业务记录、产物账本和知识库的PostgreSQL迁移收敛为可版本化Alembic schema。
 
-核心表：`t_task`、`t_fsm_state`、`t_outline`、`t_chapter_draft`、`t_docx_template`，
-以及 M9 预留的 `t_kb_collection` / `t_kb_document` / `t_kb_chunk`（session 强绑定）。
-
-## 技术栈（锁定版本，见 backend/requirements.txt）
+## 技术栈（运行依赖见 backend/requirements-runtime.txt）
 
 Python 3.13 · FastAPI 0.115.12 · SQLAlchemy 2.0.41 · SQLite（过渡；后期可迁 PostgreSQL）·
 OpenAI 兼容模型客户端（模型名由环境配置）· docxtpl 0.20.2 · openxml-audit 0.7.5 ·

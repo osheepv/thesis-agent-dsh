@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""FastAPI 最小闭环烟雾测试（不依赖数据库，内存态）。"""
+"""FastAPI 最小闭环烟雾测试（任务API共享持久化编排）。"""
 from __future__ import annotations
 
 from fastapi.testclient import TestClient
@@ -51,3 +51,26 @@ def test_get_task_not_found():
     assert r.status_code == 200
     body = r.json()
     assert body["code"] == 100001
+
+
+def test_native_and_console_task_apis_share_one_record():
+    created = client.post(
+        "/api/v1/tasks",
+        json={
+            "title": "统一任务事实源",
+            "degree": "BACHELOR",
+            "discipline": "计算机科学",
+            "session_id": "shared-task-api",
+        },
+    ).json()
+    task_id = created["data"]["task_id"]
+
+    console_items = client.get(
+        "/api/v1/console/tasks", params={"session_id": "shared-task-api"}
+    ).json()["data"]
+    native_detail = client.get(f"/api/v1/tasks/{task_id}").json()["data"]
+
+    assert [item["task_id"] for item in console_items] == [task_id]
+    assert native_detail["task_id"] == task_id
+    assert native_detail["current_ring"] == "RING_1"
+    assert native_detail["discipline"] == "计算机科学"

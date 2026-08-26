@@ -1,0 +1,42 @@
+name: 学术安全问题
+description: 报告伪引、错引、证据错配、数据真实性或人工确认边界问题
+title: "[Academic Safety] "
+labels:
+  - academic-safety
+body:
+  - type: markdown
+    attributes:
+      value: 如果报告包含未公开材料、个人信息或可被利用的安全细节，请停止公开提交，改用SECURITY.md中的私下报告方式。
+  - type: dropdown
+    id: risk
+    attributes:
+      label: 风险类型
+      options:
+        - 伪造或不存在的引用
+        - 引用与原文不一致
+        - 论断缺少证据
+        - 实验数据或结果血缘异常
+        - 绕过人工确认
+        - 隐私、版权或研究伦理
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 脱敏后的问题描述
+    validations:
+      required: true
+  - type: textarea
+    id: impact
+    attributes:
+      label: 可能影响
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交确认
+      options:
+        - label: 公开内容不含密钥、个人信息、未公开论文或受限制全文。
+          required: true

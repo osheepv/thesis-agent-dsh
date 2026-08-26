@@ -1,5 +1,9 @@
 # thesis-agent-dsh
 
+[![CI](https://github.com/osheepv/thesis-agent-dsh/actions/workflows/main.yml/badge.svg)](https://github.com/osheepv/thesis-agent-dsh/actions/workflows/main.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Discussions](https://img.shields.io/badge/GitHub-Discussions-6f42c1)](https://github.com/osheepv/thesis-agent-dsh/discussions)
+
 学位论文全流程智能写作工作台的工程化原型：FastAPI 后端、十阶段状态机、文献与知识库基础、docx 管线和桌面式 Web UI。
 
 > 准确定位：项目已经具备可信的十阶段控制流，但还不是可稳定交付完整本/硕/博论文的成品。当前重点是把整批生成改造成可编辑、可版本化、逐条绑定证据的分节写作系统。产品边界和建设路线见 [产品架构蓝图](docs/产品架构蓝图.md)，界面规范见 [DESIGN.md](DESIGN.md)。
@@ -57,6 +61,8 @@
 - 提交建议时，请尽量说明使用场景、期望行为和当前问题；请勿上传未公开论文、个人信息、API密钥或受版权保护的全文材料。
 
 所有反馈都会作为产品迭代参考，但本项目不会代替作者、导师或学校完成学术真实性、研究伦理和最终质量审查。
+
+参与前请阅读 [贡献指南](CONTRIBUTING.md)、[社区行为准则](CODE_OF_CONDUCT.md)、[安全政策](SECURITY.md) 和 [产品路线图](ROADMAP.md)。
 
 ## 模块映射（对齐系统设计 M1~M9 落地状态）
 
@@ -149,3 +155,7 @@ Cytoscape.js 3.30.2（知识图谱）· pytest 8.3.5
 ## API 示例
 
 见 `docs/api_examples.md`。
+
+## 许可证
+
+项目自有代码采用 [Apache License 2.0](LICENSE)。第三方组件继续适用各自许可证，详见 [第三方软件声明](THIRD_PARTY_NOTICES.md)。

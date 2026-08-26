@@ -1,0 +1,40 @@
+name: 功能建议
+description: 提议新的产品能力或工作流改进
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 谁在什么阶段遇到了什么问题？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 描述期望的交互、输入、输出和人工确认点。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 已考虑的替代方案
+  - type: textarea
+    id: safety
+    attributes:
+      label: 学术、安全与隐私影响
+      description: 说明是否涉及引用真实性、实验数据、个人信息、版权或自动化边界。
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交确认
+      options:
+        - label: 我已搜索现有Issues和Discussions。
+          required: true
+        - label: 此建议不会要求系统伪造研究、引用或实验结果。
+          required: true

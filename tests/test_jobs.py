@@ -245,12 +245,44 @@ def test_llm_client_records_usage_for_billed_empty_responses():
         )
     )
 
-    with job_runtime_context(runtime), pytest.raises(Exception, match="空内容"):
+    with job_runtime_context(runtime), pytest.raises(
+        Exception, match="空内容.*thinking_mode=disabled"
+    ):
         client.generate_json(system="Return JSON", prompt="JSON answer", model_cls=Output)
 
     usage = registry.get_by_id(job.job_id)
     assert usage.input_tokens == 24
     assert usage.output_tokens == 2
+
+
+def test_llm_client_disables_thinking_for_structured_json_by_default():
+    class Output(BaseModel):
+        answer: str
+
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content='{"answer":"ok"}'),
+                finish_reason="stop",
+            )],
+            usage=SimpleNamespace(prompt_tokens=4, completion_tokens=4),
+        )
+
+    client = LLMClient(LLMSettings(enabled=True, api_key="test-key", retry_max=0))
+    client._client = SimpleNamespace(  # noqa: SLF001
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+
+    output = client.generate_json(
+        system="Return JSON", prompt="JSON answer", model_cls=Output
+    )
+
+    assert output.answer == "ok"
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert "reasoning_effort" not in captured
 
 
 class _Ring1Executor:

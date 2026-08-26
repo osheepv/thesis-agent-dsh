@@ -1226,6 +1226,24 @@ class MainOrchestration:
             tenant_id=rec.tenant_id,
         )
         ctx.results = verified_results
+        ctx.enforce_chapter_minimum = True
+        checkpoint = (
+            rec.ring6
+            if isinstance(rec.ring6, dict) and rec.ring6.get("checkpoint")
+            else {}
+        )
+        ctx.chapter_checkpoint = list(checkpoint.get("chapters", []) or [])
+
+        def _save_chapter_checkpoint(chapters: List[Dict[str, Any]]) -> None:
+            latest = self._require(task_id)
+            latest.ring6 = {
+                "checkpoint": True,
+                "chapters": chapters,
+                "completed_chapter_count": len(chapters),
+            }
+            self._store.put(latest)
+
+        ctx.chapter_checkpoint_callback = _save_chapter_checkpoint
         res = get_executor(6).execute(ctx)
         if not res.accept:
             self._fsm.submit_execution(task_id, res.output, accepted=False)
@@ -1381,8 +1399,8 @@ class MainOrchestration:
             raise BizException(ErrorCode.DOCX_GENERATE_FAILED,
                               msg="请先运行 docx 生成（generate_docx），再执行排版检查",
                               detail={"task_id": task_id})
-        # 从 docx 记录中找落盘路径（generate 时已存 file_path；无则按 filename 拼，
-        # 最后才 glob 兜底——多任务并发时不串数据）
+        # 从当前任务 docx 记录中找落盘路径（generate 时已存 file_path；无则按
+        # 当前任务 filename 精确拼接）。禁止用全局 glob 猜测，避免并发任务串档。
         import os as _os
         docx_path = docx.get("file_path", "") or ""
         if docx_path and not _os.path.exists(docx_path):
@@ -1395,14 +1413,6 @@ class MainOrchestration:
                 p = _os.path.join(outputs_dir, fn)
                 if _os.path.exists(p):
                     docx_path = p
-        if not docx_path:
-            import glob as _glob
-            outputs_dir = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(
-                _os.path.abspath(__file__)))), "thesis_docx", "storage", "outputs")
-            cands = sorted(_glob.glob(_os.path.join(outputs_dir, "*_thesis_render.docx")),
-                           key=_os.path.getmtime, reverse=True)
-            docx_path = cands[0] if cands else ""
-
         ctx = ExecContext(
             subject_field=rec.subject_field,
             degree=Degree(rec.degree),

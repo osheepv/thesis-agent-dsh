@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -53,6 +53,10 @@ class LLMSettings(BaseSettings):
     retry_max: int = Field(default=_DEFAULT_RETRY)
     #: LLM 不可用时是否回退确定性 Mock；正式默认关闭，测试/演示需显式开启
     fallback_to_mock: bool = Field(default=False)
+    #: 结构化写作默认关闭思考模式，避免推理Token耗尽后最终JSON为空。
+    thinking_mode: Literal["enabled", "disabled"] = Field(default="disabled")
+    #: 显式启用思考模式时的推理强度。
+    reasoning_effort: Literal["low", "high", "max"] = Field(default="low")
 
 
 def _load_settings() -> LLMSettings:
@@ -192,17 +196,27 @@ class LLMClient:
         last_exc: Optional[Exception] = None
         for _ in range(2):
             try:
-                resp = self._client.chat.completions.create(
-                    model=self._settings.model,
-                    messages=[
+                request: dict[str, Any] = {
+                    "model": self._settings.model,
+                    "messages": [
                         {"role": "system", "content": system},
                         {"role": "user", "content": prompt},
                     ],
-                    response_format={"type": "json_object"},
-                    temperature=temperature,
-                    max_tokens=max_output_tokens,
-                )
-                content = resp.choices[0].message.content
+                    "response_format": {"type": "json_object"},
+                    "temperature": temperature,
+                    "max_tokens": max_output_tokens,
+                    "extra_body": {
+                        "thinking": {"type": self._settings.thinking_mode}
+                    },
+                }
+                if self._settings.thinking_mode == "enabled":
+                    request["reasoning_effort"] = self._settings.reasoning_effort
+                resp = self._client.chat.completions.create(**request)
+                choice = resp.choices[0]
+                message = choice.message
+                content = getattr(message, "content", "") or ""
+                reasoning_content = getattr(message, "reasoning_content", "") or ""
+                finish_reason = getattr(choice, "finish_reason", None)
                 if runtime is not None:
                     usage = getattr(resp, "usage", None)
                     input_tokens = int(
@@ -214,7 +228,24 @@ class LLMClient:
                     )
                     runtime.record_llm_usage(input_tokens, output_tokens)
                 if not content:
-                    raise LLMError("LLM 返回空内容")
+                    usage = getattr(resp, "usage", None)
+                    completion_tokens = int(
+                        getattr(usage, "completion_tokens", 0) or 0
+                    )
+                    raise LLMError(
+                        "LLM 返回空内容 "
+                        f"(finish_reason={finish_reason or 'unknown'}, "
+                        f"reasoning_chars={len(reasoning_content)}, "
+                        f"completion_tokens={completion_tokens}, "
+                        f"thinking_mode={self._settings.thinking_mode})"
+                    )
+                if finish_reason not in (None, "stop"):
+                    logger.warning(
+                        "LLM 非正常结束: finish_reason=%s content_chars=%s thinking_mode=%s",
+                        finish_reason,
+                        len(content),
+                        self._settings.thinking_mode,
+                    )
                 return content
             except (JobBudgetExceededError, JobCancelledError):
                 raise

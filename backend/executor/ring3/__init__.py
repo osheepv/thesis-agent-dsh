@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import re
 from typing import List
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -72,6 +74,9 @@ class LiteratureItem(BaseModel):
     reliability: str = Field(default="uncertain", description="可靠度 verified/matched/uncertain")
     gbt7714: str = Field(default="", description="GB/T 7714 引用")
     urls: list[str] = Field(default_factory=list, description="链接")
+    item_type: str = Field(default="article", description="article/conference/guide等")
+    relevance_score: float = Field(default=0.0, description="与当前选题的词法相关度 0..1")
+    relevance_terms: list[str] = Field(default_factory=list, description="命中的选题关键词")
 
 
 class LiteraturePoolResult(BaseModel):
@@ -86,6 +91,7 @@ class LiteraturePoolResult(BaseModel):
     total: int = Field(default=0, description="总条目数")
     target_count: int = Field(default=0, description="学位目标数量")
     summary: str = Field(default="", description="调研说明（数据来源/可靠度/补全建议）")
+    search_queries: list[str] = Field(default_factory=list, description="实际执行的检索式")
 
 
 def _categorize(title: str) -> str:
@@ -95,6 +101,84 @@ def _categorize(title: str) -> str:
         if any(k in low for k in kws):
             return cat
     return "方法"
+
+
+_GENERIC_TERMS = {
+    "研究", "方法", "系统", "模型", "算法", "优化", "分析", "设计", "实现",
+    "基于", "面向", "场景", "检测", "本科", "毕业", "论文", "应用", "机制",
+    "study", "research", "method", "system", "model", "algorithm", "optimization",
+    "detection", "based", "approach", "analysis", "design",
+}
+_GENERIC_PHRASES = {
+    "检测算法优化研究", "算法优化研究", "技术优化研究", "系统设计与实现",
+    "场景适配研究", "应用研究", "方法研究", "模型研究",
+}
+
+
+def _lexical_terms(text: str) -> set[str]:
+    """提取中英文检索词；中文使用2~4字n-gram以避免依赖分词服务。"""
+    normalized = (text or "").lower()
+    terms = {
+        token
+        for token in re.findall(r"[a-z][a-z0-9_-]{2,}", normalized)
+        if token not in _GENERIC_TERMS
+    }
+    for sequence in re.findall(r"[一-鿿]{2,}", normalized):
+        for width in (2, 3, 4):
+            terms.update(
+                sequence[index:index + width]
+                for index in range(max(0, len(sequence) - width + 1))
+            )
+    return {
+        term
+        for term in terms
+        if term not in _GENERIC_TERMS
+        and not any(term in phrase for phrase in _GENERIC_PHRASES)
+    }
+
+
+def _rank_by_relevance(
+    items: List[LiteratureItem], theme: str, subject_field: str
+) -> List[LiteratureItem]:
+    """按选题相关度排序；可靠度只做小幅加分，不能替代主题相关性。"""
+    query_terms = _lexical_terms(f"{theme} {subject_field}")
+    if not query_terms or not items:
+        return items
+    title_terms = [_lexical_terms(item.title) for item in items]
+    abstract_terms = [_lexical_terms(item.abstract) for item in items]
+    document_terms = [title | abstract for title, abstract in zip(title_terms, abstract_terms)]
+    idf = {
+        term: math.log((len(items) + 1) / (1 + sum(term in doc for doc in document_terms))) + 1
+        for term in query_terms
+    }
+    denominator = sum(idf.values()) or 1.0
+    for index, item in enumerate(items):
+        title_overlap = query_terms & title_terms[index]
+        abstract_overlap = query_terms & abstract_terms[index]
+        title_score = sum(idf[term] for term in title_overlap) / denominator
+        abstract_score = sum(idf[term] for term in abstract_overlap) / denominator
+        phrase_bonus = 0.08 if any(
+            len(term) >= 4 and term in item.title.lower() for term in query_terms
+        ) else 0.0
+        reliability_bonus = (
+            0.04 if item.reliability in {"verified", "matched"} else 0.0
+        )
+        item.relevance_score = round(min(
+            1.0,
+            title_score * 0.78 + abstract_score * 0.18
+            + phrase_bonus + reliability_bonus,
+        ), 4)
+        overlaps = title_overlap | abstract_overlap
+        item.relevance_terms = sorted(overlaps, key=lambda value: (-len(value), value))[:8]
+    return sorted(
+        items,
+        key=lambda item: (
+            item.item_type == "guide",
+            -item.relevance_score,
+            -(item.citation_count or 0),
+            item.title,
+        ),
+    )
 
 
 def _llm_expand_queries(subject_field: str, theme: str) -> list[str]:
@@ -139,6 +223,7 @@ def _to_lit_item(it: LitItem) -> LiteratureItem:
         reliability=d["reliability"],
         gbt7714=format_gbt7714(d),
         urls=d["urls"],
+        item_type=d["item_type"],
     )
 
 
@@ -166,6 +251,7 @@ def _kb_docs_to_items(ctx: ExecContext) -> List[LiteratureItem]:
                                    "year": meta.get("year"), "venue": meta.get("venue", ""),
                                    "doi": meta.get("doi", ""), "item_type": "article"}),
             urls=[],
+            item_type="article",
         ))
     return result
 
@@ -228,13 +314,23 @@ class Ring3LiteratureReviewExecutor(RingExecutor):
                 if len(items) >= _API_FETCH_LIMIT:
                     break
 
+        items = _rank_by_relevance(
+            items,
+            theme,
+            f"{ctx.subject_field} {' '.join(queries)}",
+        )
         target = _DEGREE_TARGETS[ctx.degree]
         # 可靠度统计
         verified = sum(1 for it in items if it.reliability in ("verified", "matched"))
         uncertain_cn = sum(1 for it in items if it.reliability == "uncertain")
+        relevant = sum(
+            1 for it in items
+            if it.item_type != "guide" and it.relevance_score >= 0.12
+        )
         summary = (
             f"共检索 {len(items)} 条（真实 API：Crossref + OpenAlex）；"
-            f"可靠命中 {verified} 条；中文/低置信 {uncertain_cn} 条需人工复核。"
+            f"可靠命中 {verified} 条；相关度达标 {relevant} 条；"
+            f"中文/低置信 {uncertain_cn} 条需人工复核。"
             f"学位目标 {target} 条——免费 API 单次演示取 top {_API_FETCH_LIMIT} 条，"
             f"完整规模需订阅源（NCPSSD/知网/万方）或人工补全。"
         )
@@ -247,6 +343,7 @@ class Ring3LiteratureReviewExecutor(RingExecutor):
             total=len(items),
             target_count=target,
             summary=summary,
+            search_queries=queries,
         )
 
         evidence = {
@@ -261,6 +358,10 @@ class Ring3LiteratureReviewExecutor(RingExecutor):
             output=result.model_dump_json(indent=2),
             accept=True,
             fallbackTo=None,
-            issues=[] if verified > 0 else ["未命中任何可靠文献，请调整检索词或人工建池"],
+            issues=(
+                []
+                if verified > 0 and relevant >= 3
+                else ["可靠且相关的文献不足3条，请调整检索词或人工建池"]
+            ),
             evidence=evidence,
         )

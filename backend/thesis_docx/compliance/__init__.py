@@ -94,6 +94,8 @@ class DocxComplianceChecker:
         issues.extend(self._check_indent(doc))
         # 4. 前置件结构（按段落标题关键词）
         issues.extend(self._check_structure(doc))
+        # 4.5 长正文必须是真实Word段落，而不是单个多行占位符文本块
+        issues.extend(self._check_body_materialization(doc))
         # 5. OOXML 审计（styleId 存在性 / PAGE 域）
         issues.extend(self._check_ooxml(file_path))
 
@@ -278,6 +280,29 @@ class DocxComplianceChecker:
                         )]
         except Exception as exc:  # noqa: BLE001
             return [ComplianceIssue("structure", "SOFT", f"结构检查异常：{exc}")]
+        return []
+
+    @staticmethod
+    def _check_body_materialization(doc) -> List[ComplianceIssue]:
+        """拒绝长论文正文仍折叠在一个模板段落中的假排版。"""
+        paragraphs = [paragraph for paragraph in doc.paragraphs if paragraph.text.strip()]
+        lengths = [len(paragraph.text.strip()) for paragraph in paragraphs]
+        total_chars = sum(lengths)
+        if total_chars < 3000:
+            return []
+        max_chars = max(lengths, default=0)
+        heading_count = sum(
+            1
+            for paragraph in paragraphs
+            if paragraph.style
+            and str(paragraph.style.name or "").lower().startswith("heading")
+        )
+        if max_chars > total_chars * 0.6 or len(paragraphs) < 15 or heading_count < 3:
+            return [ComplianceIssue(
+                "structure",
+                "HARD",
+                "正文未转换为可编辑的Word标题/段落结构，疑似仍是单个模板文本块",
+            )]
         return []
 
     def _check_ooxml(self, file_path: str) -> List[ComplianceIssue]:

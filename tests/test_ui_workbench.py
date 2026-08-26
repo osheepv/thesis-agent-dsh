@@ -74,6 +74,8 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         'Math.min(pollDelay * 1.6, 5000)',
         'data-action="generate-all-sections"',
         './vendor/cytoscape.min.js',
+        'relevance_score',
+        'literature-relevance',
     ):
         assert fragment in html
 

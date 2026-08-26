@@ -107,6 +107,50 @@ class TestRing3Literature:
         assert data["target_count"] > 0
         assert data["summary"], "应有说明（来源/补全建议）"
 
+    def test_relevance_ranking_beats_metadata_reliability(self):
+        from backend.executor.ring3 import LiteratureItem, _rank_by_relevance
+
+        items = [
+            LiteratureItem(
+                title="工业零部件表面缺陷检测算法优化研究",
+                reliability="verified",
+            ),
+            LiteratureItem(
+                title="高校学术不端与毕业论文查重机制研究",
+                abstract="讨论场景适配和学术诚信治理。",
+                reliability="matched",
+            ),
+            LiteratureItem(
+                title="地基基础检测技术优化研究",
+                reliability="verified",
+            ),
+            LiteratureItem(
+                title="Natural Scene Text Detection Algorithm",
+                reliability="verified",
+            ),
+            LiteratureItem(
+                title="Text Plagiarism Detection for Academic Writing",
+                reliability="matched",
+            ),
+        ]
+
+        ranked = _rank_by_relevance(
+            items,
+            "基于场景适配的高校学术不端检测算法优化研究——以本科毕业论文查重为例",
+            "人工智能治理与学术信息管理 plagiarism academic writing",
+        )
+
+        assert ranked[0].title == "高校学术不端与毕业论文查重机制研究"
+        assert ranked[0].relevance_score >= 0.12
+        assert ranked[0].relevance_score > ranked[1].relevance_score
+        plagiarism = next(
+            item for item in ranked if "Plagiarism" in item.title
+        )
+        scene_detection = next(
+            item for item in ranked if "Natural Scene" in item.title
+        )
+        assert plagiarism.relevance_score > scene_detection.relevance_score
+
 
 class TestRing8Check:
     def test_refs_verified(self, fake_lit):

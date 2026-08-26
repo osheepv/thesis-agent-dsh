@@ -12,7 +12,9 @@
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from docxtpl import DocxTemplate
@@ -107,6 +109,21 @@ class DocxGenerator:
                 detail={"out_path": out_path, "err": str(exc)},
             ) from exc
 
+        body_text = str(context.get("content") or context.get("chapter") or "")
+        try:
+            if (
+                body_text
+                and Path(template_path).resolve()
+                == Path(self._config.BUILTIN_TEMPLATE_PATH).resolve()
+            ):
+                self._materialize_builtin_markdown(out_path, body_text)
+        except Exception as exc:  # noqa: BLE001
+            raise BizException(
+                ErrorCode.DOCX_GENERATE_FAILED,
+                "内置模板正文结构化失败",
+                detail={"out_path": out_path, "err": str(exc)},
+            ) from exc
+
         try:
             cross_reference_report = apply_cross_references(out_path).to_dict()
         except CrossReferenceError as exc:
@@ -157,6 +174,82 @@ class DocxGenerator:
             return chars
         except Exception:  # noqa: BLE001
             return 0
+
+    @staticmethod
+    def _materialize_builtin_markdown(path: str, body_text: str) -> None:
+        """把内置模板中的Markdown正文占位符转换为真实Word段落和标题。"""
+        from docx import Document
+        from docx.oxml import OxmlElement
+        from docx.shared import Pt
+        from docx.text.paragraph import Paragraph
+
+        normalized = body_text.strip()
+        if not normalized:
+            return
+        document = Document(path)
+        target = next(
+            (
+                paragraph
+                for paragraph in document.paragraphs
+                if paragraph.text.strip() == normalized
+            ),
+            None,
+        )
+        if target is None:
+            prefix = normalized[:120]
+            target = next(
+                (
+                    paragraph
+                    for paragraph in document.paragraphs
+                    if prefix and prefix in paragraph.text
+                ),
+                None,
+            )
+        if target is None:
+            raise ValueError("未定位到内置模板正文占位符段落")
+
+        blocks: List[tuple[str, str]] = []
+        buffer: List[str] = []
+
+        def flush_buffer() -> None:
+            if buffer:
+                blocks.append(("body", " ".join(buffer).strip()))
+                buffer.clear()
+
+        for raw_line in normalized.splitlines():
+            line = raw_line.strip()
+            if not line:
+                flush_buffer()
+                continue
+            heading = re.match(r"^(#{1,3})\s+(.+)$", line)
+            if heading:
+                flush_buffer()
+                blocks.append((f"heading{len(heading.group(1))}", heading.group(2).strip()))
+                continue
+            if re.match(r"^\[\d+\]\s+", line):
+                flush_buffer()
+                blocks.append(("reference", line))
+                continue
+            buffer.append(line)
+        flush_buffer()
+
+        if not blocks:
+            return
+        parent = target._parent
+        for kind, text in blocks:
+            element = OxmlElement("w:p")
+            target._p.addprevious(element)
+            paragraph = Paragraph(element, parent)
+            if kind.startswith("heading"):
+                paragraph.style = f"Heading {kind[-1]}"
+            else:
+                paragraph.style = "Normal"
+                paragraph.paragraph_format.line_spacing = 1.5
+                if kind == "body":
+                    paragraph.paragraph_format.first_line_indent = Pt(24)
+            paragraph.add_run(text)
+        target._p.getparent().remove(target._p)
+        document.save(path)
 
     @staticmethod
     def _detect_leftover_placeholders(path: str) -> List[str]:

@@ -250,6 +250,33 @@ def test_degraded_draft_is_rejected_and_verified_results_reach_writer(monkeypatc
     assert result.data["total_words"] >= Degree.MASTER.min_word_requirement
 
 
+def test_ring6_checkpoint_is_persisted_when_provider_fails(monkeypatch):
+    orchestration, _fake, task_id = _advance_to_ring6(monkeypatch)
+
+    class _FailingRing6:
+        def execute(self, ctx):
+            ctx.chapter_checkpoint_callback([{
+                "chapter_no": 1,
+                "chapter_title": "第1章 绪论",
+                "content": "已完成章节 [L1]",
+                "word_count": 10,
+            }])
+            raise RuntimeError("模拟后续章节供应商失败")
+
+    monkeypatch.setattr(
+        "application.service.uc_main_orchestration.get_executor",
+        lambda ring_no: _FailingRing6(),
+    )
+
+    with pytest.raises(RuntimeError, match="供应商失败"):
+        orchestration.run_ring6(task_id)
+
+    checkpoint = orchestration._store.get(task_id).ring6  # noqa: SLF001
+    assert checkpoint["checkpoint"] is True
+    assert checkpoint["completed_chapter_count"] == 1
+    assert checkpoint["chapters"][0]["chapter_title"] == "第1章 绪论"
+
+
 def test_ring8_failure_can_reopen_ring6(monkeypatch):
     orchestration, fake, task_id = _advance_to_ring6(monkeypatch)
     orchestration.run_ring6(task_id)
@@ -285,6 +312,38 @@ def test_legacy_citations_render_reference_list(monkeypatch):
     assert record.ring8["reference_entries"][0]["number"] == 1
     assert "# 参考文献" in record.ring8["rendered_content"]
     assert "纳入文献[J]. 2026." in record.ring8["rendered_content"]
+
+
+def test_ring9_never_guesses_another_tasks_docx(monkeypatch):
+    orchestration, _fake, task_id = _advance_to_ring6(monkeypatch)
+    orchestration.run_ring6(task_id)
+    orchestration.confirm_ring(task_id, 6)
+    orchestration.run_ring7(task_id)
+    orchestration.confirm_ring(task_id, 7)
+    orchestration.run_ring8(task_id)
+    orchestration.confirm_ring(task_id, 8)
+    record = orchestration._store.get(task_id)  # noqa: SLF001
+    record.docx = {"filename": "missing-current-task.docx"}
+    orchestration._store.put(record)  # noqa: SLF001
+    captured = {}
+
+    class _Ring9:
+        def execute(self, ctx):
+            captured["docx_path"] = getattr(ctx, "docx_path", "")
+            return ExecResult(
+                output=json.dumps({"compliant": False, "issues": []}),
+                accept=False,
+            )
+
+    monkeypatch.setattr(
+        "application.service.uc_main_orchestration.get_executor",
+        lambda ring_no: _Ring9(),
+    )
+
+    result = orchestration.run_ring9(task_id)
+
+    assert not result.is_ok
+    assert captured["docx_path"] == ""
 
 
 def test_failed_job_can_reopen_before_fsm_enters_fallback(monkeypatch):

@@ -89,6 +89,32 @@ def test_docx_generator_applies_and_validator_audits_cross_references(tmp_path):
     assert validation.roundtrip_valid is True
 
 
+def test_builtin_generator_materializes_markdown_as_word_structure(tmp_path):
+    output_path = tmp_path / "structured.docx"
+    body = (
+        "# 第1章 绪论\n\n"
+        "## 1.1 研究背景\n\n"
+        "第一段正文。\n\n第二段正文。\n\n"
+        "# 参考文献\n\n"
+        "[1] A. Example[J]. 2026.\n"
+        "[2] B. Example[J]. 2025."
+    )
+
+    DocxGenerator().render(
+        template_path=str(DocxConfig.BUILTIN_TEMPLATE_PATH),
+        content={"chapter": body, "topic": "结构化测试", "outline": "1 绪论"},
+        output_path=str(output_path),
+    )
+
+    document = Document(output_path)
+    paragraphs = [paragraph for paragraph in document.paragraphs if paragraph.text.strip()]
+    styles = {paragraph.text: paragraph.style.name for paragraph in paragraphs}
+    assert styles["第1章 绪论"] == "Heading 1"
+    assert styles["1.1 研究背景"] == "Heading 2"
+    assert styles["参考文献"] == "Heading 1"
+    assert sum(1 for paragraph in paragraphs if paragraph.text.startswith("[")) == 2
+
+
 def test_section_fallback_emits_result_target_and_auditable_marker():
     generated = SectionDraftGenerator._fallback(
         {

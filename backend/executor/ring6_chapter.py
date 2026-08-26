@@ -185,6 +185,7 @@ class Ring6ChapterExecutor(RingExecutor):
         target_per_chapter = math.ceil(
             ctx.degree.min_word_requirement / max(len(chapter_meta), 1)
         )
+        target_max_per_chapter = target_per_chapter + max(500, target_per_chapter // 4)
         # 文献池注入（仅可引用池内条目，防止 AI 编造引文）
         pool_block = lit_pool_block(
             [it if isinstance(it, dict) else it.to_dict() for it in ctx.literature]
@@ -201,11 +202,33 @@ class Ring6ChapterExecutor(RingExecutor):
             pool_block = pool_block + "\n" + kb_block
         verified_results = list(getattr(ctx, "results", []) or [])
         result_block = _verified_result_block(verified_results)
+        checkpoint = list(getattr(ctx, "chapter_checkpoint", []) or [])
+        checkpoint_by_no = {
+            chapter.chapter_no: chapter
+            for chapter in (ChapterDraft.model_validate(item) for item in checkpoint)
+            if 1 <= chapter.chapter_no <= len(chapter_meta)
+        }
         chapters: list[ChapterDraft] = []
+        enforce_chapter_minimum = bool(
+            getattr(ctx, "enforce_chapter_minimum", False)
+        )
+        checkpoint_callback = getattr(ctx, "chapter_checkpoint_callback", None)
+        max_output_tokens = min(
+            8192,
+            max(4096, math.ceil(target_max_per_chapter * 1.4)),
+        )
         for chapter_no, (number, title) in enumerate(chapter_meta, start=1):
+            existing = checkpoint_by_no.get(chapter_no)
+            if existing is not None and (
+                not enforce_chapter_minimum
+                or _count_words(existing.content) >= target_per_chapter
+            ):
+                chapters.append(existing)
+                continue
             degree_gen = (
                 f"全文最低 {ctx.degree.min_word_requirement} 字；当前仅写第{chapter_no}章，"
-                f"该章不少于 {target_per_chapter} 字，不得用提纲或占位句代替正文"
+                f"该章控制在 {target_per_chapter}~{target_max_per_chapter} 字，"
+                "不得用提纲或占位句代替正文，也不要通过重复段落凑字数"
             )
             tpl = prompt_repo.render("ring6_chapter", {
                 "theme": theme,
@@ -216,20 +239,47 @@ class Ring6ChapterExecutor(RingExecutor):
                 "pool_block": pool_block,
                 "result_block": result_block,
             })
-            raw = get_llm_client().generate_json(
-                system=tpl["system"],
-                prompt=tpl["prompt"],
-                model_cls=LLMChapterWriteOut,
-                temperature=0.35,
-                max_output_tokens=8192,
-            )
-            if not raw.chapters:
-                raise StructuredOutputError(f"第{chapter_no}章返回空章节")
-            selected = raw.chapters[0]
-            selected.chapter_no = chapter_no
-            selected.chapter_title = selected.chapter_title or f"{number} {title}"
-            selected.word_count = _count_words(selected.content)
+            selected: ChapterDraft | None = None
+            correction = ""
+            for revision in range(2):
+                raw = get_llm_client().generate_json(
+                    system=tpl["system"],
+                    prompt=tpl["prompt"] + correction,
+                    model_cls=LLMChapterWriteOut,
+                    temperature=0.35,
+                    max_output_tokens=max_output_tokens,
+                )
+                if not raw.chapters:
+                    raise StructuredOutputError(f"第{chapter_no}章返回空章节")
+                selected = raw.chapters[0]
+                selected.chapter_no = chapter_no
+                selected.chapter_title = selected.chapter_title or f"{number} {title}"
+                selected.word_count = _count_words(selected.content)
+                if not enforce_chapter_minimum or selected.word_count >= target_per_chapter:
+                    break
+                correction = (
+                    "\n【长度纠偏】上一版正文只有 "
+                    f"{selected.word_count} 字，低于最低 {target_per_chapter} 字。"
+                    "请保留已有事实、引用标记和章节结构，补充分析、方法细节、"
+                    "限制条件与小结后，重新输出完整章节JSON。"
+                    f"\n【上一版正文】\n{selected.content}"
+                )
+            if selected is None or (
+                enforce_chapter_minimum
+                and selected.word_count < target_per_chapter
+            ):
+                actual = selected.word_count if selected is not None else 0
+                raise StructuredOutputError(
+                    f"第{chapter_no}章两次生成后仍仅 {actual} 字，"
+                    f"低于最低 {target_per_chapter} 字"
+                )
             chapters.append(selected)
+            checkpoint_by_no[chapter_no] = selected
+            if callable(checkpoint_callback):
+                checkpoint_callback([
+                    checkpoint_by_no[number].model_dump()
+                    for number in sorted(checkpoint_by_no)
+                ])
 
         _append_verified_results(chapters, verified_results)
         used_refs: list[str] = []

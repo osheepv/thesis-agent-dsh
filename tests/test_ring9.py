@@ -63,6 +63,20 @@ class TestComplianceChecker:
         d = DocxComplianceChecker().check(p).to_dict()
         assert any(i["severity"] == "HARD" and i["category"] == "structure" for i in d["issues"])
 
+    def test_collapsed_long_body_is_hard(self, tmp_path):
+        path = str(tmp_path / "collapsed.docx")
+        doc = _Doc()
+        doc.add_paragraph("# 第1章 绪论\n\n" + ("未结构化正文" * 800))
+        doc.save(path)
+
+        report = DocxComplianceChecker().check(path).to_dict()
+
+        assert any(
+            issue["severity"] == "HARD"
+            and "Word标题/段落结构" in issue["message"]
+            for issue in report["issues"]
+        )
+
 
 class TestRing9Executor:
     def test_passes_clean(self, tmp_path):

@@ -660,6 +660,7 @@ a:hover { text-decoration: underline; }
 .badge.matched   { background: var(--permission-soft); color: var(--permission); }
 .badge.discovery { background: var(--border-divider); color: var(--text-inactive); }
 .badge.uncertain { background: var(--warning-soft); color: var(--warning); }
+.literature-relevance { font-variant-numeric: tabular-nums; }
 
 /* —— 链接按钮（跳转下载） —— */
 .link-btn {
@@ -4098,7 +4099,10 @@ function renderRingResult(ringNo, data) {
         const doiUrl = it.doi ? `https://doi.org/${encodeURIComponent(it.doi)}` : '';
         const href = url || doiUrl || '';
         const checked = !curated || includedIndexes.has(index);
-        return `<div class="ref-card" data-literature-card style="margin:8px 0;"><label class="file-choice"><input type="checkbox" class="ring3-include" data-literature-index="${index}" ${checked ? 'checked' : ''} ${curated ? 'disabled' : ''}> 纳入论文项目</label><div class="ref-head"><div class="ref-title">${escapeHtml2(it.title)}</div><span class="badge ${it.reliability || 'matched'}">${escapeHtml2(it.reliability || 'matched')}</span></div><div class="ref-citation">${escapeHtml2(it.gbt7714 || '')}</div><div class="ref-actions">${href ? `<a class="link-btn" href="${escapeHtml2(href)}" target="_blank" rel="noopener">跳转下载</a>` : ''}<button class="icon-btn" type="button" onclick="copyText(${JSON.stringify(escapeHtml2(it.gbt7714 || ''))})">复制 GB/T 7714</button>${curated ? '' : `<button class="icon-btn literature-move" type="button" data-literature-move="up" aria-label="上移文献：${escapeHtml2(it.title)}">上移</button><button class="icon-btn literature-move" type="button" data-literature-move="down" aria-label="下移文献：${escapeHtml2(it.title)}">下移</button>`}</div></div>`;
+        const relevance = Number(it.relevance_score || 0);
+        const relevanceLabel = relevance > 0 ? `相关度 ${Math.round(relevance * 100)}%` : '相关度待评估';
+        const relevanceTerms = (it.relevance_terms || []).slice(0, 4).join('、');
+        return `<div class="ref-card" data-literature-card style="margin:8px 0;"><label class="file-choice"><input type="checkbox" class="ring3-include" data-literature-index="${index}" ${checked ? 'checked' : ''} ${curated ? 'disabled' : ''}> 纳入论文项目</label><div class="ref-head"><div class="ref-title">${escapeHtml2(it.title)}</div><span class="badge ${it.reliability || 'matched'}">${escapeHtml2(it.reliability || 'matched')}</span></div><div class="wb-card-meta literature-relevance">${escapeHtml2(relevanceLabel)}${relevanceTerms ? ` · 命中：${escapeHtml2(relevanceTerms)}` : ''}</div><div class="ref-citation">${escapeHtml2(it.gbt7714 || '')}</div><div class="ref-actions">${href ? `<a class="link-btn" href="${escapeHtml2(href)}" target="_blank" rel="noopener">跳转下载</a>` : ''}<button class="icon-btn" type="button" onclick="copyText(${JSON.stringify(escapeHtml2(it.gbt7714 || ''))})">复制 GB/T 7714</button>${curated ? '' : `<button class="icon-btn literature-move" type="button" data-literature-move="up" aria-label="上移文献：${escapeHtml2(it.title)}">上移</button><button class="icon-btn literature-move" type="button" data-literature-move="down" aria-label="下移文献：${escapeHtml2(it.title)}">下移</button>`}</div></div>`;
       }).join('') + `<div class="wb-card-actions"><button class="btn btn-primary btn-sm" type="button" id="save-literature-curation" ${curated ? 'disabled' : ''}>${curated ? `已保存：纳入 ${includedIndexes.size} 条` : '保存文献筛选并登记知识库'}</button></div><div id="literature-curation-error" class="wb-card-meta" role="alert" style="color:var(--error)"></div>`,
       `${name} · 已完成`);
     document.getElementById('save-literature-curation')?.addEventListener('click', async event => {

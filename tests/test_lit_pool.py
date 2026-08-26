@@ -96,3 +96,86 @@ class TestRing6PoolInjected:
         get_executor(6).execute(ctx)
         assert "文献池为空" in fake_llm["prompt"]
         assert "禁止" in fake_llm["prompt"]
+
+    def test_ring6_resumes_from_chapter_checkpoint(self, fake_llm):
+        ctx = ExecContext(
+            subject_field="CV",
+            degree=Degree.BACHELOR,
+            theme="T",
+            literature=SAMPLE_POOL,
+            outline=json.dumps({"chapters": [
+                {"level": 1, "number": "第1章", "title": "绪论"},
+                {"level": 1, "number": "第2章", "title": "方法"},
+            ]}, ensure_ascii=False),
+        )
+        ctx.chapter_checkpoint = [{
+            "chapter_no": 1,
+            "chapter_title": "第1章 绪论",
+            "content": "## 1 引言\n已保存正文 [L1]。",
+            "word_count": 12,
+        }]
+        saved = []
+        ctx.chapter_checkpoint_callback = lambda chapters: saved.append(len(chapters))
+
+        result = get_executor(6).execute(ctx)
+
+        data = json.loads(result.output)
+        assert len(data["chapters"]) == 2
+        assert data["chapters"][0]["content"] == "## 1 引言\n已保存正文 [L1]。"
+        assert saved == [2]
+
+    def test_ring6_expands_short_chapter_before_checkpoint(self, monkeypatch):
+        from backend.executor import ring6_chapter as r6
+
+        calls = []
+
+        class ExpandingLLM:
+            def generate_json(self, **kwargs):
+                calls.append(kwargs["prompt"])
+                content = (
+                    "短正文 [L1]"
+                    if len(calls) == 1
+                    else "## 分析\n" + ("可信学术正文 [L1]。" * 1200)
+                )
+                return r6.LLMChapterWriteOut(
+                    theme="T",
+                    degree="BACHELOR",
+                    chapters=[r6.ChapterDraft(
+                        chapter_no=1,
+                        chapter_title="第1章 绪论",
+                        content=content,
+                        word_count=len(content),
+                    )],
+                    total_words=len(content),
+                )
+
+        monkeypatch.setattr(r6, "get_llm_client", lambda: ExpandingLLM())
+        monkeypatch.setattr(
+            r6,
+            "get_llm_settings",
+            lambda: type("S", (), {
+                "enabled": True,
+                "api_key": "x",
+                "fallback_to_mock": False,
+            })(),
+        )
+        ctx = ExecContext(
+            subject_field="CV",
+            degree=Degree.BACHELOR,
+            theme="T",
+            literature=SAMPLE_POOL,
+            outline=json.dumps({"chapters": [
+                {"level": 1, "number": "第1章", "title": "绪论"},
+            ]}, ensure_ascii=False),
+        )
+        ctx.enforce_chapter_minimum = True
+        saved = []
+        ctx.chapter_checkpoint_callback = lambda chapters: saved.append(chapters)
+
+        result = get_executor(6).execute(ctx)
+
+        data = json.loads(result.output)
+        assert len(calls) == 2
+        assert "长度纠偏" in calls[1]
+        assert data["total_words"] >= Degree.BACHELOR.min_word_requirement
+        assert len(saved) == 1

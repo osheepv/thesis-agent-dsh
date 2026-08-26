@@ -18,6 +18,7 @@ env/
 pytest-cache-files-*/
 .playwright-cli/
 output/playwright/
+output/acceptance/
 
 # 敏感配置（API key 等，严禁入库）
 .env

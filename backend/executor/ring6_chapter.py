@@ -17,6 +17,12 @@ import re
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from common.agent_loop import (
+    AgentLoopSettings,
+    BoundedToolLoop,
+    ReadOnlyTool,
+    ToolLoopError,
+)
 from common.aicoding.enums import Degree, RingType
 from common.lit import lit_pool_block
 from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
@@ -69,6 +75,18 @@ class LLMChapterWriteOut(BaseModel):
     degree: str = Field(default="", description="学位层次 BACHELOR/MASTER/PHD")
     chapters: list[ChapterDraft] = Field(default_factory=list, description="章节草稿")
     total_words: int = Field(default=0, description="总字数估算")
+
+
+class ChapterWritingPlan(BaseModel):
+    chapter_no: int
+    objectives: list[str] = Field(min_length=1, max_length=6)
+    suggested_refs: list[str] = Field(default_factory=list)
+    evidence_gaps: list[str] = Field(default_factory=list)
+
+
+class WritingPlanOut(BaseModel):
+    chapter_plans: list[ChapterWritingPlan] = Field(min_length=1)
+    global_notes: list[str] = Field(default_factory=list)
 
 
 #: 学位差异化的每章正文基准段落数（本科少、博士深）。
@@ -135,6 +153,220 @@ def _count_words(text: str) -> int:
     return len(re.sub(r"[\s#*`-]+", "", text))
 
 
+def _writing_plan_tools(
+    ctx: ExecContext,
+    chapter_meta: list[tuple[str, str]],
+) -> list[ReadOnlyTool]:
+    """把现有文献、知识库和验收逻辑包装成只读工具。"""
+    literature = [
+        item if isinstance(item, dict) else item.to_dict()
+        for item in (ctx.literature or [])
+    ]
+
+    def search_sources(arguments: dict) -> dict:
+        from common.rag import _keyword_tokens, search_kb_blocks
+
+        query = str(arguments.get("query", "")).strip()
+        limit = min(8, max(1, int(arguments.get("limit", 5) or 5)))
+        if not query:
+            raise ValueError("query不能为空")
+        query_terms = set(_keyword_tokens(query))
+        ranked = []
+        for index, item in enumerate(literature, start=1):
+            text = f"{item.get('title', '')} {item.get('abstract', '')}"
+            overlap = len(query_terms & set(_keyword_tokens(text)))
+            if overlap:
+                ranked.append((overlap, index, item))
+        ranked.sort(key=lambda row: (-row[0], row[1]))
+        references = [
+            {
+                "marker": f"[L{index}]",
+                "title": item.get("title", ""),
+                "doi": item.get("doi", ""),
+                "reliability": item.get("reliability", ""),
+                "abstract": str(item.get("abstract", ""))[:300],
+            }
+            for _, index, item in ranked[:limit]
+        ]
+        kb_hits = [
+            {
+                "file": hit.get("file", ""),
+                "text": str(hit.get("text", ""))[:400],
+                "score": hit.get("score"),
+                "mode": hit.get("retrieval_mode", ""),
+            }
+            for hit in search_kb_blocks(ctx.session_id, query, k=limit)
+        ]
+        return {"references": references, "knowledge_blocks": kb_hits}
+
+    def read_approved_context(arguments: dict) -> dict:
+        kind = str(arguments.get("kind", "")).strip()
+        contexts = {
+            "outline": json.loads(ctx.outline or "{}"),
+            "results": list(getattr(ctx, "results", []) or []),
+            "argument_map": dict(getattr(ctx, "argument_map", {}) or {}),
+            "research_protocol": dict(getattr(ctx, "research_protocol", {}) or {}),
+        }
+        if kind not in contexts:
+            raise ValueError(f"不支持的批准上下文: {kind}")
+        return {"kind": kind, "data": contexts[kind]}
+
+    def check_citation(arguments: dict) -> dict:
+        marker = str(arguments.get("marker", "")).strip()
+        match = re.fullmatch(r"\[L(\d+)\]", marker)
+        if not match:
+            return {"marker": marker, "valid": False, "reason": "格式必须为[L序号]"}
+        index = int(match.group(1))
+        if index < 1 or index > len(literature):
+            return {"marker": marker, "valid": False, "reason": "超出文献池"}
+        item = literature[index - 1]
+        return {
+            "marker": marker,
+            "valid": True,
+            "title": item.get("title", ""),
+            "doi": item.get("doi", ""),
+            "reliability": item.get("reliability", ""),
+        }
+
+    def check_plan_structure(arguments: dict) -> dict:
+        chapter_nos = {
+            int(value) for value in (arguments.get("chapter_nos", []) or [])
+        }
+        expected = set(range(1, len(chapter_meta) + 1))
+        markers = [str(value) for value in (arguments.get("citations", []) or [])]
+        invalid = [
+            marker
+            for marker in markers
+            if not (
+                (match := re.fullmatch(r"\[L(\d+)\]", marker))
+                and 1 <= int(match.group(1)) <= len(literature)
+            )
+        ]
+        return {
+            "complete": chapter_nos == expected and not invalid,
+            "missing_chapters": sorted(expected - chapter_nos),
+            "unexpected_chapters": sorted(chapter_nos - expected),
+            "invalid_citations": invalid,
+        }
+
+    object_schema = {"type": "object", "additionalProperties": False}
+    return [
+        ReadOnlyTool(
+            name="search_sources",
+            description="在当前任务已检索文献和项目知识库中搜索写作证据，只读。",
+            parameters={
+                **object_schema,
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 8},
+                },
+                "required": ["query"],
+            },
+            handler=search_sources,
+        ),
+        ReadOnlyTool(
+            name="read_approved_context",
+            description="读取已批准的大纲、结果、论证图或研究协议，只读。",
+            parameters={
+                **object_schema,
+                "properties": {
+                    "kind": {
+                        "type": "string",
+                        "enum": ["outline", "results", "argument_map", "research_protocol"],
+                    }
+                },
+                "required": ["kind"],
+            },
+            handler=read_approved_context,
+        ),
+        ReadOnlyTool(
+            name="check_citation",
+            description="检查一个[L序号]是否属于当前批准文献池。",
+            parameters={
+                **object_schema,
+                "properties": {"marker": {"type": "string"}},
+                "required": ["marker"],
+            },
+            handler=check_citation,
+        ),
+        ReadOnlyTool(
+            name="check_plan_structure",
+            description="检查写作计划是否覆盖全部章节且引用编号有效。",
+            parameters={
+                **object_schema,
+                "properties": {
+                    "chapter_nos": {"type": "array", "items": {"type": "integer"}},
+                    "citations": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["chapter_nos", "citations"],
+            },
+            handler=check_plan_structure,
+        ),
+    ]
+
+
+def _build_writing_plan(
+    ctx: ExecContext,
+    theme: str,
+    chapter_meta: list[tuple[str, str]],
+    settings: AgentLoopSettings,
+) -> dict:
+    chapter_list = [
+        {"chapter_no": index, "number": number, "title": title}
+        for index, (number, title) in enumerate(chapter_meta, start=1)
+    ]
+    tpl = prompt_repo.render("ring6_plan", {
+        "theme": theme,
+        "degree_label": ctx.degree.label,
+        "subject_field": ctx.subject_field,
+        "chapter_list": json.dumps(chapter_list, ensure_ascii=False),
+    })
+    loop = BoundedToolLoop(
+        get_llm_client().complete_with_tools,
+        settings,
+    )
+    try:
+        outcome = loop.run(
+            system=tpl["system"],
+            prompt=tpl["prompt"],
+            tools=_writing_plan_tools(ctx, chapter_meta),
+            require_tool_call=True,
+        )
+    except ToolLoopError as exc:
+        raise StructuredOutputError(f"环6写作计划Agent失败: {exc}") from exc
+    cleaned = re.sub(
+        r"^```(?:json)?\s*|\s*```$", "", outcome.content.strip()
+    )
+    try:
+        plan = WritingPlanOut.model_validate_json(cleaned)
+    except Exception as exc:  # noqa: BLE001
+        raise StructuredOutputError(f"环6写作计划JSON无效: {exc}") from exc
+    expected = set(range(1, len(chapter_meta) + 1))
+    actual = {item.chapter_no for item in plan.chapter_plans}
+    if actual != expected:
+        raise StructuredOutputError(
+            f"环6写作计划章节覆盖错误: missing={sorted(expected - actual)}, "
+            f"unexpected={sorted(actual - expected)}"
+        )
+    invalid_refs = sorted({
+        marker
+        for item in plan.chapter_plans
+        for marker in item.suggested_refs
+        if not (
+            (match := re.fullmatch(r"\[L(\d+)\]", marker))
+            and 1 <= int(match.group(1)) <= len(ctx.literature or [])
+        )
+    })
+    if invalid_refs:
+        raise StructuredOutputError(f"环6写作计划含池外引用: {invalid_refs}")
+    return {
+        **plan.model_dump(),
+        "agent_trace": outcome.trace,
+        "agent_turns": outcome.turns,
+        "agent_tool_calls": outcome.tool_call_count,
+    }
+
+
 @register_executor
 class Ring6ChapterExecutor(RingExecutor):
     """环6 分章撰写执行体。"""
@@ -169,6 +401,11 @@ class Ring6ChapterExecutor(RingExecutor):
             "total_words": chapter_result.total_words,
             "source": source,
             "used_refs": chapter_result.used_refs if source == "deepseek" else [],
+            "agent_loop": {
+                "enabled": bool(getattr(ctx, "agent_loop_enabled", False)),
+                "turns": int((getattr(ctx, "agent_plan_result", {}) or {}).get("agent_turns", 0)),
+                "tool_calls": int((getattr(ctx, "agent_plan_result", {}) or {}).get("agent_tool_calls", 0)),
+            },
         }
 
         return ExecResult(
@@ -182,6 +419,18 @@ class Ring6ChapterExecutor(RingExecutor):
     def _llm_generate(self, ctx: ExecContext, theme: str) -> ChapterWriteResult:
         """逐章调用 DeepSeek，避免整篇输出被单次 Token 上限截断。"""
         chapter_meta = _extract_chapters(ctx.outline)
+        agent_plan = dict(getattr(ctx, "agent_plan_checkpoint", {}) or {})
+        if bool(getattr(ctx, "agent_loop_enabled", False)) and not agent_plan:
+            agent_plan = _build_writing_plan(
+                ctx,
+                theme,
+                chapter_meta,
+                AgentLoopSettings(),
+            )
+            plan_callback = getattr(ctx, "agent_plan_callback", None)
+            if callable(plan_callback):
+                plan_callback(agent_plan)
+        ctx.agent_plan_result = agent_plan
         target_per_chapter = math.ceil(
             ctx.degree.min_word_requirement / max(len(chapter_meta), 1)
         )
@@ -238,6 +487,22 @@ class Ring6ChapterExecutor(RingExecutor):
                 "titles_hint": f"{number} {title}",
                 "pool_block": pool_block,
                 "result_block": result_block,
+                "agent_plan_block": (
+                    "【已核验写作计划】\n"
+                    + json.dumps(
+                        next(
+                            (
+                                item
+                                for item in agent_plan.get("chapter_plans", [])
+                                if int(item.get("chapter_no", 0) or 0) == chapter_no
+                            ),
+                            {},
+                        ),
+                        ensure_ascii=False,
+                    )
+                    if agent_plan
+                    else "【写作计划Agent】本任务未启用。"
+                ),
             })
             selected: ChapterDraft | None = None
             correction = ""

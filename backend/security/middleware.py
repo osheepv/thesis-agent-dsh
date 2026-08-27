@@ -21,6 +21,7 @@ _TASK_RE = re.compile(r"^/api/v1/console/tasks/([^/]+)")
 _NATIVE_TASK_ID_RE = re.compile(r"^/api/v1/tasks/([^/]+)(?:/|$)")
 _KB_RE = re.compile(r"^/api/v1/kb/([^/]+)")
 _DOCX_FILE_RE = re.compile(r"^/api/v1/docx/files/([^/]+)$")
+_DEEPSEEK_PROVIDER_PATH = "/api/v1/console/provider/deepseek"
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
@@ -72,6 +73,12 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
     def _authorize(self, request: Request, principal: Principal) -> None:
         path, method = request.url.path, request.method
+        if (
+            path == _DEEPSEEK_PROVIDER_PATH
+            and method not in {"GET", "HEAD"}
+            and principal.role != UserRole.OWNER
+        ):
+            raise AuthorizationError("只有租户所有者可以修改DeepSeek配置")
         native_task = _NATIVE_TASK_ID_RE.match(path)
         if native_task:
             self.orchestration.assert_tenant_access(

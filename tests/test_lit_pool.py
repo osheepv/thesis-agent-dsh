@@ -179,3 +179,94 @@ class TestRing6PoolInjected:
         assert "长度纠偏" in calls[1]
         assert data["total_words"] >= Degree.BACHELOR.min_word_requirement
         assert len(saved) == 1
+
+    def test_ring6_bounded_agent_plan_uses_tool_and_reaches_chapter_prompt(
+        self, monkeypatch
+    ):
+        from common.agent_loop import ModelToolCall, ModelTurn
+        from backend.executor import ring6_chapter as r6
+
+        class PlanningClient:
+            def __init__(self):
+                self.plan_calls = 0
+                self.chapter_prompts = []
+
+            def complete_with_tools(self, messages, tools, max_output_tokens):
+                self.plan_calls += 1
+                if self.plan_calls == 1:
+                    return ModelTurn(tool_calls=(ModelToolCall(
+                        "plan-tool-1",
+                        "read_approved_context",
+                        '{"kind":"outline"}',
+                    ),))
+                return ModelTurn(content=json.dumps({
+                    "chapter_plans": [
+                        {
+                            "chapter_no": 1,
+                            "objectives": ["解释研究背景"],
+                            "suggested_refs": ["[L1]"],
+                            "evidence_gaps": [],
+                        },
+                        {
+                            "chapter_no": 2,
+                            "objectives": ["说明方法设计"],
+                            "suggested_refs": ["[L2]"],
+                            "evidence_gaps": [],
+                        },
+                    ],
+                    "global_notes": ["不得使用池外文献"],
+                }, ensure_ascii=False))
+
+            def generate_json(self, **kwargs):
+                self.chapter_prompts.append(kwargs["prompt"])
+                chapter_no = len(self.chapter_prompts)
+                return r6.LLMChapterWriteOut(
+                    theme="T",
+                    degree="BACHELOR",
+                    chapters=[r6.ChapterDraft(
+                        chapter_no=chapter_no,
+                        chapter_title=f"第{chapter_no}章",
+                        content=f"## 正文\n计划约束下的正文 [L{chapter_no}]。",
+                        word_count=20,
+                    )],
+                    total_words=20,
+                )
+
+        client = PlanningClient()
+        monkeypatch.setattr(r6, "get_llm_client", lambda: client)
+        monkeypatch.setattr(
+            r6,
+            "get_llm_settings",
+            lambda: type("S", (), {
+                "enabled": True,
+                "api_key": "x",
+                "fallback_to_mock": False,
+            })(),
+        )
+        ctx = ExecContext(
+            subject_field="CV",
+            degree=Degree.BACHELOR,
+            theme="T",
+            literature=SAMPLE_POOL,
+            outline=json.dumps({"chapters": [
+                {"level": 1, "number": "第1章", "title": "绪论"},
+                {"level": 1, "number": "第2章", "title": "方法"},
+            ]}, ensure_ascii=False),
+        )
+        ctx.agent_loop_enabled = True
+        saved_plans = []
+        ctx.agent_plan_callback = saved_plans.append
+
+        result = get_executor(6).execute(ctx)
+
+        assert result.accept is True
+        assert client.plan_calls == 2
+        assert len(client.chapter_prompts) == 2
+        assert "解释研究背景" in client.chapter_prompts[0]
+        assert "说明方法设计" in client.chapter_prompts[1]
+        assert saved_plans[0]["agent_tool_calls"] == 1
+        assert result.evidence["agent_loop"] == {
+            "enabled": True,
+            "turns": 2,
+            "tool_calls": 1,
+        }

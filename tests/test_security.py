@@ -146,6 +146,10 @@ def test_security_middleware_enforces_tenant_and_roles(monkeypatch):
         json={"title": "Denied", "degree": "MASTER", "subject_field": "AI"},
     )
     assert denied.status_code == 403
+    assert reviewer_client.post(
+        "/api/v1/console/provider/deepseek",
+        json={"enabled": False},
+    ).status_code == 403
     assert reviewer_client.get(
         f"/api/v1/console/tasks/{task_id}/progress"
     ).status_code == 200

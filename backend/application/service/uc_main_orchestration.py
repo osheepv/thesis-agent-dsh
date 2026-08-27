@@ -1237,6 +1237,7 @@ class MainOrchestration:
             for item in (result_ledger.payload.get("results", []) if result_ledger else [])
             if bool(item.get("verified_by_user"))
         ]
+        argument_map = self._active_argument_map(task_id)
         ctx = ExecContext(
             subject_field=rec.subject_field,
             degree=Degree(rec.degree),
@@ -1247,6 +1248,19 @@ class MainOrchestration:
             tenant_id=rec.tenant_id,
         )
         ctx.results = verified_results
+        ctx.argument_map = argument_map.payload if argument_map is not None else {}
+        ctx.research_protocol = protocol.payload if protocol is not None else {}
+        from common.agent_loop import AgentLoopSettings
+        from common.llm import get_llm_settings
+
+        agent_settings = AgentLoopSettings()
+        llm_settings = get_llm_settings()
+        if agent_settings.enabled and not llm_settings.supports_tools:
+            raise BizException(
+                ErrorCode.FSM_INVALID_TRANSITION,
+                msg=f"当前DeepSeek模型 {llm_settings.model} 未启用Tools，不能运行写作计划Agent",
+            )
+        ctx.agent_loop_enabled = agent_settings.enabled
         ctx.enforce_chapter_minimum = True
         checkpoint = (
             rec.ring6
@@ -1254,16 +1268,30 @@ class MainOrchestration:
             else {}
         )
         ctx.chapter_checkpoint = list(checkpoint.get("chapters", []) or [])
+        ctx.agent_plan_checkpoint = dict(checkpoint.get("agent_plan", {}) or {})
+
+        def _save_agent_plan(agent_plan: Dict[str, Any]) -> None:
+            latest = self._require(task_id)
+            existing = latest.ring6 if isinstance(latest.ring6, dict) else {}
+            latest.ring6 = {
+                **existing,
+                "checkpoint": True,
+                "agent_plan": agent_plan,
+            }
+            self._store.put(latest)
 
         def _save_chapter_checkpoint(chapters: List[Dict[str, Any]]) -> None:
             latest = self._require(task_id)
+            existing = latest.ring6 if isinstance(latest.ring6, dict) else {}
             latest.ring6 = {
+                **existing,
                 "checkpoint": True,
                 "chapters": chapters,
                 "completed_chapter_count": len(chapters),
             }
             self._store.put(latest)
 
+        ctx.agent_plan_callback = _save_agent_plan
         ctx.chapter_checkpoint_callback = _save_chapter_checkpoint
         res = get_executor(6).execute(ctx)
         if not res.accept:
@@ -1308,6 +1336,7 @@ class MainOrchestration:
                      "used_refs": draft.get("used_refs", []),
                      "used_result_ids": draft.get("used_result_ids", []),
                      "generation_source": str((res.evidence or {}).get("source", "")),
+                     "agent_plan": dict(getattr(ctx, "agent_plan_result", {}) or {}),
                      "compliant": True}
         self._store.put(rec)
         self._fsm.submit_execution(task_id, res.output, accepted=True)

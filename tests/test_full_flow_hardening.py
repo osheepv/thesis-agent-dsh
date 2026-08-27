@@ -255,6 +255,15 @@ def test_ring6_checkpoint_is_persisted_when_provider_fails(monkeypatch):
 
     class _FailingRing6:
         def execute(self, ctx):
+            ctx.agent_plan_callback({
+                "chapter_plans": [{
+                    "chapter_no": 1,
+                    "objectives": ["绪论目标"],
+                    "suggested_refs": ["[L1]"],
+                    "evidence_gaps": [],
+                }],
+                "agent_tool_calls": 1,
+            })
             ctx.chapter_checkpoint_callback([{
                 "chapter_no": 1,
                 "chapter_title": "第1章 绪论",
@@ -275,6 +284,28 @@ def test_ring6_checkpoint_is_persisted_when_provider_fails(monkeypatch):
     assert checkpoint["checkpoint"] is True
     assert checkpoint["completed_chapter_count"] == 1
     assert checkpoint["chapters"][0]["chapter_title"] == "第1章 绪论"
+    assert checkpoint["agent_plan"]["agent_tool_calls"] == 1
+
+
+def test_ring6_agent_loop_requires_deepseek_tools_capability(monkeypatch):
+    from common import llm
+    from common.llm import LLMSettings
+
+    orchestration, _fake, task_id = _advance_to_ring6(monkeypatch)
+    monkeypatch.setenv("THESIS_AGENT_LOOP_ENABLED", "true")
+    monkeypatch.setattr(
+        llm,
+        "_llm_settings",
+        LLMSettings(
+            api_key="test-key",
+            model="deepseek-v4-flash-vision-exp",
+            supports_tools=False,
+            supports_vision=True,
+        ),
+    )
+
+    with pytest.raises(BizException, match="未启用Tools"):
+        orchestration.run_ring6(task_id)
 
 
 def test_ring8_failure_can_reopen_ring6(monkeypatch):

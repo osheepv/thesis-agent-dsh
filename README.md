@@ -37,6 +37,8 @@
 - 环6/7执行学位级硬质量门禁：本科/硕士/博士最低字数分别为1万/3万/6万，并校验章节、引用、结果、书签、占位文本和生成来源；Mock/降级稿不能伪装为通过。
 - 环6/7采用逐章调用并保存章节级检查点；重试只继续缺失或不达标章节，空响应的已计费Token同样进入预算。
 - DeepSeek V4结构化JSON调用默认显式关闭高思考模式，避免推理Token耗尽后最终`content`为空；可通过环境变量重新启用。
+- 当前仅支持DeepSeek接口；前端可运行时设置DeepSeek API Key、Base URL、模型、思考模式和能力标记。密钥不回显、不写入浏览器或数据库，进程重启后恢复`.env`。
+- 环6已接入第一个可选的有界Agent Loop：在逐章写作前使用只读工具搜索已登记资料、读取已批准产物、核验引文和章节覆盖；强制轮数/工具数/观测长度上限，默认关闭以避免未预期费用。
 - 环7/8失败后可安全回到可修订环节，恢复入口同时识别FSM失败态与当前环FAILED Job。
 - 新分节链路的环8会审计正文证据/结果标记，生成稳定引文编号、GB/T 7714参考文献和结果交叉引用清单。
 - DOCX 生成器会把Markdown正文转换为可编辑的Word标题/正文/参考文献段落，把明确的 `BOOKMARK/REF` 标记转换为原生书签与 `REF` 域；环9会拒绝仍折叠为单个模板文本块的假排版。
@@ -54,7 +56,7 @@
 
 - 结构化表格/图片编辑器、复杂公式管线和学校模板样式差异诊断仍待完成。
 - UI 仍是单文件原型；桌面打包、独立 Worker 运维、MFA/SSO 和密钥托管尚未完成。
-- 需要建设“外层十环FSM + 环内有界Agent微循环”的工具层、项目记忆、流式进度和变更级HITL。
+- 需要把环6的有界Agent试点扩展到更多环节，并补齐论文级项目记忆、流式进度和变更级HITL。
 - 需要补充全文相关性/证据评测、提示词回归，以及硕士/博士真实长论文压力测试。
 
 ## 欢迎参与讨论
@@ -83,7 +85,8 @@
 | M9 | 知识库 | `backend/knowledge/` | ✅ 已实现（文件池/笔记双链/图谱 API + RAG 检索） |
 | 执行治理 | JobRun/预算 | `backend/jobs/` | ✅ 持久化队列、租约恢复、取消重试、Token/费用登记 |
 | 安全治理 | 认证/授权/审计 | `backend/security/` | ✅ 可选 fail-closed 认证、租户隔离、角色授权、会话撤销和操作审计 |
-| 公共 | 公共模块 | `backend/common/` | ✅ 已实现（LLM 客户端 / 文献服务 / 引用格式化 / 提示词仓库） |
+| 环内智能体 | 有界只读Agent Loop | `backend/common/agent_loop.py`、`backend/executor/ring6_chapter.py` | 🟡 环6写作计划试点已实现；其他环节待扩展 |
+| 公共 | 公共模块 | `backend/common/` | ✅ 已实现（DeepSeek客户端 / 文献服务 / 引用格式化 / 提示词仓库） |
 
 ## 环境准备
 
@@ -125,7 +128,7 @@ python -m http.server 8787
 
 ## 运行测试
 
-当前回归基线：**214 项 pytest 全部通过**（2026-08-27）。
+当前回归基线：**223 项 pytest 全部通过**（2026-08-27）。
 
 ```bash
 # 项目根执行（conftest 自动注入路径）
@@ -141,14 +144,15 @@ python -m pytest tests -v
 ## 技术栈（运行依赖见 backend/requirements-runtime.txt）
 
 Python 3.13 · FastAPI 0.115.12 · SQLAlchemy 2.0.41 · SQLite（过渡；后期可迁 PostgreSQL）·
-OpenAI 兼容模型客户端（模型名由环境配置）· docxtpl 0.20.2 · openxml-audit 0.7.5 ·
+DeepSeek OpenAI格式客户端（当前唯一支持的模型供应商）· docxtpl 0.20.2 · openxml-audit 0.7.5 ·
 sentence-transformers 3.4.1（BAAI/bge-small-zh-v1.5 本地嵌入，RAG 零成本）· pypdf ·
 Cytoscape.js 3.30.2（知识图谱）· pytest 8.3.5
 
 ## 环境变量
 
 后端读取 `backend/.env`（模板见 `backend/.env.example`，**.env 严禁提交 git**）：
-`THESIS_DEEPSEEK_API_KEY` / `THESIS_DEEPSEEK_FALLBACK_TO_MOCK` / `THESIS_DEEPSEEK_THINKING_MODE` / `THESIS_DEEPSEEK_REASONING_EFFORT` /
+`THESIS_DEEPSEEK_API_KEY` / `THESIS_DEEPSEEK_BASE_URL` / `THESIS_DEEPSEEK_MODEL` / `THESIS_DEEPSEEK_FALLBACK_TO_MOCK` / `THESIS_DEEPSEEK_THINKING_MODE` / `THESIS_DEEPSEEK_REASONING_EFFORT` /
+`THESIS_DEEPSEEK_SUPPORTS_TOOLS` / `THESIS_DEEPSEEK_SUPPORTS_VISION` / `THESIS_AGENT_LOOP_ENABLED` / `THESIS_AGENT_LOOP_MAX_TURNS` /
 `THESIS_DB_URL` / `THESIS_LIT_ENABLED` / `THESIS_LIT_SCOPE` /
 `THESIS_METASO_ENABLED`（默认 false，省钱）/ `THESIS_RAG_ENABLED` / `THESIS_CORS_ORIGINS` /
 `THESIS_TASK_STORE_MEMORY`（测试用）/ `THESIS_ARTIFACT_DB` / `THESIS_EVIDENCE_DB` /

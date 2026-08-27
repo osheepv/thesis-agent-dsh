@@ -76,8 +76,15 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         './vendor/cytoscape.min.js',
         'relevance_score',
         'literature-relevance',
+        'id="inference-form"',
+        'id="inference-api-key" type="password" autocomplete="off"',
+        '/api/v1/console/provider/deepseek',
+        'applyDeepSeekConfigView',
+        'syncDeepSeekPresetCapabilities',
     ):
         assert fragment in html
+    assert "localStorage.setItem('inference-api-key'" not in html
+    assert 'OpenAI / Anthropic' not in html
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js 未安装")

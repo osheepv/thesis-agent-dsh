@@ -2858,13 +2858,13 @@ a:hover { text-decoration: underline; }
             </button>
           </div>
 
-          <!-- 工具行：只展示真实生效的运行策略；模型由后端环境配置 -->
+          <!-- 工具行：只展示真实生效的后端运行策略 -->
           <div class="input-controls">
             <div class="input-controls-left">
               <span class="perm-chip" role="status"><span id="perm-label" data-i18n="input.bypass">逐环确认</span></span>
             </div>
             <div class="input-controls-right">
-              <span class="model-chip" role="status" title="实际模型由后端环境变量配置">
+              <span class="model-chip" role="status" title="当前后端进程的DeepSeek模型">
                 <span class="model-name" id="model-name">模型由后端配置</span>
                 <span class="model-cap" id="model-cap" style="display:none"></span>
               </span>
@@ -3173,13 +3173,9 @@ a:hover { text-decoration: underline; }
 <!-- ============ 模型选择下拉 ============ -->
 <div class="dd-menu" id="dd-model" role="menu" aria-label="模型选择">
   <div class="dd-head" data-i18n="dd.model.head">模型</div>
-  <button class="dd-item" data-model="deepseek-v4-flash-vision-exp" data-cap="" data-i18n="dd.model.visionExp">deepseek-v4-flash-vision-exp</button>
-  <button class="dd-item active" data-model="deepseek-v4-flash-vision-exp" data-cap="1M" data-i18n="dd.model.visionExp1m">deepseek-v4-flash-vision-exp</button>
-  <button class="dd-item" data-model="deepseek-v4-flash" data-cap="" data-i18n="dd.model.flash">deepseek-v4-flash</button>
-  <button class="dd-item" data-model="deepseek-v4-flash" data-cap="1M" data-i18n="dd.model.flash1m">deepseek-v4-flash</button>
-  <button class="dd-item" data-model="deepseek-v4-pro" data-cap="" data-i18n="dd.model.pro">deepseek-v4-pro</button>
-  <button class="dd-item" data-model="deepseek-v4-pro" data-cap="1M" data-i18n="dd.model.pro1m">deepseek-v4-pro</button>
-  <button class="dd-item" data-model="deepseek-v4-pro" data-cap="2M" data-i18n="dd.model.pro2m">deepseek-v4-pro</button>
+  <button class="dd-item active" data-model="deepseek-v4-flash" data-tools="true">deepseek-v4-flash</button>
+  <button class="dd-item" data-model="deepseek-v4-pro" data-tools="true">deepseek-v4-pro</button>
+  <button class="dd-item" data-model="deepseek-v4-flash-vision-exp" data-tools="true" data-vision="true">deepseek-v4-flash-vision-exp</button>
 </div>
 
 <!-- ============ 模式（逐环确认）下拉 ============ -->
@@ -3345,16 +3341,54 @@ a:hover { text-decoration: underline; }
   </div>
 </div>
 
-<!-- ============ 推理配置占位 Modal ============ -->
+<!-- ============ DeepSeek 推理配置 Modal ============ -->
 <div class="modal-mask" id="inference-modal">
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="inference-title">
     <div class="modal-title" id="inference-title" data-i18n="inference.title">推理配置</div>
-    <div class="modal-body" data-i18n="inference.desc">
-      此处将支持用户自行配置大模型（OpenAI / Anthropic / DeepSeek / 自定义端点），包含 API Key、模型选择、推理参数。后续迭代补齐。
-    </div>
-    <div class="modal-actions">
-      <button class="btn btn-primary" id="inference-close" data-i18n="modal.ok">好的</button>
-    </div>
+    <form id="inference-form" class="modal-body" novalidate>
+      <p class="wb-card-meta" data-i18n="inference.desc">本阶段仅支持DeepSeek接口。配置只在当前后端进程内生效，重启后恢复.env设置。</p>
+      <div class="form-field-row">
+        <div class="form-field">
+          <label for="inference-model">模型名</label>
+          <input id="inference-model" list="deepseek-model-options" maxlength="120" required placeholder="deepseek-v4-flash">
+          <datalist id="deepseek-model-options"></datalist>
+        </div>
+        <div class="form-field">
+          <label for="inference-base-url">Base URL</label>
+          <input id="inference-base-url" type="url" maxlength="512" required placeholder="https://api.deepseek.com">
+        </div>
+      </div>
+      <div class="form-field">
+        <label for="inference-api-key">API Key</label>
+        <input id="inference-api-key" type="password" autocomplete="off" maxlength="2048" placeholder="留空则保持当前Key不变">
+        <div id="inference-key-status" class="wb-card-meta" role="status"></div>
+      </div>
+      <div class="form-field-row">
+        <div class="form-field">
+          <label for="inference-thinking">思考模式</label>
+          <select id="inference-thinking">
+            <option value="disabled">关闭（结构化写作推荐）</option>
+            <option value="enabled">开启</option>
+          </select>
+        </div>
+        <div class="form-field">
+          <label for="inference-reasoning">推理强度</label>
+          <select id="inference-reasoning">
+            <option value="low">低</option>
+            <option value="high">高</option>
+            <option value="max">最高</option>
+          </select>
+        </div>
+      </div>
+      <label class="file-choice"><input id="inference-tools" type="checkbox"> 当前模型支持Tools（环6写作计划Agent需要）</label>
+      <label class="file-choice"><input id="inference-vision" type="checkbox"> 当前模型支持图像输入</label>
+      <label class="file-choice"><input id="inference-enabled" type="checkbox"> 启用真实模型调用</label>
+      <div id="inference-error" class="wb-card-meta" role="alert" style="color:var(--error)"></div>
+      <div class="modal-actions">
+        <button class="btn btn-secondary" type="button" id="inference-close" data-i18n="modal.cancel">取消</button>
+        <button class="btn btn-primary" type="submit" id="inference-save">保存当前进程配置</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -3438,9 +3472,9 @@ function closeAllDd() {
 const modelSelect = document.getElementById('model-select');
 const modelName = document.getElementById('model-name');
 const modelCap = document.getElementById('model-cap');
-let currentModel = { model: 'deepseek-v4-flash-vision-exp', cap: '1M' };
+let currentModel = { model: 'deepseek-v4-flash', cap: 'Tools' };
 
-// 给每个模型 item 加上数字快捷键 1-7
+// 给每个DeepSeek模型 item 加上数字快捷键 1-3
 document.querySelectorAll('#dd-model .dd-item').forEach((item, idx) => {
   const num = document.createElement('span');
   num.className = 'dd-kbd';
@@ -3448,19 +3482,26 @@ document.querySelectorAll('#dd-model .dd-item').forEach((item, idx) => {
   item.appendChild(num);
   // 当前选中标记
   syncModelItemActive(item);
-  item.addEventListener('click', () => {
-    currentModel = { model: item.dataset.model, cap: item.dataset.cap || '' };
-    if (modelName) modelName.textContent = currentModel.model;
-    if (modelCap) modelCap.textContent = currentModel.cap || '';
-    if (modelCap) modelCap.style.display = currentModel.cap ? '' : 'none';
+  item.addEventListener('click', async () => {
+    const response = await apiSaveDeepSeekConfig({
+      model: item.dataset.model,
+      supports_tools: item.dataset.tools === 'true',
+      supports_vision: item.dataset.vision === 'true',
+    });
+    if (response.code !== 0) {
+      toast(response.msg || '切换DeepSeek模型失败');
+      closeAllDd();
+      return;
+    }
+    applyDeepSeekConfigView(response.data);
     // 同步选中态
     document.querySelectorAll('#dd-model .dd-item').forEach(syncModelItemActive);
     closeAllDd();
-    toast(currentLang === 'zh-CN' ? `已切换到 ${currentModel.model}${currentModel.cap ? ' ' + currentModel.cap : ''}` : `Switched to ${currentModel.model}${currentModel.cap ? ' ' + currentModel.cap : ''}`);
+    toast(currentLang === 'zh-CN' ? `已切换到 ${currentModel.model}` : `Switched to ${currentModel.model}`);
   });
 });
 function syncModelItemActive(item) {
-  const isActive = item.dataset.model === currentModel.model && (item.dataset.cap || '') === currentModel.cap;
+  const isActive = item.dataset.model === currentModel.model;
   item.classList.toggle('active', isActive);
   // 移除/添加 ✓
   const exist = item.querySelector('.dd-check');
@@ -3716,10 +3757,10 @@ document.getElementById('context-card')?.addEventListener('keydown', (e) => {
   }
 });
 
-/* —— 数字快捷键 1-7 切换模型 / m 切换模式 —— */
+/* —— 数字快捷键 1-3 切换DeepSeek模型 —— */
 document.addEventListener('keydown', (e) => {
   if (document.activeElement.tagName === 'TEXTAREA' || document.activeElement.tagName === 'INPUT') return;
-  if (modelSelect && !modelSelect.disabled && e.key >= '1' && e.key <= '7') {
+  if (modelSelect && !modelSelect.disabled && e.key >= '1' && e.key <= '3') {
     const items = document.querySelectorAll('#dd-model .dd-item');
     const idx = parseInt(e.key, 10) - 1;
     if (items[idx]) items[idx].click();
@@ -4399,7 +4440,7 @@ const I18N = {
     'settings.tab.appearance.tts.m': '中',
     'settings.tab.appearance.tts.l': '大',
     'inference.title': '推理配置',
-    'inference.desc': '此处将支持用户自行配置大模型（OpenAI / Anthropic / DeepSeek / 自定义端点），包含 API Key、模型选择、推理参数。后续迭代补齐。',
+    'inference.desc': '本阶段仅支持DeepSeek接口。配置只在当前后端进程内生效，重启后恢复.env设置。',
     'modal.ok': '好的',
     'modal.cancel': '取消',
     'toast.settings.open': '已打开设置（设置面板演示中）',
@@ -4497,7 +4538,7 @@ const I18N = {
     'settings.tab.appearance.tts.m': 'M',
     'settings.tab.appearance.tts.l': 'L',
     'inference.title': 'Inference config',
-    'inference.desc': 'You will be able to configure your own LLM providers here (OpenAI / Anthropic / DeepSeek / custom endpoint), including API key, model selection, and inference parameters. Coming in a future release.',
+    'inference.desc': 'This stage supports the DeepSeek API only. Runtime configuration resets to .env after restart.',
     'modal.ok': 'OK',
     'modal.cancel': 'Cancel',
     'toast.settings.open': 'Opened Settings (panel preview)',
@@ -4856,9 +4897,92 @@ document.getElementById('settings-search-input').addEventListener('input', (e) =
    推理配置 Modal
    ============================================================ */
 const inferenceModal = document.getElementById('inference-modal');
-function openInferenceModal() { showAccessibleDialog(inferenceModal, document.getElementById('inference-close')); }
+let deepSeekModelPresets = [];
+function syncDeepSeekPresetCapabilities() {
+  const model = document.getElementById('inference-model').value.trim();
+  const preset = deepSeekModelPresets.find(item => item.model === model);
+  if (!preset) return;
+  document.getElementById('inference-tools').checked = Boolean(preset.tools);
+  document.getElementById('inference-vision').checked = Boolean(preset.vision);
+}
+function applyDeepSeekConfigView(payload) {
+  const config = payload?.config || {};
+  document.getElementById('inference-model').value = config.model || '';
+  document.getElementById('inference-base-url').value = config.base_url || 'https://api.deepseek.com';
+  document.getElementById('inference-thinking').value = config.thinking_mode || 'disabled';
+  document.getElementById('inference-reasoning').value = config.reasoning_effort || 'low';
+  document.getElementById('inference-tools').checked = Boolean(config.capabilities?.tools);
+  document.getElementById('inference-vision').checked = Boolean(config.capabilities?.vision);
+  document.getElementById('inference-enabled').checked = Boolean(config.enabled);
+  document.getElementById('inference-api-key').value = '';
+  document.getElementById('inference-key-status').textContent = config.api_key_configured
+    ? '当前进程已配置API Key；留空不会覆盖。'
+    : '当前进程尚未配置API Key。';
+  const options = document.getElementById('deepseek-model-options');
+  deepSeekModelPresets = payload?.models || [];
+  options.innerHTML = deepSeekModelPresets
+    .map(item => `<option value="${escapeHtml2(item.model)}">${escapeHtml2(item.label || item.model)}</option>`)
+    .join('');
+  const capabilities = [];
+  if (config.capabilities?.tools) capabilities.push('Tools');
+  if (config.capabilities?.vision) capabilities.push('Vision');
+  currentModel = {
+    model: config.model || '未配置',
+    cap: capabilities.join(' · '),
+  };
+  if (modelName) modelName.textContent = currentModel.model;
+  if (modelCap) {
+    modelCap.textContent = currentModel.cap;
+    modelCap.style.display = currentModel.cap ? '' : 'none';
+  }
+  document.querySelectorAll('#dd-model .dd-item').forEach(syncModelItemActive);
+}
+document.getElementById('inference-model').addEventListener('change', syncDeepSeekPresetCapabilities);
+async function openInferenceModal() {
+  const error = document.getElementById('inference-error');
+  error.textContent = '';
+  showAccessibleDialog(inferenceModal, document.getElementById('inference-model'));
+  const response = await apiDeepSeekConfig();
+  if (response.code !== 0) {
+    error.textContent = response.msg || '读取DeepSeek配置失败。';
+    return;
+  }
+  applyDeepSeekConfigView(response.data);
+}
 function closeInferenceModal() { hideAccessibleDialog(inferenceModal); }
 document.getElementById('inference-close').addEventListener('click', closeInferenceModal);
+document.getElementById('inference-form').addEventListener('submit', async event => {
+  event.preventDefault();
+  const error = document.getElementById('inference-error');
+  const save = document.getElementById('inference-save');
+  const model = document.getElementById('inference-model').value.trim();
+  const baseUrl = document.getElementById('inference-base-url').value.trim();
+  if (!model || !baseUrl) {
+    error.textContent = '请填写DeepSeek模型名和Base URL。';
+    return;
+  }
+  save.disabled = true;
+  error.textContent = '';
+  const response = await apiSaveDeepSeekConfig({
+    model,
+    base_url: baseUrl,
+    api_key: document.getElementById('inference-api-key').value,
+    thinking_mode: document.getElementById('inference-thinking').value,
+    reasoning_effort: document.getElementById('inference-reasoning').value,
+    supports_tools: document.getElementById('inference-tools').checked,
+    supports_vision: document.getElementById('inference-vision').checked,
+    enabled: document.getElementById('inference-enabled').checked,
+  });
+  document.getElementById('inference-api-key').value = '';
+  save.disabled = false;
+  if (response.code !== 0) {
+    error.textContent = response.msg || '保存DeepSeek配置失败。';
+    return;
+  }
+  applyDeepSeekConfigView(response.data);
+  toast(response.msg || 'DeepSeek配置已更新');
+  closeInferenceModal();
+});
 inferenceModal.addEventListener('click', (e) => {
   if (e.target === inferenceModal) closeInferenceModal();
 });
@@ -5403,6 +5527,17 @@ async function apiSessionProgress(taskId) {
   const r = await apiGet(`/api/v1/console/tasks/${taskId}/progress`);
   return r.code === 0 ? (r.data || null) : null;
 }
+async function apiDeepSeekConfig() {
+  return apiGet('/api/v1/console/provider/deepseek');
+}
+async function apiSaveDeepSeekConfig(payload) {
+  return apiPost('/api/v1/console/provider/deepseek', payload);
+}
+
+window.addEventListener('load', async () => {
+  const response = await apiDeepSeekConfig();
+  if (response.code === 0) applyDeepSeekConfigView(response.data);
+});
 async function apiRunRing(taskId, ringPath) {
   return apiPost(`/api/v1/console/tasks/${taskId}${ringPath}`);
 }

@@ -30,6 +30,32 @@ def get_orchestration(request: Request) -> MainOrchestration:
     return request.app.state.orchestration
 
 
+@router.get("/provider/deepseek", response_model=None)
+async def get_deepseek_provider() -> Result[Any]:
+    """返回不含密钥的当前DeepSeek运行时配置。"""
+    from common.llm import deepseek_model_presets, get_llm_settings
+
+    return Result.ok(data={
+        "config": get_llm_settings().public_view(),
+        "models": deepseek_model_presets(),
+    }, msg="DeepSeek配置")
+
+
+@router.post("/provider/deepseek", response_model=None)
+async def set_deepseek_provider(req: Dict[str, Any]) -> Result[Any]:
+    """进程内更新DeepSeek配置；API Key不回显、不落库。"""
+    from common.llm import configure_deepseek_provider, deepseek_model_presets
+
+    try:
+        config = configure_deepseek_provider(req)
+        return Result.ok(data={
+            "config": config,
+            "models": deepseek_model_presets(),
+        }, msg="DeepSeek运行时配置已更新；重启后恢复.env配置")
+    except ValueError as exc:
+        return Result.fail(code=2, msg=str(exc))
+
+
 # ---------------------------------------------------------------------
 # 创建论文任务（闭环入口）
 # ---------------------------------------------------------------------

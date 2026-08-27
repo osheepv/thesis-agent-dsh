@@ -199,7 +199,20 @@ class TestRing6PoolInjected:
                         "read_approved_context",
                         '{"kind":"outline"}',
                     ),))
-                return ModelTurn(content=json.dumps({
+                if self.plan_calls == 2:
+                    return ModelTurn(tool_calls=(
+                        ModelToolCall(
+                            "plan-tool-2",
+                            "check_citation",
+                            '{"marker":"[L1]"}',
+                        ),
+                        ModelToolCall(
+                            "plan-tool-3",
+                            "check_citation",
+                            '{"marker":"[L2]"}',
+                        ),
+                    ))
+                return ModelTurn(content="Plan ready.\n" + json.dumps({
                     "chapter_plans": [
                         {
                             "chapter_no": 1,
@@ -260,13 +273,57 @@ class TestRing6PoolInjected:
         result = get_executor(6).execute(ctx)
 
         assert result.accept is True
-        assert client.plan_calls == 2
+        assert client.plan_calls == 3
         assert len(client.chapter_prompts) == 2
         assert "解释研究背景" in client.chapter_prompts[0]
         assert "说明方法设计" in client.chapter_prompts[1]
-        assert saved_plans[0]["agent_tool_calls"] == 1
+        assert saved_plans[0]["agent_tool_calls"] == 3
+        assert saved_plans[0]["agent_verified_citations"] == ["[L1]", "[L2]"]
         assert result.evidence["agent_loop"] == {
             "enabled": True,
-            "turns": 2,
-            "tool_calls": 1,
+            "turns": 3,
+            "tool_calls": 3,
         }
+
+    def test_ring6_agent_rejects_pool_citation_not_checked_by_tool(self, monkeypatch):
+        from common.agent_loop import AgentLoopSettings, ModelToolCall, ModelTurn
+        from common.llm import StructuredOutputError
+        from executor import ring6_chapter as r6
+
+        turns = iter([
+            ModelTurn(tool_calls=(ModelToolCall(
+                "read-outline",
+                "read_approved_context",
+                '{"kind":"outline"}',
+            ),)),
+            ModelTurn(content=json.dumps({
+                "chapter_plans": [{
+                    "chapter_no": 1,
+                    "objectives": ["解释研究背景"],
+                    "suggested_refs": ["[L1]"],
+                    "evidence_gaps": [],
+                }],
+                "global_notes": [],
+            }, ensure_ascii=False)),
+        ])
+        client = type("Client", (), {
+            "complete_with_tools": staticmethod(lambda *_: next(turns)),
+        })()
+        monkeypatch.setattr(r6, "get_llm_client", lambda: client)
+        ctx = ExecContext(
+            subject_field="CV",
+            degree=Degree.BACHELOR,
+            theme="T",
+            literature=SAMPLE_POOL,
+            outline=json.dumps({"chapters": [
+                {"level": 1, "number": "第1章", "title": "绪论"},
+            ]}, ensure_ascii=False),
+        )
+
+        with pytest.raises(StructuredOutputError, match="未check_citation核验"):
+            r6._build_writing_plan(  # noqa: SLF001 - 针对安全边界的回归测试
+                ctx,
+                "T",
+                [("第1章", "绪论")],
+                AgentLoopSettings(max_turns=3),
+            )

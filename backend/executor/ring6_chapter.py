@@ -153,9 +153,31 @@ def _count_words(text: str) -> int:
     return len(re.sub(r"[\s#*`-]+", "", text))
 
 
+def _parse_writing_plan(content: str) -> WritingPlanOut:
+    """容忍模型在JSON前后添加简短说明，但不放宽结构校验。"""
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip())
+    try:
+        return WritingPlanOut.model_validate_json(cleaned)
+    except Exception:
+        pass
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(cleaned):
+        if char != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(cleaned, index)
+            return WritingPlanOut.model_validate(value)
+        except Exception:
+            continue
+    raise StructuredOutputError(
+        "环6写作计划JSON无效：无法从模型最终内容解析约定结构"
+    )
+
+
 def _writing_plan_tools(
     ctx: ExecContext,
     chapter_meta: list[tuple[str, str]],
+    confirmed_citations: set[str] | None = None,
 ) -> list[ReadOnlyTool]:
     """把现有文献、知识库和验收逻辑包装成只读工具。"""
     literature = [
@@ -220,6 +242,8 @@ def _writing_plan_tools(
         if index < 1 or index > len(literature):
             return {"marker": marker, "valid": False, "reason": "超出文献池"}
         item = literature[index - 1]
+        if confirmed_citations is not None:
+            confirmed_citations.add(marker)
         return {
             "marker": marker,
             "valid": True,
@@ -229,9 +253,10 @@ def _writing_plan_tools(
         }
 
     def check_plan_structure(arguments: dict) -> dict:
-        chapter_nos = {
+        chapter_no_list = [
             int(value) for value in (arguments.get("chapter_nos", []) or [])
-        }
+        ]
+        chapter_nos = set(chapter_no_list)
         expected = set(range(1, len(chapter_meta) + 1))
         markers = [str(value) for value in (arguments.get("citations", []) or [])]
         invalid = [
@@ -243,9 +268,17 @@ def _writing_plan_tools(
             )
         ]
         return {
-            "complete": chapter_nos == expected and not invalid,
+            "complete": (
+                chapter_nos == expected
+                and len(chapter_no_list) == len(chapter_nos)
+                and not invalid
+            ),
             "missing_chapters": sorted(expected - chapter_nos),
             "unexpected_chapters": sorted(chapter_nos - expected),
+            "duplicate_chapters": sorted({
+                number for number in chapter_no_list
+                if chapter_no_list.count(number) > 1
+            }),
             "invalid_citations": invalid,
         }
 
@@ -325,33 +358,34 @@ def _build_writing_plan(
         get_llm_client().complete_with_tools,
         settings,
     )
+    confirmed_citations: set[str] = set()
     try:
         outcome = loop.run(
             system=tpl["system"],
             prompt=tpl["prompt"],
-            tools=_writing_plan_tools(ctx, chapter_meta),
+            tools=_writing_plan_tools(ctx, chapter_meta, confirmed_citations),
             require_tool_call=True,
         )
     except ToolLoopError as exc:
         raise StructuredOutputError(f"环6写作计划Agent失败: {exc}") from exc
-    cleaned = re.sub(
-        r"^```(?:json)?\s*|\s*```$", "", outcome.content.strip()
-    )
-    try:
-        plan = WritingPlanOut.model_validate_json(cleaned)
-    except Exception as exc:  # noqa: BLE001
-        raise StructuredOutputError(f"环6写作计划JSON无效: {exc}") from exc
+    plan = _parse_writing_plan(outcome.content)
     expected = set(range(1, len(chapter_meta) + 1))
-    actual = {item.chapter_no for item in plan.chapter_plans}
-    if actual != expected:
+    chapter_numbers = [item.chapter_no for item in plan.chapter_plans]
+    actual = set(chapter_numbers)
+    if actual != expected or len(chapter_numbers) != len(expected):
         raise StructuredOutputError(
             f"环6写作计划章节覆盖错误: missing={sorted(expected - actual)}, "
-            f"unexpected={sorted(actual - expected)}"
+            f"unexpected={sorted(actual - expected)}, "
+            f"duplicates={sorted({number for number in chapter_numbers if chapter_numbers.count(number) > 1})}"
         )
-    invalid_refs = sorted({
+    suggested_refs = {
         marker
         for item in plan.chapter_plans
         for marker in item.suggested_refs
+    }
+    invalid_refs = sorted({
+        marker
+        for marker in suggested_refs
         if not (
             (match := re.fullmatch(r"\[L(\d+)\]", marker))
             and 1 <= int(match.group(1)) <= len(ctx.literature or [])
@@ -359,8 +393,14 @@ def _build_writing_plan(
     })
     if invalid_refs:
         raise StructuredOutputError(f"环6写作计划含池外引用: {invalid_refs}")
+    unconfirmed_refs = sorted(suggested_refs - confirmed_citations)
+    if unconfirmed_refs:
+        raise StructuredOutputError(
+            f"环6写作计划含未check_citation核验的引用: {unconfirmed_refs}"
+        )
     return {
         **plan.model_dump(),
+        "agent_verified_citations": sorted(confirmed_citations),
         "agent_trace": outcome.trace,
         "agent_turns": outcome.turns,
         "agent_tool_calls": outcome.tool_call_count,

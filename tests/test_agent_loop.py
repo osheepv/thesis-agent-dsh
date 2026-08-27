@@ -54,7 +54,7 @@ def test_tool_loop_executes_observation_then_returns_final_content():
     assert seen_messages[1][-1]["tool_call_id"] == "call-1"
 
 
-def test_tool_loop_rejects_unknown_and_repeated_actions():
+def test_tool_loop_rejects_unknown_and_persistent_repeated_actions():
     unknown = BoundedToolLoop(
         lambda *_: ModelTurn(
             tool_calls=(ModelToolCall("x", "delete_everything", "{}"),)
@@ -67,13 +67,15 @@ def test_tool_loop_rejects_unknown_and_repeated_actions():
     calls = iter([
         ModelTurn(tool_calls=(ModelToolCall("1", "search", '{"query":"same"}'),)),
         ModelTurn(tool_calls=(ModelToolCall("2", "search", '{"query":"same"}'),)),
+        ModelTurn(tool_calls=(ModelToolCall("3", "search", '{"query":"same"}'),)),
     ])
     repeated = BoundedToolLoop(
         lambda *_: next(calls),
         AgentLoopSettings(max_turns=3),
     )
-    with pytest.raises(ToolLoopError, match="重复工具动作"):
+    with pytest.raises(ToolLoopError, match="持续重复工具动作") as repeated_error:
         repeated.run(system="s", prompt="p", tools=[_tool()])
+    assert repeated_error.value.trace[1]["cached"] is True
 
     no_tool = BoundedToolLoop(
         lambda *_: ModelTurn(content="final"),
@@ -119,6 +121,32 @@ def test_tool_loop_enforces_turn_limit_and_truncates_observation():
             prompt="p",
             tools=[_tool(lambda _: {"text": "x" * 1000})],
         )
+
+    calls = iter([
+        ModelTurn(tool_calls=(ModelToolCall("1", "search", '{"query":"q1"}'),)),
+        ModelTurn(tool_calls=(ModelToolCall("2", "search", '{"query":"q2"}'),)),
+    ])
+    with pytest.raises(ToolLoopError) as exc_info:
+        BoundedToolLoop(
+            lambda *_: next(calls),
+            AgentLoopSettings(max_turns=2, max_tool_calls=3),
+        ).run(system="s", prompt="p", tools=[_tool()])
+    assert exc_info.value.turns == 2
+    assert exc_info.value.tool_call_count == 2
+    assert [item["tool"] for item in exc_info.value.trace] == ["search", "search"]
+
+    too_many = BoundedToolLoop(
+        lambda *_: ModelTurn(tool_calls=(
+            ModelToolCall("1", "search", '{"query":"q1"}'),
+            ModelToolCall("2", "search", '{"query":"q2"}'),
+        )),
+        AgentLoopSettings(max_turns=2, max_tool_calls=1),
+    )
+    with pytest.raises(ToolLoopError) as max_calls:
+        too_many.run(system="s", prompt="p", tools=[_tool()])
+    assert max_calls.value.turns == 1
+    assert max_calls.value.tool_call_count == 2
+    assert max_calls.value.trace[0]["tool"] == "search"
 
 
 def test_llm_client_adapts_openai_tool_calls_and_disables_thinking():

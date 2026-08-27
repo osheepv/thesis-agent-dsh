@@ -39,6 +39,7 @@
 - DeepSeek V4结构化JSON调用默认显式关闭高思考模式，避免推理Token耗尽后最终`content`为空；可通过环境变量重新启用。
 - 当前仅支持DeepSeek接口；前端可运行时设置DeepSeek API Key、Base URL、模型、思考模式和能力标记。密钥不回显、不写入浏览器或数据库，进程重启后恢复`.env`。
 - 环6已接入第一个可选的有界Agent Loop：在逐章写作前使用只读工具搜索已登记资料、读取已批准产物、核验引文和章节覆盖；强制轮数/工具数/观测长度上限，默认关闭以避免未预期费用。
+- 环6 Agent Loop已完成真实DeepSeek V4 Flash小规模验收：2章计划在6轮、11次只读工具调用内收敛，消耗8570 Token，所有建议引文均通过`check_citation`实际核验。详见[真实DeepSeek Agent Loop验收报告](docs/真实DeepSeek_Agent_Loop验收报告_2026-08-27.md)。
 - 环7/8失败后可安全回到可修订环节，恢复入口同时识别FSM失败态与当前环FAILED Job。
 - 新分节链路的环8会审计正文证据/结果标记，生成稳定引文编号、GB/T 7714参考文献和结果交叉引用清单。
 - DOCX 生成器会把Markdown正文转换为可编辑的Word标题/正文/参考文献段落，把明确的 `BOOKMARK/REF` 标记转换为原生书签与 `REF` 域；环9会拒绝仍折叠为单个模板文本块的假排版。
@@ -128,11 +129,18 @@ python -m http.server 8787
 
 ## 运行测试
 
-当前回归基线：**223 项 pytest 全部通过**（2026-08-27）。
+当前回归基线：**225 项 pytest 全部通过**（2026-08-27）。
 
 ```bash
 # 项目根执行（conftest 自动注入路径）
 python -m pytest tests -v
+```
+
+真实DeepSeek Agent小规模验收默认只做安全预检；显式加`--execute`才会产生有上限的真实调用：
+
+```bash
+python scripts/real_agent_loop_acceptance.py
+python scripts/real_agent_loop_acceptance.py --execute
 ```
 
 ## 数据库结构

@@ -14,6 +14,19 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class ToolLoopError(RuntimeError):
     """工具协议、权限或收敛边界被违反。"""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        trace: list[dict[str, Any]] | None = None,
+        turns: int = 0,
+        tool_call_count: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.trace = list(trace or [])
+        self.turns = turns
+        self.tool_call_count = tool_call_count
+
 
 class AgentLoopSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -21,8 +34,8 @@ class AgentLoopSettings(BaseSettings):
     )
 
     enabled: bool = False
-    max_turns: int = Field(default=4, ge=1, le=8)
-    max_tool_calls: int = Field(default=10, ge=1, le=32)
+    max_turns: int = Field(default=6, ge=1, le=8)
+    max_tool_calls: int = Field(default=12, ge=1, le=32)
     max_observation_chars: int = Field(default=4000, ge=256, le=16_000)
     max_output_tokens: int = Field(default=2048, ge=256, le=8192)
 
@@ -96,6 +109,7 @@ class BoundedToolLoop:
             {"role": "user", "content": prompt},
         ]
         fingerprints: Counter[str] = Counter()
+        cached_results: dict[str, Any] = {}
         trace: list[dict[str, Any]] = []
         total_calls = 0
 
@@ -133,7 +147,14 @@ class BoundedToolLoop:
             for call in turn.tool_calls:
                 total_calls += 1
                 if total_calls > self._settings.max_tool_calls:
-                    raise ToolLoopError("工具调用次数超过上限")
+                    tool_names = [item.get("tool", "") for item in trace]
+                    tool_names.append(call.name)
+                    raise ToolLoopError(
+                        f"工具调用次数超过上限; tools={tool_names}",
+                        trace=trace,
+                        turns=turn_no,
+                        tool_call_count=total_calls,
+                    )
                 tool = registry.get(call.name)
                 if tool is None:
                     raise ToolLoopError(f"模型请求了未注册工具: {call.name}")
@@ -151,12 +172,32 @@ class BoundedToolLoop:
                     ) from exc
                 fingerprint = f"{call.name}:{json.dumps(arguments, sort_keys=True, ensure_ascii=False)}"
                 fingerprints[fingerprint] += 1
-                if fingerprints[fingerprint] > 1:
-                    raise ToolLoopError(f"检测到重复工具动作: {call.name}")
-                try:
-                    result = tool.handler(arguments)
-                except Exception as exc:  # noqa: BLE001
-                    raise ToolLoopError(f"工具 {call.name} 执行失败: {exc}") from exc
+                cached = fingerprints[fingerprint] == 2
+                if fingerprints[fingerprint] > 2:
+                    raise ToolLoopError(
+                        f"检测到持续重复工具动作: {call.name}",
+                        trace=trace,
+                        turns=turn_no,
+                        tool_call_count=total_calls,
+                    )
+                if cached:
+                    original = cached_results[fingerprint]
+                    if isinstance(original, dict):
+                        result = {
+                            **original,
+                            "_agent_notice": "重复只读调用已使用缓存结果；请立即继续或返回最终结果。",
+                        }
+                    else:
+                        result = {
+                            "cached_result": original,
+                            "_agent_notice": "重复只读调用已使用缓存结果。",
+                        }
+                else:
+                    try:
+                        result = tool.handler(arguments)
+                    except Exception as exc:  # noqa: BLE001
+                        raise ToolLoopError(f"工具 {call.name} 执行失败: {exc}") from exc
+                    cached_results[fingerprint] = result
                 observation = json.dumps(result, ensure_ascii=False, default=str)
                 truncated = len(observation) > self._settings.max_observation_chars
                 if truncated:
@@ -171,10 +212,16 @@ class BoundedToolLoop:
                     "tool": call.name,
                     "observation_chars": len(observation),
                     "truncated": truncated,
+                    "cached": cached,
                 })
 
+        tool_names = [item.get("tool", "") for item in trace]
         raise ToolLoopError(
-            f"Agent Loop在 {self._settings.max_turns} 轮内未收敛"
+            f"Agent Loop在 {self._settings.max_turns} 轮内未收敛; "
+            f"tools={tool_names}",
+            trace=trace,
+            turns=self._settings.max_turns,
+            tool_call_count=total_calls,
         )
 
 

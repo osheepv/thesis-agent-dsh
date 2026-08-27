@@ -26,8 +26,8 @@
 
 ```dotenv
 THESIS_AGENT_LOOP_ENABLED=true
-THESIS_AGENT_LOOP_MAX_TURNS=4
-THESIS_AGENT_LOOP_MAX_TOOL_CALLS=10
+THESIS_AGENT_LOOP_MAX_TURNS=6
+THESIS_AGENT_LOOP_MAX_TOOL_CALLS=12
 THESIS_AGENT_LOOP_MAX_OBSERVATION_CHARS=4000
 THESIS_AGENT_LOOP_MAX_OUTPUT_TOKENS=2048
 ```
@@ -39,6 +39,6 @@ THESIS_AGENT_LOOP_MAX_OUTPUT_TOKENS=2048
 - [DeepSeek当前模型与能力](https://api-docs.deepseek.com/quick_start/pricing/)
 - [DeepSeek Tool Calls协议](https://api-docs.deepseek.com/guides/tool_calls/)
 
-## 下一步
+## 验收结果与下一步
 
-先在环6完成真实DeepSeek小规模验收，观测工具选择、收敛、Token与计划质量；通过后再扩展到选题、文献、大纲和修订环节。多模型供应商不在本阶段范围内。
+真实DeepSeek小规模验收已通过，详见[真实DeepSeek Agent Loop验收报告](真实DeepSeek_Agent_Loop验收报告_2026-08-27.md)。下一步将有界Agent扩展到选题、文献、大纲和修订环节，并增加论文级项目记忆。多模型供应商不在本阶段范围内。

@@ -26,6 +26,7 @@ from common.agent_loop import (
 from common.aicoding.enums import Degree, RingType
 from common.lit import lit_pool_block
 from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
+from common.project_memory import project_memory_prompt_block
 from common import prompt_repo
 from executor.base import (
     ExecContext,
@@ -178,6 +179,7 @@ def _writing_plan_tools(
     ctx: ExecContext,
     chapter_meta: list[tuple[str, str]],
     confirmed_citations: set[str] | None = None,
+    context_reads: set[str] | None = None,
 ) -> list[ReadOnlyTool]:
     """把现有文献、知识库和验收逻辑包装成只读工具。"""
     literature = [
@@ -228,9 +230,12 @@ def _writing_plan_tools(
             "results": list(getattr(ctx, "results", []) or []),
             "argument_map": dict(getattr(ctx, "argument_map", {}) or {}),
             "research_protocol": dict(getattr(ctx, "research_protocol", {}) or {}),
+            "project_memory": dict(getattr(ctx, "project_memory", {}) or {}),
         }
         if kind not in contexts:
             raise ValueError(f"不支持的批准上下文: {kind}")
+        if context_reads is not None:
+            context_reads.add(kind)
         return {"kind": kind, "data": contexts[kind]}
 
     def check_citation(arguments: dict) -> dict:
@@ -299,13 +304,16 @@ def _writing_plan_tools(
         ),
         ReadOnlyTool(
             name="read_approved_context",
-            description="读取已批准的大纲、结果、论证图或研究协议，只读。",
+            description="读取已批准的项目记忆、大纲、结果、论证图或研究协议，只读。",
             parameters={
                 **object_schema,
                 "properties": {
                     "kind": {
                         "type": "string",
-                        "enum": ["outline", "results", "argument_map", "research_protocol"],
+                        "enum": [
+                            "project_memory", "outline", "results",
+                            "argument_map", "research_protocol",
+                        ],
                     }
                 },
                 "required": ["kind"],
@@ -353,22 +361,32 @@ def _build_writing_plan(
         "degree_label": ctx.degree.label,
         "subject_field": ctx.subject_field,
         "chapter_list": json.dumps(chapter_list, ensure_ascii=False),
+        "memory_status": (
+            "存在已批准项目记忆，必须先调用read_approved_context(kind=project_memory)。"
+            if getattr(ctx, "project_memory", {})
+            else "当前无已批准项目记忆。"
+        ),
     })
     loop = BoundedToolLoop(
         get_llm_client().complete_with_tools,
         settings,
     )
     confirmed_citations: set[str] = set()
+    context_reads: set[str] = set()
     try:
         outcome = loop.run(
             system=tpl["system"],
             prompt=tpl["prompt"],
-            tools=_writing_plan_tools(ctx, chapter_meta, confirmed_citations),
+            tools=_writing_plan_tools(
+                ctx, chapter_meta, confirmed_citations, context_reads
+            ),
             require_tool_call=True,
         )
     except ToolLoopError as exc:
         raise StructuredOutputError(f"环6写作计划Agent失败: {exc}") from exc
     plan = _parse_writing_plan(outcome.content)
+    if getattr(ctx, "project_memory", {}) and "project_memory" not in context_reads:
+        raise StructuredOutputError("环6写作计划Agent未读取已批准项目记忆")
     expected = set(range(1, len(chapter_meta) + 1))
     chapter_numbers = [item.chapter_no for item in plan.chapter_plans]
     actual = set(chapter_numbers)
@@ -401,6 +419,10 @@ def _build_writing_plan(
     return {
         **plan.model_dump(),
         "agent_verified_citations": sorted(confirmed_citations),
+        "agent_context_reads": sorted(context_reads),
+        "project_memory_artifact_id": str(
+            getattr(ctx, "project_memory_artifact_id", "")
+        ),
         "agent_trace": outcome.trace,
         "agent_turns": outcome.turns,
         "agent_tool_calls": outcome.tool_call_count,
@@ -491,6 +513,9 @@ class Ring6ChapterExecutor(RingExecutor):
             pool_block = pool_block + "\n" + kb_block
         verified_results = list(getattr(ctx, "results", []) or [])
         result_block = _verified_result_block(verified_results)
+        memory_block = project_memory_prompt_block(
+            dict(getattr(ctx, "project_memory", {}) or {})
+        )
         checkpoint = list(getattr(ctx, "chapter_checkpoint", []) or [])
         checkpoint_by_no = {
             chapter.chapter_no: chapter
@@ -527,6 +552,7 @@ class Ring6ChapterExecutor(RingExecutor):
                 "titles_hint": f"{number} {title}",
                 "pool_block": pool_block,
                 "result_block": result_block,
+                "project_memory_block": memory_block,
                 "agent_plan_block": (
                     "【已核验写作计划】\n"
                     + json.dumps(

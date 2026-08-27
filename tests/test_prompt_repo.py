@@ -41,7 +41,8 @@ def test_render_keeps_unknown_braces():
     tpl = prompt_repo.render("ring6_chapter", {
         "theme": "课题", "subject_field": "CS", "degree_label": "硕士",
         "degree_gen": "硕士", "titles_hint": "1.绪论", "pool_block": "(空)",
-        "result_block": "(无结果)", "agent_plan_block": "(无计划)",
+        "result_block": "(无结果)", "project_memory_block": "(无记忆)",
+        "agent_plan_block": "(无计划)",
     })
     assert '(空)' in tpl["prompt"]
     assert '"chapters"' in tpl["prompt"]

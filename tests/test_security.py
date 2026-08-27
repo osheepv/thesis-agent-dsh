@@ -115,6 +115,10 @@ def test_security_middleware_enforces_tenant_and_roles(monkeypatch):
     record = app.state.orchestration._store.get(task_id)  # noqa: SLF001
     assert record.tenant_id == boot["data"]["tenant_id"]
     assert record.owner_user_id == boot["data"]["user_id"]
+    memory_id = owner_client.post(
+        f"/api/v1/console/tasks/{task_id}/memory",
+        json={"research_questions": ["如何验证审批身份？"]},
+    ).json()["data"]["artifact_id"]
 
     native_created = owner_client.post(
         "/api/v1/tasks",
@@ -150,6 +154,17 @@ def test_security_middleware_enforces_tenant_and_roles(monkeypatch):
         "/api/v1/console/provider/deepseek",
         json={"enabled": False},
     ).status_code == 403
+    assert reviewer_client.post(
+        f"/api/v1/console/tasks/{task_id}/memory",
+        json={"research_questions": ["评审者不应创建记忆"]},
+    ).status_code == 403
+    reviewed_memory = reviewer_client.post(
+        f"/api/v1/console/tasks/{task_id}/memory/{memory_id}/review",
+        json={"approved": True, "actor": "spoofed-owner"},
+    )
+    assert reviewed_memory.status_code == 200
+    approvals = app.state.orchestration._artifacts.list_approvals(memory_id)  # noqa: SLF001
+    assert approvals[0]["actor"] == "reviewer-a"
     assert reviewer_client.get(
         f"/api/v1/console/tasks/{task_id}/progress"
     ).status_code == 200

@@ -81,6 +81,11 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         '/api/v1/console/provider/deepseek',
         'applyDeepSeekConfigView',
         'syncDeepSeekPresetCapabilities',
+        'id="wb-tab-memory"',
+        'id="memory-form"',
+        'aria-describedby="memory-help memory-error"',
+        '/api/v1/console/tasks/${taskId}/memory',
+        'loadProjectMemoryPanel',
     ):
         assert fragment in html
     assert "localStorage.setItem('inference-api-key'" not in html

@@ -2889,6 +2889,7 @@ a:hover { text-decoration: underline; }
 
       <div class="kb-tabs" role="tablist" aria-label="项目工作台">
         <button class="kb-tab active" id="wb-tab-refs" data-tab="refs" role="tab" aria-selected="true" aria-controls="wb-pane-refs">文献</button>
+        <button class="kb-tab" id="wb-tab-memory" data-tab="memory" role="tab" aria-selected="false" aria-controls="wb-pane-memory">记忆</button>
         <button class="kb-tab" id="wb-tab-evidence" data-tab="evidence" role="tab" aria-selected="false" aria-controls="wb-pane-evidence">证据</button>
         <button class="kb-tab" id="wb-tab-research" data-tab="research" role="tab" aria-selected="false" aria-controls="wb-pane-research">研究</button>
         <button class="kb-tab" id="wb-tab-writing" data-tab="writing" role="tab" aria-selected="false" aria-controls="wb-pane-writing">分节</button>
@@ -2909,6 +2910,51 @@ a:hover { text-decoration: underline; }
             <span style="display:flex;align-items:center;gap:6px;padding:7px 10px;border:1px dashed var(--border-divider);border-radius:8px;font-size:12px;color:var(--text-subtle);cursor:pointer;">⬆ 上传文献（PDF / Word / 题录）</span>
           </label>
           <div id="kb-refs-empty" style="padding:12px;color:var(--text-subtle);font-size:12px;">暂无文献（可上传或从引导平台下载）</div>
+        </div>
+
+        <!-- 论文级项目记忆 -->
+        <div class="kb-pane" id="wb-pane-memory" data-pane="memory" role="tabpanel" aria-labelledby="wb-tab-memory" hidden>
+          <div class="wb-toolbar">
+            <h3>项目记忆</h3>
+            <button class="btn btn-secondary btn-sm" id="memory-refresh">刷新</button>
+          </div>
+          <div id="memory-live" class="wb-live" role="status" aria-live="polite"></div>
+          <p id="memory-help" class="wb-card-meta">只有已批准版本会进入Agent上下文。请勿填写API Key、身份证号或未脱敏个人信息。</p>
+          <details class="wb-card" id="memory-builder">
+            <summary class="wb-card-title">创建项目记忆版本</summary>
+            <form class="wb-form" id="memory-form" novalidate aria-describedby="memory-help memory-error">
+              <div class="wb-field">
+                <label for="memory-questions">研究问题（每行一个）</label>
+                <textarea id="memory-questions" maxlength="20000" required aria-describedby="memory-help memory-error"></textarea>
+              </div>
+              <div class="wb-field">
+                <label for="memory-decisions">作者决定（每行一个，可写“决定 | 理由”）</label>
+                <textarea id="memory-decisions" maxlength="50000"></textarea>
+              </div>
+              <div class="wb-field">
+                <label for="memory-feedback">导师意见（每行一条）</label>
+                <textarea id="memory-feedback" maxlength="50000"></textarea>
+              </div>
+              <div class="wb-field">
+                <label for="memory-terms">术语表（每行“原术语=规范表达”）</label>
+                <textarea id="memory-terms" maxlength="30000"></textarea>
+              </div>
+              <div class="wb-form-row">
+                <div class="wb-field"><label for="memory-language">写作语言</label><select id="memory-language"><option value="zh-CN">中文</option><option value="en-US">English</option></select></div>
+                <div class="wb-field"><label for="memory-tone">语气</label><input id="memory-tone" maxlength="200" value="客观、审慎、学术"></div>
+              </div>
+              <div class="wb-form-row">
+                <div class="wb-field"><label for="memory-person">人称</label><input id="memory-person" maxlength="200" value="避免不必要的第一人称"></div>
+                <div class="wb-field"><label for="memory-tense">时态</label><input id="memory-tense" maxlength="200" value="按学科惯例使用"></div>
+              </div>
+              <div class="wb-field"><label for="memory-citation-style">引用样式</label><input id="memory-citation-style" maxlength="120" value="GB/T 7714-2015"></div>
+              <div class="wb-field"><label for="memory-constraints">其他写作约束（每行一条）</label><textarea id="memory-constraints" maxlength="15000"></textarea></div>
+              <div class="wb-field"><label for="memory-version-note">版本说明</label><input id="memory-version-note" maxlength="500" placeholder="例：纳入导师第二轮意见"></div>
+              <div id="memory-error" class="wb-card-meta" style="color:var(--error)" role="alert" aria-live="assertive"></div>
+              <button class="btn btn-primary btn-sm" id="memory-submit" type="submit">生成待审批版本</button>
+            </form>
+          </details>
+          <div id="memory-list"><div class="wb-empty">选择论文任务后查看项目记忆。</div></div>
         </div>
 
         <!-- 证据与论证图 -->
@@ -3851,6 +3897,7 @@ function activateWorkbenchTab(target) {
   }
   if (target === 'notes') loadNotes(sid);
   if (target === 'graph') renderGraph(sid);
+  if (target === 'memory') loadProjectMemoryPanel();
   if (target === 'evidence') loadEvidencePanel();
   if (target === 'research') loadResearchPanel();
   if (target === 'writing') loadSectionsPanel();
@@ -5564,7 +5611,18 @@ async function apiGenerateDocx(taskId) {
   return apiPost(`/api/v1/console/tasks/${taskId}/docx/generate`);
 }
 
-// ---- 可信工作台：证据 / 分节 / 作业 ----
+// ---- 可信工作台：记忆 / 证据 / 分节 / 作业 ----
+async function apiProjectMemories(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/memory`);
+}
+async function apiCreateProjectMemory(taskId, payload) {
+  return apiPost(`/api/v1/console/tasks/${taskId}/memory`, payload);
+}
+async function apiReviewProjectMemory(taskId, artifactId, approved, reason = '') {
+  return apiPost(`/api/v1/console/tasks/${taskId}/memory/${artifactId}/review`, {
+    approved, reason, actor: 'author',
+  });
+}
 async function apiTaskSources(taskId) {
   return apiGet(`/api/v1/console/tasks/${taskId}/sources`);
 }
@@ -5884,6 +5942,209 @@ async function loadSecurityAudit() {
     <div class="wb-card-meta">${escapeHtml2(item.method || '')} ${escapeHtml2(item.path || item.resource_id || '')} · HTTP ${item.status_code || 0}</div>
     <div class="wb-card-meta">${escapeHtml2(item.created_at)} · ${escapeHtml2(item.request_id || '')}</div>
   </article>`).join('') : '<div class="wb-empty">暂无审计记录。</div>';
+}
+
+let memoryRevisionBase = null;
+
+function splitMemoryDecision(line) {
+  const parts = String(line || '').split('|');
+  return { text: (parts.shift() || '').trim(), rationale: parts.join('|').trim() };
+}
+
+function fillProjectMemoryForm(memory, version = '') {
+  const style = memory?.writing_style || {};
+  memoryRevisionBase = memory || null;
+  document.getElementById('memory-questions').value = (memory?.research_questions || []).join('\n');
+  document.getElementById('memory-decisions').value = (memory?.decisions || [])
+    .map(item => item.rationale ? `${item.text} | ${item.rationale}` : item.text).join('\n');
+  document.getElementById('memory-feedback').value = (memory?.supervisor_feedback || [])
+    .map(item => item.text).join('\n');
+  document.getElementById('memory-terms').value = (memory?.terminology || [])
+    .map(item => `${item.term}=${item.preferred_form}`).join('\n');
+  document.getElementById('memory-language').value = style.language || 'zh-CN';
+  document.getElementById('memory-tone').value = style.tone || '客观、审慎、学术';
+  document.getElementById('memory-person').value = style.person || '避免不必要的第一人称';
+  document.getElementById('memory-tense').value = style.tense || '按学科惯例使用';
+  document.getElementById('memory-citation-style').value = style.citation_style || 'GB/T 7714-2015';
+  document.getElementById('memory-constraints').value = (style.constraints || []).join('\n');
+  document.getElementById('memory-version-note').value = version ? `基于v${version}修订` : (memory?.version_note || '');
+  document.getElementById('memory-submit').textContent = version ? '生成修订版本' : '生成待审批版本';
+  document.getElementById('memory-error').textContent = '';
+  document.getElementById('memory-questions').removeAttribute('aria-invalid');
+  const builder = document.getElementById('memory-builder');
+  builder.open = true;
+  document.getElementById('memory-questions').focus();
+}
+
+function buildProjectMemoryPayload() {
+  const questions = valueLines('memory-questions');
+  const previousDecisions = memoryRevisionBase?.decisions || [];
+  const decisions = valueLines('memory-decisions').map(line => {
+    const parsed = splitMemoryDecision(line);
+    const previous = previousDecisions.find(item => item.text === parsed.text);
+    return previous
+      ? { ...previous, rationale: parsed.rationale || previous.rationale || '' }
+      : { text: parsed.text, rationale: parsed.rationale, source: 'AUTHOR', active: true };
+  }).filter(item => item.text);
+  const previousFeedback = memoryRevisionBase?.supervisor_feedback || [];
+  const supervisorFeedback = valueLines('memory-feedback').map(text => (
+    previousFeedback.find(item => item.text === text) || {
+      text, status: 'PENDING', response: '',
+    }
+  ));
+  const previousTerms = memoryRevisionBase?.terminology || [];
+  const terminology = valueLines('memory-terms').map(line => {
+    const separator = line.indexOf('=');
+    const term = (separator >= 0 ? line.slice(0, separator) : line).trim();
+    const preferred = (separator >= 0 ? line.slice(separator + 1) : term).trim() || term;
+    const previous = previousTerms.find(item => item.term === term);
+    return previous
+      ? { ...previous, preferred_form: preferred }
+      : { term, preferred_form: preferred, definition: '', forbidden_aliases: [] };
+  }).filter(item => item.term);
+  return {
+    research_questions: questions,
+    decisions,
+    supervisor_feedback: supervisorFeedback,
+    terminology,
+    writing_style: {
+      language: document.getElementById('memory-language').value,
+      tone: document.getElementById('memory-tone').value.trim(),
+      person: document.getElementById('memory-person').value.trim(),
+      tense: document.getElementById('memory-tense').value.trim(),
+      citation_style: document.getElementById('memory-citation-style').value.trim(),
+      constraints: valueLines('memory-constraints'),
+    },
+    version_note: document.getElementById('memory-version-note').value.trim(),
+  };
+}
+
+function renderProjectMemoryVersions(items) {
+  const box = document.getElementById('memory-list');
+  if (!items.length) {
+    box.innerHTML = '<div class="wb-empty">尚未建立项目记忆。创建后需作者批准才会供Agent使用。</div>';
+    return;
+  }
+  box.innerHTML = items.slice().reverse().map(item => {
+    const memory = item.payload || {};
+    const style = memory.writing_style || {};
+    const questions = memory.research_questions || [];
+    const decisions = memory.decisions || [];
+    const feedback = memory.supervisor_feedback || [];
+    const terms = memory.terminology || [];
+    const waiting = item.status === 'WAITING_APPROVAL';
+    const revisable = ['APPROVED', 'REJECTED', 'SUPERSEDED'].includes(item.status);
+    return `<article class="wb-card" data-memory-id="${escapeHtml2(item.artifact_id)}">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:start;">
+        <div class="wb-card-title">项目记忆 v${item.version}</div>
+        <span class="wb-status ${wbStatusClass(item.status)}">${escapeHtml2(item.status)}</span>
+      </div>
+      <div class="wb-card-meta">研究问题 ${questions.length} · 决定 ${decisions.length} · 导师意见 ${feedback.length} · 术语 ${terms.length}</div>
+      <div class="wb-card-meta">${escapeHtml2(style.language || '未设定')} · ${escapeHtml2(style.tone || '未设定语气')} · ${escapeHtml2(style.citation_style || '未设定引用样式')}</div>
+      ${memory.version_note ? `<div class="wb-card-meta">${escapeHtml2(memory.version_note)}</div>` : ''}
+      <details><summary class="wb-card-meta">查看记忆摘要</summary>
+        ${questions.length ? `<ol>${questions.map(value => `<li>${escapeHtml2(value)}</li>`).join('')}</ol>` : '<div class="wb-card-meta">未设定研究问题。</div>'}
+        ${terms.length ? `<div class="wb-card-meta">术语：${terms.slice(0, 12).map(value => `${escapeHtml2(value.term)}→${escapeHtml2(value.preferred_form)}`).join('、')}</div>` : ''}
+      </details>
+      <div class="wb-card-actions">
+        ${waiting ? '<button class="btn btn-primary btn-sm" data-memory-action="approve">批准</button><button class="btn btn-secondary btn-sm" data-memory-action="reject">驳回</button>' : ''}
+        ${revisable ? '<button class="btn btn-secondary btn-sm" data-memory-action="revise">基于此版修订</button>' : ''}
+      </div>
+    </article>`;
+  }).join('');
+  box.querySelectorAll('[data-memory-action]').forEach(button => {
+    button.addEventListener('click', handleProjectMemoryAction);
+  });
+}
+
+async function loadProjectMemoryPanel(announce = true) {
+  const box = document.getElementById('memory-list');
+  if (!box) return;
+  if (!currentSession) {
+    box.innerHTML = '<div class="wb-empty">选择论文任务后查看项目记忆。</div>';
+    return;
+  }
+  const taskId = currentSession;
+  box.setAttribute('aria-busy', 'true');
+  const response = await apiProjectMemories(taskId);
+  if (taskId !== currentSession) return;
+  box.removeAttribute('aria-busy');
+  if (response.code !== 0) {
+    box.innerHTML = `<div class="wb-error">${escapeHtml2(response.msg || '加载项目记忆失败')}<div class="wb-card-actions"><button class="btn btn-secondary btn-sm" id="memory-retry">重试</button></div></div>`;
+    document.getElementById('memory-retry')?.addEventListener('click', () => loadProjectMemoryPanel());
+    return;
+  }
+  const items = response.data || [];
+  renderProjectMemoryVersions(items);
+  if (announce) {
+    const active = items.find(item => item.status === 'APPROVED');
+    document.getElementById('memory-live').textContent = active
+      ? `已加载 ${items.length} 个版本，当前批准版本v${active.version}`
+      : `已加载 ${items.length} 个版本，尚无批准版本`;
+  }
+}
+
+async function submitProjectMemoryForm(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const questions = document.getElementById('memory-questions');
+  const error = document.getElementById('memory-error');
+  if (!currentSession) {
+    error.textContent = '请先选择论文任务。';
+    return;
+  }
+  if (!valueLines('memory-questions').length) {
+    questions.setAttribute('aria-invalid', 'true');
+    error.textContent = '至少填写一个研究问题。';
+    questions.focus();
+    return;
+  }
+  questions.removeAttribute('aria-invalid');
+  error.textContent = '';
+  const submit = document.getElementById('memory-submit');
+  submit.disabled = true;
+  const response = await apiCreateProjectMemory(currentSession, buildProjectMemoryPayload());
+  submit.disabled = false;
+  if (response.code !== 0) {
+    error.textContent = response.msg || '生成项目记忆版本失败。';
+    return;
+  }
+  toast(response.msg);
+  memoryRevisionBase = null;
+  form.reset();
+  submit.textContent = '生成待审批版本';
+  document.getElementById('memory-builder').open = false;
+  await loadProjectMemoryPanel();
+}
+
+async function handleProjectMemoryAction(event) {
+  const button = event.currentTarget;
+  const action = button.dataset.memoryAction;
+  const card = button.closest('[data-memory-id]');
+  const artifactId = card?.dataset.memoryId;
+  if (!artifactId || !currentSession) return;
+  const response = await apiProjectMemories(currentSession);
+  const item = (response.data || []).find(value => value.artifact_id === artifactId);
+  if (!item) {
+    toast('记忆版本已变更，请刷新。');
+    return;
+  }
+  if (action === 'revise') {
+    fillProjectMemoryForm(item.payload || {}, item.version);
+    return;
+  }
+  let reason = '';
+  if (action === 'reject') {
+    const entered = window.prompt('请输入驳回原因（可取消）', '');
+    if (entered === null) return;
+    reason = entered.trim();
+  }
+  button.disabled = true;
+  const reviewed = await apiReviewProjectMemory(
+    currentSession, artifactId, action === 'approve', reason
+  );
+  toast(reviewed.code === 0 ? reviewed.msg : `审批失败：${reviewed.msg}`);
+  await loadProjectMemoryPanel();
 }
 
 async function loadEvidencePanel() {
@@ -6499,7 +6760,8 @@ async function assembleSectionsFromPanel(event) {
 
 async function loadActiveWorkbenchPane() {
   const target = document.querySelector('.kb-tab.active')?.dataset.tab || 'refs';
-  if (target === 'evidence') await loadEvidencePanel();
+  if (target === 'memory') await loadProjectMemoryPanel();
+  else if (target === 'evidence') await loadEvidencePanel();
   else if (target === 'writing') await loadSectionsPanel();
   else if (target === 'research') await loadResearchPanel();
   else if (target === 'jobs') await loadJobsPanel(false);
@@ -6901,6 +7163,7 @@ async function initApp() {
     });
   }
   const refreshBindings = [
+    ['memory-refresh', loadProjectMemoryPanel],
     ['evidence-refresh', loadEvidencePanel],
     ['research-refresh', loadResearchPanel],
     ['sections-refresh', loadSectionsPanel],
@@ -6914,6 +7177,11 @@ async function initApp() {
       button.addEventListener('click', () => handler());
     }
   });
+  const memoryForm = document.getElementById('memory-form');
+  if (memoryForm && !memoryForm.dataset.bound) {
+    memoryForm.dataset.bound = '1';
+    memoryForm.addEventListener('submit', submitProjectMemoryForm);
+  }
   const protocolForm = document.getElementById('protocol-form');
   if (protocolForm && !protocolForm.dataset.bound) {
     protocolForm.dataset.bound = '1';

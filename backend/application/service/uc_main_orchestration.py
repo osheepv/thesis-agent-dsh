@@ -33,6 +33,7 @@ from common.aicoding.exception.biz_exception import BizException
 from common.aicoding.exception.error_code import ErrorCode
 from common.workflow_contracts import get_stage_contract
 from common.citation import format_gbt7714
+from common.project_memory import validate_project_memory
 from thesis_docx.cross_reference import normalize_target_id
 
 from artifacts import (
@@ -607,6 +608,84 @@ class MainOrchestration:
                 "complete_percent": progress.get("complete_percent", 0),
             },
             msg="任务查询成功",
+        )
+
+    # ------------------------------------------------------------------
+    # 论文级项目记忆（版本化 + 作者审批）
+    # ------------------------------------------------------------------
+    def create_project_memory(
+        self, task_id: str, value: Dict[str, Any]
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        memory = validate_project_memory(value)
+        topic = self._artifacts.get_active(
+            task_id=task_id,
+            stage_no=1,
+            kind=ArtifactKind.TOPIC_PROPOSAL,
+        )
+        dependencies = (topic.artifact_id,) if topic is not None else ()
+        artifact = self._artifacts.create_version(
+            task_id=task_id,
+            stage_no=1,
+            kind=ArtifactKind.PROJECT_MEMORY,
+            payload=memory.model_dump(),
+            dependency_ids=dependencies,
+            context_manifest=ContextManifest(
+                prompt_id="project_memory_authoring",
+                prompt_version="v1",
+                input_artifact_ids=dependencies,
+            ),
+        )
+        artifact = self._artifacts.submit_auto_gate(
+            artifact.artifact_id,
+            passed=True,
+            report={
+                "schema_validation": "passed",
+                "research_question_count": len(memory.research_questions),
+                "decision_count": len(memory.decisions),
+                "feedback_count": len(memory.supervisor_feedback),
+                "terminology_count": len(memory.terminology),
+                "requires_author_approval": True,
+            },
+        )
+        return Result.ok(
+            data=self._artifact_dict(artifact),
+            msg="项目记忆新版本已生成，等待作者审批",
+        )
+
+    def review_project_memory(
+        self,
+        task_id: str,
+        artifact_id: str,
+        *,
+        approved: bool,
+        actor: str = "author",
+        reason: str = "",
+    ) -> Result[Dict[str, Any]]:
+        self._require(task_id)
+        artifact = self._artifacts.get(artifact_id)
+        if artifact.task_id != task_id or artifact.kind != ArtifactKind.PROJECT_MEMORY:
+            raise ValueError("当前任务中不存在该项目记忆版本")
+        if artifact.status == ArtifactStatus.WAITING_APPROVAL:
+            artifact = self._artifacts.decide(
+                artifact_id,
+                approved=approved,
+                actor=actor,
+                reason=reason,
+            )
+        elif artifact.status != ArtifactStatus.APPROVED or not approved:
+            raise ValueError("该项目记忆版本当前状态不能审批")
+        return Result.ok(data=self._artifact_dict(artifact), msg="项目记忆审批已记录")
+
+    def list_project_memories(self, task_id: str) -> Result[List[Dict[str, Any]]]:
+        self._require(task_id)
+        return Result.ok(
+            data=[
+                self._artifact_dict(artifact)
+                for artifact in self._artifacts.list_task(task_id)
+                if artifact.kind == ArtifactKind.PROJECT_MEMORY
+            ],
+            msg="项目记忆版本列表",
         )
 
     # ------------------------------------------------------------------
@@ -1250,6 +1329,11 @@ class MainOrchestration:
         ctx.results = verified_results
         ctx.argument_map = argument_map.payload if argument_map is not None else {}
         ctx.research_protocol = protocol.payload if protocol is not None else {}
+        project_memory = self._active_project_memory(task_id)
+        ctx.project_memory = project_memory.payload if project_memory is not None else {}
+        ctx.project_memory_artifact_id = (
+            project_memory.artifact_id if project_memory is not None else ""
+        )
         from common.agent_loop import AgentLoopSettings
         from common.llm import get_llm_settings
 
@@ -3325,6 +3409,11 @@ class MainOrchestration:
     def _active_argument_map(self, task_id: str):
         return self._artifacts.get_active(
             task_id=task_id, stage_no=5, kind=ArtifactKind.ARGUMENT_MAP
+        )
+
+    def _active_project_memory(self, task_id: str):
+        return self._artifacts.get_active(
+            task_id=task_id, stage_no=1, kind=ArtifactKind.PROJECT_MEMORY
         )
 
     @staticmethod

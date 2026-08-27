@@ -286,6 +286,45 @@ async def list_artifacts(task_id: str, session_id: str = "",
         return _err(exc)
 
 
+@router.post("/tasks/{task_id}/memory", response_model=None)
+async def create_project_memory(task_id: str, req: Dict[str, Any], session_id: str = "",
+                                orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.create_project_memory(task_id, req)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/memory", response_model=None)
+async def list_project_memories(task_id: str, session_id: str = "",
+                                orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.list_project_memories(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/memory/{artifact_id}/review", response_model=None)
+async def review_project_memory(request: Request, task_id: str, artifact_id: str,
+                                req: Dict[str, Any],
+                                session_id: str = "",
+                                orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        principal = getattr(request.state, "principal", None)
+        return orchestration.review_project_memory(
+            task_id,
+            artifact_id,
+            approved=bool(req.get("approved", True)),
+            actor=principal.username if principal is not None else "author",
+            reason=str(req.get("reason", "")),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 @router.post("/tasks/{task_id}/rings/3/curate", response_model=None)
 async def ring3_curate(task_id: str, req: Dict[str, Any], session_id: str = "",
                        orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:

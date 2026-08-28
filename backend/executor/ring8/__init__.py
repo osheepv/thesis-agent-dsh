@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from common.aicoding.enums import RingType
 from common.citation import format_gbt7714
 from common.lit import get_lit_service
+from common.trust import TrustCheckStatus, build_citation_trust_assessment
 from executor.base import (
     ExecContext,
     ExecResult,
@@ -67,6 +68,9 @@ class CitationCheckResult(BaseModel):
     failed: int = Field(default=0, description="疑似伪引数")
     items: list[GbtCheckItem] = Field(default_factory=list, description="逐条结果")
     summary: str = Field(default="", description="整体结论")
+    trust_assessment: Dict[str, Any] = Field(
+        default_factory=dict, description="结构/元数据/正文证据分档摘要"
+    )
 
 
 def _extract_refs(ctx: ExecContext) -> List[Dict[str, Any]]:
@@ -110,14 +114,22 @@ class Ring8ComplianceExecutor(RingExecutor):
     def execute(self, ctx: ExecContext) -> ExecResult:
         refs = _extract_refs(ctx)
         if not refs:
+            trust = build_citation_trust_assessment(
+                structure=TrustCheckStatus.FAILED,
+                metadata=TrustCheckStatus.NOT_ASSESSED,
+                evidence=TrustCheckStatus.NOT_ASSESSED,
+                summaries={"structure": "未提供参考文献列表"},
+            )
             return ExecResult(
                 output=CitationCheckResult(
-                    total=0, summary="未提供参考文献，跳过校验（需人工先补全引用列表）"
+                    total=0,
+                    summary="未提供参考文献，无法进行结构与题录核验。",
+                    trust_assessment=trust,
                 ).model_dump_json(indent=2),
                 accept=False,
                 fallbackTo=6,
                 issues=["未提供引用列表，请补全后重新校验"],
-                evidence={"checked": 0},
+                evidence={"checked": 0, "trust_assessment": trust},
             )
 
         if not _LIT_ENABLED:
@@ -131,16 +143,31 @@ class Ring8ComplianceExecutor(RingExecutor):
                 )
                 for ref in refs
             ]
+            trust = build_citation_trust_assessment(
+                structure=TrustCheckStatus.PASSED,
+                metadata=TrustCheckStatus.NOT_ASSESSED,
+                evidence=TrustCheckStatus.NOT_ASSESSED,
+                summaries={
+                    "structure": f"已识别 {len(items)} 条引用题录",
+                    "metadata": "文献服务已禁用，未进行外部元数据核验",
+                    "evidence": "本路径未读取正文摘录",
+                },
+            )
             result = CitationCheckResult(
                 total=len(items), passed=0, uncertain=len(items), failed=0,
                 items=items,
                 summary=f"文献检索禁用（THESIS_LIT_ENABLED=false），{len(items)} 条全部待人工复核。",
+                trust_assessment=trust,
             )
             return ExecResult(
                 output=result.model_dump_json(indent=2),
                 accept=False, fallbackTo=None,
                 issues=["文献检索禁用，引用校验未完成，需人工复核"],
-                evidence={"checked": len(items), "note": "THESIS_LIT_ENABLED=false"},
+                evidence={
+                    "checked": len(items),
+                    "note": "THESIS_LIT_ENABLED=false",
+                    "trust_assessment": trust,
+                },
             )
 
         svc = get_lit_service()
@@ -180,9 +207,32 @@ class Ring8ComplianceExecutor(RingExecutor):
             ))
 
         accept = failed == 0  # 存在疑似伪引则不通过（回退到环3/4 补文献）
+        metadata_status = (
+            TrustCheckStatus.FAILED
+            if failed
+            else TrustCheckStatus.PARTIAL
+            if uncertain
+            else TrustCheckStatus.PASSED
+        )
+        trust = build_citation_trust_assessment(
+            structure=TrustCheckStatus.PASSED,
+            metadata=metadata_status,
+            evidence=TrustCheckStatus.NOT_ASSESSED,
+            summaries={
+                "structure": f"已识别并编号 {len(items)} 条引用",
+                "metadata": (
+                    f"题录命中 {passed}，待人工 {uncertain}，未命中 {failed}"
+                ),
+                "evidence": "本路径只核验题录/元数据，未核验正文论断与全文摘录",
+            },
+        )
         summary = (
-            f"共校验 {len(items)} 条：通过 {passed}，待人工复核 {uncertain}，疑似伪引 {failed}。"
-            + ("校验通过。" if accept else "存在疑似伪引，请修复后重新校验（回退环3 补文献）。")
+            f"共检查 {len(items)} 条：题录命中 {passed}，待人工复核 {uncertain}，未命中 {failed}。"
+            + (
+                "题录/元数据检查完成；不代表正文证据已核验。"
+                if accept
+                else "存在未命中题录，请回退环3处理。"
+            )
         )
         result = CitationCheckResult(
             total=len(items),
@@ -191,6 +241,7 @@ class Ring8ComplianceExecutor(RingExecutor):
             failed=failed,
             items=items,
             summary=summary,
+            trust_assessment=trust,
         )
 
         return ExecResult(
@@ -205,5 +256,6 @@ class Ring8ComplianceExecutor(RingExecutor):
                 "failed": failed,
                 "sources": ["crossref", "openalex"],
                 "note": "多源交叉核验，未命中不编造；中文降级人工复核",
+                "trust_assessment": trust,
             },
         )

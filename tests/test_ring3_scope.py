@@ -3,7 +3,7 @@
 
 验证：
     1. scope 传参透传到 search（fake 捕获 scope）。
-    2. 知识库文献（kb_files）合并入池（verified 标记）。
+    2. 只有知识库literature文件进入文献候选，上传不自动等于已核验。
     3. 引导层源（chinese）返回 guide 条目进池。
 """
 from __future__ import annotations
@@ -77,20 +77,41 @@ class TestRing3Scope:
         assert all(i["reliability"] in ("matched", "discovery", "uncertain") for i in data["items"])
 
     def test_kb_files_merged(self, env):
-        # 知识库已存文献（用户下载的）合并入池，verified
+        # 知识库文献可合并入池，但上传行为本身不能证明题录真实。
         ctx = ExecContext(subject_field="CV", degree=Degree.MASTER, theme="T", scope="english")
         ctx.kb_files = [
             {"file_id": "f1", "file_name": "deep.pdf",
              "metadata": {"title": "基于CNN的图像分割", "authors": ["张三"], "year": 2024,
-                          "venue": "计算机学报", "doi": ""}},
+                          "venue": "计算机学报", "doi": "", "kind": "literature"}},
         ]
         res = get_executor(3).execute(ctx)
         data = json.loads(res.output)
         titles = [i["title"] for i in data["items"]]
         assert "基于CNN的图像分割" in titles, "知识库文献应合并入池"
         kb_item = next(i for i in data["items"] if i["title"] == "基于CNN的图像分割")
-        assert kb_item["reliability"] == "verified", "知识库文献视为已核验"
+        assert kb_item["reliability"] == "uncertain", "用户上传不得自动标为已核验"
         assert kb_item["gbt7714"], "知识库文献应有 GB/T 7714"
+
+    def test_non_literature_kb_files_never_enter_literature_pool(self, env):
+        ctx = ExecContext(subject_field="CV", degree=Degree.MASTER, theme="T", scope="english")
+        ctx.kb_files = [
+            {
+                "file_id": "raw-1",
+                "file_name": "experiment.csv",
+                "metadata": {"title": "实验原始数据", "kind": "raw_data"},
+            },
+            {
+                "file_id": "code-1",
+                "file_name": "analysis.py",
+                "metadata": {"title": "分析脚本", "kind": "code"},
+            },
+        ]
+
+        data = json.loads(get_executor(3).execute(ctx).output)
+        titles = {item["title"] for item in data["items"]}
+
+        assert "实验原始数据" not in titles
+        assert "分析脚本" not in titles
 
     def test_default_scope_all(self, env):
         ctx = ExecContext(subject_field="CV", degree=Degree.MASTER, theme="T")

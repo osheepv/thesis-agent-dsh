@@ -25,18 +25,22 @@
     const taskId = currentSession;
     const version = ++requestVersion;
     claimBox.setAttribute('aria-busy', 'true');
-    const [auditResponse, sourceResponse, mapResponse] = await Promise.all([
+    const [auditResponse, sourceResponse, mapResponse, progress] = await Promise.all([
       apiEvidenceAudit(taskId), apiTaskSources(taskId), apiArgumentMaps(taskId),
+      apiSessionProgress(taskId),
     ]);
     if (version !== requestVersion || taskId !== currentSession) return;
     claimBox.removeAttribute('aria-busy');
+    const trustHtml = window.ThesisTrustUI.renderAssessment(
+      progress?.trust_assessments?.['8'] || null,
+    );
     if (auditResponse.code !== 0) {
-      claimBox.innerHTML = `<div class="wb-error">${escapeHtml2(auditResponse.msg)}<div class="wb-card-actions"><button class="btn btn-secondary btn-sm" data-evidence-retry>重试</button></div></div>`;
+      claimBox.innerHTML = trustHtml + `<div class="wb-error">${escapeHtml2(auditResponse.msg)}<div class="wb-card-actions"><button class="btn btn-secondary btn-sm" data-evidence-retry>重试</button></div></div>`;
       claimBox.querySelector('[data-evidence-retry]')?.addEventListener('click', loadEvidencePanel);
     } else {
       const audit = auditResponse.data || {};
       const claims = audit.claims || [];
-      claimBox.innerHTML = `<div class="wb-card">
+      claimBox.innerHTML = trustHtml + `<div class="wb-card">
         <div class="wb-card-title">论断覆盖：${audit.supported_count || 0}/${audit.claim_count || 0}</div>
         <div class="wb-card-meta">未支持 ${audit.unsupported_count || 0} · 有争议 ${audit.disputed_count || 0}</div>
       </div>` + (claims.length ? claims.map(claim => `<article class="wb-card">

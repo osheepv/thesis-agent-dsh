@@ -172,6 +172,10 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         'syncDeepSeekPresetCapabilities',
         '/api/v1/console/tasks/${taskId}/memory',
         'loadProjectMemoryPanel',
+        'window.ThesisTrustUI = Object.freeze',
+        'trust-assessment',
+        'done-limited',
+        '结构/题录通过不代表正文证据通过',
     ):
         assert fragment in javascript
     source = _ui_source()

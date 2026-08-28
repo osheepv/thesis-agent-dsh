@@ -163,6 +163,9 @@ class TestRing8Check:
         assert data["failed"] == 0
         assert data["items"][0]["gbt7714"], "通过条目应输出 GB/T 7714"
         assert res.fallbackTo is None
+        assert data["trust_assessment"]["highest_tier"] == "METADATA"
+        assert data["trust_assessment"]["dimensions"]["metadata"]["status"] == "PASSED"
+        assert data["trust_assessment"]["dimensions"]["evidence"]["status"] == "NOT_ASSESSED"
 
     def test_fake_ref_detected(self, fake_lit):
         ctx = ExecContext(subject_field="CV", degree=Degree.MASTER)
@@ -171,6 +174,8 @@ class TestRing8Check:
         data = json.loads(res.output)
         assert res.accept is False
         assert data["failed"] == 1
+        assert data["trust_assessment"]["highest_tier"] == "STRUCTURE"
+        assert data["trust_assessment"]["dimensions"]["metadata"]["status"] == "FAILED"
         # 伪引 → 回退到环3 补文献
         assert res.fallbackTo == 3
 
@@ -180,3 +185,28 @@ class TestRing8Check:
         data = json.loads(res.output)
         assert data["total"] == 0
         assert "未提供" in data["summary"]
+        assert data["trust_assessment"]["highest_tier"] == "NONE"
+        assert data["trust_assessment"]["dimensions"]["structure"]["status"] == "FAILED"
+
+    def test_uncertain_metadata_never_becomes_evidence_pass(self, monkeypatch):
+        from backend.executor import ring8
+
+        class _UncertainService:
+            @staticmethod
+            def verify_ref(_ref):
+                return {
+                    "ok": False,
+                    "reliability": "uncertain",
+                    "evidence": {"reason": "需人工复核"},
+                    "item": None,
+                }
+
+        monkeypatch.setattr(ring8, "get_lit_service", lambda: _UncertainService())
+        ctx = ExecContext(subject_field="CV", degree=Degree.MASTER)
+        ctx.references = [{"title": "中文待核验题录"}]
+
+        data = json.loads(get_executor(8).execute(ctx).output)
+
+        assert data["trust_assessment"]["highest_tier"] == "STRUCTURE"
+        assert data["trust_assessment"]["dimensions"]["metadata"]["status"] == "PARTIAL"
+        assert data["trust_assessment"]["dimensions"]["evidence"]["status"] == "NOT_ASSESSED"

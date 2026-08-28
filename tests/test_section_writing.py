@@ -157,7 +157,12 @@ def test_section_generation_requires_supported_claims_and_assembles(monkeypatch)
         task_id, artifact_id=argument_map["artifact_id"]
     ).data[0]
     source = orchestration.register_source(
-        task_id, {"title": "Evidence Source", "doi": "10.1/evidence"}
+        task_id,
+        {
+            "title": "Evidence Source",
+            "doi": "10.1/evidence",
+            "verification_status": "METADATA_VERIFIED",
+        },
     ).data
     evidence = orchestration.add_evidence(
         task_id,
@@ -218,10 +223,17 @@ def test_section_generation_requires_supported_claims_and_assembles(monkeypatch)
     citation_audit = orchestration.run_ring8(task_id)
     assert citation_audit.is_ok
     assert citation_audit.data["citation_map"] == {evidence["evidence_id"]: 1}
+    trust = citation_audit.data["trust_assessment"]
+    assert trust["highest_tier"] == "EVIDENCE"
+    assert trust["dimensions"]["evidence"]["status"] == "PASSED"
+    assert trust["author_review"]["status"] == "PENDING"
     stored = orchestration._store.get(task_id).ring8
     assert f"[{evidence['evidence_id']}]" not in stored["rendered_content"]
     assert "[1]" in stored["rendered_content"]
     assert "# 参考文献" in stored["rendered_content"]
+    orchestration.confirm_ring(task_id, 8)
+    progress = orchestration.progress(task_id).data
+    assert progress["trust_assessments"]["8"]["author_review"]["status"] == "APPROVED"
 
 
 def test_upstream_argument_revision_stales_approved_sections(monkeypatch):

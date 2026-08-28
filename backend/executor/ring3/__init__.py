@@ -228,16 +228,20 @@ def _to_lit_item(it: LitItem) -> LiteratureItem:
 
 
 def _kb_docs_to_items(ctx: ExecContext) -> List[LiteratureItem]:
-    """会话知识库已存文献 → LiteratureItem（用户下载的有题录的进池）。"""
+    """会话知识库中明确标记为literature的题录进入候选池。"""
     result: List[LiteratureItem] = []
     for doc in (getattr(ctx, "kb_files", None) or []):
         if not isinstance(doc, dict):
             continue
         meta = doc.get("metadata") or {}
+        if str(meta.get("kind", "")).strip().lower() != "literature":
+            continue
         title = meta.get("title") or doc.get("file_name", "")
         if not title:
             continue
-        # 知识库文献可作为"本地可靠"条目（用户已在平台核验下载）
+        reliability = str(meta.get("reliability", "uncertain")).strip().lower()
+        if reliability not in {"verified", "matched", "uncertain", "discovery"}:
+            reliability = "uncertain"
         result.append(LiteratureItem(
             title=title,
             authors=meta.get("authors") or [],
@@ -246,7 +250,8 @@ def _kb_docs_to_items(ctx: ExecContext) -> List[LiteratureItem]:
             doi=meta.get("doi", ""),
             abstract=meta.get("abstract", ""),
             category=_categorize(title),
-            reliability="verified",  # 用户自行下载的文献视为已核验
+            # 上传只证明文件存在，不自动证明题录或内容真实。
+            reliability=reliability,
             gbt7714=format_gbt7714({"title": title, "authors": meta.get("authors") or [],
                                    "year": meta.get("year"), "venue": meta.get("venue", ""),
                                    "doi": meta.get("doi", ""), "item_type": "article"}),

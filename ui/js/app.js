@@ -675,6 +675,50 @@ function escapeHtml2(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
+const TRUST_STATUS_LABELS = {
+  PASSED: '已通过',
+  PARTIAL: '部分完成',
+  FAILED: '未通过',
+  NOT_ASSESSED: '未评估',
+  PENDING: '待作者复核',
+  APPROVED: '作者已确认',
+  REJECTED: '作者已驳回',
+};
+
+function trustStatusClass(status) {
+  if (status === 'PASSED' || status === 'APPROVED') return 'ok';
+  if (status === 'FAILED' || status === 'REJECTED') return 'bad';
+  return 'warn';
+}
+
+function renderTrustAssessment(assessment, compact = false) {
+  if (!assessment?.dimensions) {
+    return '<section class="trust-assessment is-empty" aria-label="引用可信度分档"><div class="wb-card-meta">尚未生成环8分档核验结果。</div></section>';
+  }
+  const order = ['structure', 'metadata', 'evidence'];
+  const dimensions = order.map(key => {
+    const item = assessment.dimensions[key] || {};
+    const status = item.status || 'NOT_ASSESSED';
+    return `<div class="trust-dimension" data-trust-status="${escapeHtml2(status)}">
+      <span class="trust-dimension-label">${escapeHtml2(item.label || key)}</span>
+      <span class="wb-status ${trustStatusClass(status)}">${escapeHtml2(TRUST_STATUS_LABELS[status] || status)}</span>
+      ${compact ? '' : `<span class="trust-dimension-summary">${escapeHtml2(item.summary || '')}</span>`}
+    </div>`;
+  }).join('');
+  const review = assessment.author_review || {};
+  const reviewStatus = review.status || 'PENDING';
+  return `<section class="trust-assessment" aria-label="引用可信度分档">
+    <div class="trust-assessment-head">最高可声明层级：<strong>${escapeHtml2(assessment.highest_tier_label || assessment.highest_tier || '未评估')}</strong></div>
+    <div class="trust-dimensions">${dimensions}</div>
+    <div class="trust-author-review"><span>${escapeHtml2(review.label || '作者复核')}</span><span class="wb-status ${trustStatusClass(reviewStatus)}">${escapeHtml2(TRUST_STATUS_LABELS[reviewStatus] || reviewStatus)}</span></div>
+    ${assessment.warning ? `<p class="trust-warning">⚠ ${escapeHtml2(assessment.warning)}</p>` : ''}
+  </section>`;
+}
+
+window.ThesisTrustUI = Object.freeze({
+  renderAssessment: renderTrustAssessment,
+});
+
 // —— 环执行结果 → 消息卡 ——
 function renderRingResult(ringNo, data) {
   const name = RING_NAMES[ringNo] || ('环' + ringNo);
@@ -807,15 +851,17 @@ function renderRingResult(ringNo, data) {
       (terms.length ? `<p style="font-size:13px;color:var(--text-subtle);">术语统一：${terms.slice(0,3).map(t => escapeHtml2(t)).join('、')}</p>` : ''),
       `${name} · 已完成`);
   } else if (ringNo === 8) {
-    // 引用校验卡
+    // 引用检查卡：流程完成不等于正文证据通过。
     const total = data && data.total != null ? data.total : 0;
     const passed = data && data.passed != null ? data.passed : 0;
     const failed = data && data.failed != null ? data.failed : 0;
     const uncertain = data && data.uncertain != null ? data.uncertain : 0;
-    appendAIMsg(`<p><strong>环8 引用校验完成</strong>：共 <strong>${total}</strong> 条</p>` +
-      `<p style="font-size:13px;"><span style="color:var(--success)">✓ 通过 ${passed}</span> · <span style="color:var(--warning)">待人工 ${uncertain}</span> · <span style="color:var(--error)">伪引 ${failed}</span></p>` +
-      (failed > 0 ? `<p style="font-size:12px;color:var(--error)">存在伪引，请回退环3 补文献</p>` : ''),
-      `${name} · 已完成`);
+    const trust = data?.trust_assessment || {};
+    appendAIMsg(`<p><strong>环8 引用检查完成</strong>：共 <strong>${total}</strong> 条</p>` +
+      `<p style="font-size:13px;">题录命中 ${passed} · 待人工 ${uncertain} · 未命中/阻断项 ${failed}</p>` +
+      renderTrustAssessment(trust) +
+      (failed > 0 ? `<p style="font-size:12px;color:var(--error)">存在阻断项，请根据分档摘要回到文献或证据环节处理。</p>` : ''),
+      `${name} · ${escapeHtml2(trust.highest_tier_label || '已完成检查')}`);
   } else if (ringNo === 9) {
     // 排版卡
     const compliant = data && data.compliant;
@@ -849,8 +895,14 @@ function appendGateBlock(ringNo, ready = true, blocker = '') {
   const gate = document.createElement('div');
   gate.className = 'gate-block';
   gate.dataset.ring = String(ringNo);
-  gate.innerHTML = `<div class="gate-hint"><span class="gate-dot"></span>已完成自动校验，待您确认后进入下一环</div>
-    <div class="gate-row"><span class="gate-label">「${RING_NAMES[ringNo] || '环' + ringNo}」环节已通过自动验收</span>
+  const gateHint = ringNo === 8
+    ? '引用分档检查已完成；请确认你理解当前最高可声明层级'
+    : '已完成自动校验，待您确认后进入下一环';
+  const gateLabel = ringNo === 8
+    ? '「引用校验」流程已完成；结构/题录通过不代表正文证据通过'
+    : `「${RING_NAMES[ringNo] || '环' + ringNo}」环节已通过自动验收`;
+  gate.innerHTML = `<div class="gate-hint"><span class="gate-dot"></span>${gateHint}</div>
+    <div class="gate-row"><span class="gate-label">${gateLabel}</span>
     <button class="btn btn-primary" data-gate data-ring="${ringNo}" ${ready ? '' : 'disabled'}>${ready ? (ringNo === 10 ? '确认完成论文' : '确认进入下一环') : escapeHtml2(blocker || '请先完成作者决策')}</button></div>`;
   inner.appendChild(gate);
   const btn = gate.querySelector('[data-gate]');
@@ -1866,11 +1918,20 @@ function buildHistoryFromProgress(prog) {
   summary.dataset.progressSummary = 'true';
   finished.forEach(r => {
     const name = RING_NAMES[r.ring_no] || ('环' + r.ring_no);
-    appendAIMsg(`<p><strong>环${r.ring_no} ${name}</strong> <span style="color:var(--success)">✓ 已通过</span></p><p style="font-size:12px;color:var(--text-subtle);">点击「执行当前环节」继续环${prog.current_ring_no || '下一环'}。</p>`, `${name} · 已通过`);
+    const trust = r.ring_no === 8 ? prog.trust_assessments?.['8'] : null;
+    const evidencePassed = trust?.highest_tier === 'EVIDENCE';
+    const statusText = trust && !evidencePassed
+      ? `⚠ 流程已确认 · ${escapeHtml2(trust.highest_tier_label || '证据未通过')}`
+      : '✓ 已通过';
+    const statusColor = trust && !evidencePassed ? 'var(--warning)' : 'var(--success)';
+    appendAIMsg(`<p><strong>环${r.ring_no} ${name}</strong> <span style="color:${statusColor}">${statusText}</span></p>` +
+      (trust ? renderTrustAssessment(trust, true) : '') +
+      `<p style="font-size:12px;color:var(--text-subtle);">点击「执行当前环节」继续环${prog.current_ring_no || '下一环'}。</p>`,
+      `${name} · ${trust && !evidencePassed ? '有限可信' : '已通过'}`);
   });
   const cur = prog.current_ring_no;
   if (prog.phase_state === 'WAITING_APPROVAL') {
-    if ([1, 3].includes(cur) && prog.author_decision_payload) {
+    if ([1, 3, 8].includes(cur) && prog.author_decision_payload) {
       renderRingResult(cur, prog.author_decision_payload);
     } else {
       appendAIMsg(`<p style="font-size:13px;">环${cur}（${RING_NAMES[cur] || ''}）已通过自动验收，等待你的确认。</p>`, '待确认');
@@ -1893,11 +1954,19 @@ function renderStagesFromProgress(prog) {
   const states = [];
   rings.forEach(r => {
     let st = 'todo';
-    if (r.state === 'PASSED') st = 'done';
+    const trust = r.ring_no === 8 ? prog.trust_assessments?.['8'] : null;
+    if (r.state === 'PASSED') {
+      st = trust && trust.highest_tier !== 'EVIDENCE' ? 'done-limited' : 'done';
+    }
     else if (r.state === 'WAITING_APPROVAL') st = 'gate';
     else if (r.state === 'FALLBACK') st = 'revert';
     else if (r.state === 'IN_PROGRESS' || (r.state === 'NOT_STARTED' && r.ring_no && r.ring_no === prog.current_ring_no && prog.complete_percent < 100)) st = 'current';
-    states.push({ no: r.ring_no, name: STAGE_MAP[r.ring_no] || ('环'+r.ring_no), state: st });
+    states.push({
+      no: r.ring_no,
+      name: STAGE_MAP[r.ring_no] || ('环'+r.ring_no),
+      state: st,
+      trustLabel: trust?.highest_tier_label || '',
+    });
   });
   // 渲染 stage-bar
   const bar = document.getElementById('stage-bar');
@@ -1906,12 +1975,15 @@ function renderStagesFromProgress(prog) {
     states.forEach((s, i) => {
       const node = document.createElement('div');
       node.className = 'stage-node ' + s.state;
-      node.innerHTML = `<div class="stage-dot">${s.state === 'done' ? '✓' : ''}</div><div class="stage-label">${i+1}. ${s.name}</div>`;
-      node.title = `${i+1}. ${s.name}`;
+      const dotText = s.state === 'done' ? '✓' : s.state === 'done-limited' ? '!' : '';
+      node.innerHTML = `<div class="stage-dot">${dotText}</div><div class="stage-label">${i+1}. ${s.name}</div>`;
+      node.title = `${i+1}. ${s.name}${s.trustLabel ? ` · ${s.trustLabel}` : ''}`;
       bar.appendChild(node);
       if (i < states.length - 1) {
         const line = document.createElement('div');
-        line.className = 'stage-line' + (s.state === 'done' ? ' done' : '');
+        line.className = 'stage-line' + (
+          s.state === 'done' ? ' done' : s.state === 'done-limited' ? ' done-limited' : ''
+        );
         bar.appendChild(line);
       }
     });

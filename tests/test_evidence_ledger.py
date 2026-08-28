@@ -90,9 +90,10 @@ def test_excerpt_requires_locator_and_author_review_before_linking():
     approved = ledger.review_excerpt(
         "task-1", excerpt.evidence_id, approved=True, actor="author"
     )
+    # 批准摘录是人工项目决策，不能伪装成系统已逐字核对全文。
     assert ledger.get_source(
         "task-1", source.source_id
-    ).verification_status == SourceVerificationStatus.CONTENT_VERIFIED
+    ).verification_status == SourceVerificationStatus.METADATA_VERIFIED
     link = ledger.link_evidence(
         task_id="task-1",
         claim_id=claim.claim_id,

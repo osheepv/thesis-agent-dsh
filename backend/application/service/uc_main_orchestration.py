@@ -34,6 +34,11 @@ from common.aicoding.exception.error_code import ErrorCode
 from common.workflow_contracts import get_stage_contract
 from common.citation import format_gbt7714
 from common.project_memory import validate_project_memory
+from common.trust import (
+    TrustCheckStatus,
+    build_citation_trust_assessment,
+    with_author_review,
+)
 from thesis_docx.cross_reference import normalize_target_id
 
 from artifacts import (
@@ -1658,6 +1663,7 @@ class MainOrchestration:
             "failed": data.get("failed", 0),
             "reference_entries": data.get("reference_entries", []),
             "citation_map": data.get("citation_map", {}),
+            "trust_assessment": data.get("trust_assessment", {}),
             "fallbackTo": res.fallbackTo,
         }
         if not res.accept:
@@ -1691,18 +1697,26 @@ class MainOrchestration:
         marked_evidence_ids = set(re.findall(r"\[(EVD-[A-Z0-9]+)\]", content))
         marked_result_ids = set(re.findall(r"\[(RES-[A-Z0-9]+)\]", content))
         issues: list[str] = []
+        structure_issues: list[str] = []
+        metadata_issues: list[str] = []
+        evidence_issues: list[str] = []
+
+        def _add_issue(bucket: list[str], message: str) -> None:
+            bucket.append(message)
+            issues.append(message)
+
         missing_evidence_markers = sorted(expected_evidence_ids - marked_evidence_ids)
         unexpected_evidence_markers = sorted(marked_evidence_ids - expected_evidence_ids)
         missing_result_markers = sorted(expected_result_ids - marked_result_ids)
         unexpected_result_markers = sorted(marked_result_ids - expected_result_ids)
         if missing_evidence_markers:
-            issues.append(f"正文丢失证据标记: {missing_evidence_markers}")
+            _add_issue(structure_issues, f"正文丢失证据标记: {missing_evidence_markers}")
         if unexpected_evidence_markers:
-            issues.append(f"正文出现未登记证据标记: {unexpected_evidence_markers}")
+            _add_issue(structure_issues, f"正文出现未登记证据标记: {unexpected_evidence_markers}")
         if missing_result_markers:
-            issues.append(f"正文丢失结果标记: {missing_result_markers}")
+            _add_issue(structure_issues, f"正文丢失结果标记: {missing_result_markers}")
         if unexpected_result_markers:
-            issues.append(f"正文出现未登记结果标记: {unexpected_result_markers}")
+            _add_issue(structure_issues, f"正文出现未登记结果标记: {unexpected_result_markers}")
 
         evidence_rows: dict[str, tuple[Any, Any]] = {}
         for evidence_id in sorted(expected_evidence_ids | marked_evidence_ids):
@@ -1710,16 +1724,17 @@ class MainOrchestration:
                 excerpt = self._evidence.get_excerpt(task_id, evidence_id)
                 source = self._evidence.get_source(task_id, excerpt.source_id)
             except Exception as exc:  # noqa: BLE001
-                issues.append(f"证据 {evidence_id} 不存在或跨任务: {exc}")
+                _add_issue(evidence_issues, f"证据 {evidence_id} 不存在或跨任务: {exc}")
                 continue
             if excerpt.review_status.value != "APPROVED":
-                issues.append(f"证据 {evidence_id} 未获作者批准")
+                _add_issue(evidence_issues, f"证据 {evidence_id} 未获作者批准")
             if source.verification_status in {
                 SourceVerificationStatus.UNVERIFIED,
                 SourceVerificationStatus.RETRACTED_FLAG,
                 SourceVerificationStatus.EXCLUDED,
             }:
-                issues.append(
+                _add_issue(
+                    metadata_issues,
                     f"来源 {source.source_id} 核验状态不可用于终稿: "
                     f"{source.verification_status.value}"
                 )
@@ -1735,7 +1750,7 @@ class MainOrchestration:
         }
         for result_id in sorted(expected_result_ids | marked_result_ids):
             if result_id not in verified_results:
-                issues.append(f"结果 {result_id} 不属于当前已批准结果账本")
+                _add_issue(evidence_issues, f"结果 {result_id} 不属于当前已批准结果账本")
 
         argument_map = self._active_argument_map(task_id)
         claim_audit = (
@@ -1749,7 +1764,8 @@ class MainOrchestration:
             }
         )
         if claim_audit.get("blocking_claim_ids"):
-            issues.append(
+            _add_issue(
+                evidence_issues,
                 f"仍有未支持或有争议论断: {claim_audit['blocking_claim_ids']}"
             )
 
@@ -1802,7 +1818,10 @@ class MainOrchestration:
             target = normalize_target_id(raw_target)
             display = self._cross_reference_display(raw_target)
             if f"[[BOOKMARK:{target}|" not in rendered_content:
-                issues.append(f"结果 {result_id} 缺少交叉引用目标 BOOKMARK:{target}")
+                _add_issue(
+                    structure_issues,
+                    f"结果 {result_id} 缺少交叉引用目标 BOOKMARK:{target}",
+                )
             cross_reference_map[result_id] = {
                 "target": target,
                 "display": display,
@@ -1816,6 +1835,53 @@ class MainOrchestration:
             )
             rendered_content = f"{rendered_content.rstrip()}\n\n# 参考文献\n\n{references_text}"
 
+        structure_status = (
+            TrustCheckStatus.FAILED
+            if structure_issues
+            else TrustCheckStatus.PASSED
+        )
+        metadata_status = (
+            TrustCheckStatus.FAILED
+            if metadata_issues
+            else TrustCheckStatus.PASSED
+            if reference_entries
+            else TrustCheckStatus.NOT_ASSESSED
+        )
+        evidence_was_assessed = bool(
+            expected_evidence_ids
+            or marked_evidence_ids
+            or expected_result_ids
+            or marked_result_ids
+            or claim_audit.get("claim_count")
+        )
+        evidence_status = (
+            TrustCheckStatus.NOT_ASSESSED
+            if not evidence_was_assessed
+            else TrustCheckStatus.FAILED
+            if evidence_issues
+            or structure_status != TrustCheckStatus.PASSED
+            or metadata_status != TrustCheckStatus.PASSED
+            else TrustCheckStatus.PASSED
+        )
+        trust = build_citation_trust_assessment(
+            structure=structure_status,
+            metadata=metadata_status,
+            evidence=evidence_status,
+            summaries={
+                "structure": (
+                    f"引用/结果标记与交叉引用结构阻断项 {len(structure_issues)}"
+                ),
+                "metadata": (
+                    f"已登记参考文献 {len(reference_entries)}，"
+                    f"来源状态阻断项 {len(metadata_issues)}"
+                ),
+                "evidence": (
+                    f"已复核摘录 {len(evidence_rows)}，"
+                    f"论断 {claim_audit.get('claim_count', 0)}，"
+                    f"证据阻断项 {len(evidence_issues)}"
+                ),
+            },
+        )
         accepted = not issues
         data = {
             "total": len(reference_entries),
@@ -1833,6 +1899,7 @@ class MainOrchestration:
                 "marked_result_ids": sorted(marked_result_ids),
             },
             "issues": issues,
+            "trust_assessment": trust,
             "rendered_content": rendered_content,
             "summary": (
                 f"证据链、结果链与 {len(reference_entries)} 条参考文献均通过审计"
@@ -1850,7 +1917,7 @@ class MainOrchestration:
             key: data[key]
             for key in (
                 "total", "passed", "uncertain", "failed", "citation_map",
-                "cross_reference_map", "issues", "summary",
+                "cross_reference_map", "issues", "summary", "trust_assessment",
             )
         }
         if not accepted:
@@ -1994,6 +2061,9 @@ class MainOrchestration:
                 "scope": rec.scope,
                 "artifact_projection_pending": bool(projection_issues),
                 "artifact_projection_issues": projection_issues,
+                "trust_assessments": {
+                    "8": (rec.ring8 or {}).get("trust_assessment", {})
+                } if isinstance(rec.ring8, dict) and rec.ring8.get("trust_assessment") else {},
             })
             decision_ready = True
             decision_blocker = ""
@@ -2008,7 +2078,7 @@ class MainOrchestration:
             data["author_decision_blocker"] = decision_blocker
             if (
                 data.get("phase_state") == PhaseState.WAITING_APPROVAL.value
-                and data.get("current_ring_no") in {1, 3}
+                and data.get("current_ring_no") in {1, 3, 8}
             ):
                 data["author_decision_payload"] = getattr(
                     rec, f"ring{data['current_ring_no']}"
@@ -2152,6 +2222,13 @@ class MainOrchestration:
                     detail={"required_artifact": ArtifactKind.ARGUMENT_MAP.value},
                 )
         payload = getattr(rec, f"ring{ring_no}", None) or {}
+        if ring_no == 8 and isinstance(payload, dict) and payload.get("trust_assessment"):
+            payload = dict(payload)
+            payload["trust_assessment"] = with_author_review(
+                payload["trust_assessment"],
+                approved=confirmed,
+                reason=reject_reason,
+            )
         contract = get_stage_contract(ring_no)
         event_id = f"EVT-{uuid.uuid4().hex[:20].upper()}"
         dependency_ids: tuple[str, ...] = ()
@@ -2210,7 +2287,14 @@ class MainOrchestration:
             "context_manifest": context_manifest.to_dict(),
             "dependency_ids": list(dependency_ids),
             "auto_gate_passed": True,
-            "gate_report": {"fsm_acceptance": "passed"},
+            "gate_report": {
+                "fsm_acceptance": "passed",
+                "trust_assessment": (
+                    payload.get("trust_assessment", {})
+                    if isinstance(payload, dict)
+                    else {}
+                ),
+            },
             "actor": "author",
         }
         self._fsm.advance(
@@ -2221,6 +2305,9 @@ class MainOrchestration:
             gate_rule="user_confirmation",
             artifact_event=artifact_event,
         )
+        if ring_no == 8 and isinstance(payload, dict) and payload.get("trust_assessment"):
+            rec.ring8 = payload
+            self._store.put(rec)
         projection_issues = self._project_pending_artifacts(task_id)
         progress = self._fsm.get_progress(task_id)
         progress["artifact_projection_pending"] = bool(projection_issues)

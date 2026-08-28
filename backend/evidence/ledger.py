@@ -377,10 +377,9 @@ class EvidenceLedger:
             )
             self._db.commit()
         reviewed = self.get_excerpt(task_id, evidence_id)
-        if approved:
-            self.set_source_verification(
-                task_id, reviewed.source_id, SourceVerificationStatus.CONTENT_VERIFIED
-            )
+        # 作者批准表示“这条可定位摘录可用于当前项目”，
+        # 不等于系统已将摘录与上传全文逐字比对。因此不在此处
+        # 将来源单调升级为 CONTENT_VERIFIED。
         return reviewed
 
     def get_excerpt(self, task_id: str, evidence_id: str) -> EvidenceExcerpt:

@@ -12,7 +12,8 @@ ui/
 ├─ js/
 │  ├─ app.js
 │  └─ components/
-│     └─ project-memory.js
+│     ├─ project-memory.js
+│     └─ evidence.js
 └─ vendor/
    └─ cytoscape.min.js
 ```
@@ -33,10 +34,11 @@ python -m http.server 8787
 ```text
 vendor/cytoscape.min.js
 → js/components/project-memory.js
+→ js/components/evidence.js
 → js/app.js
 ```
 
-三者都是位于`</body>`前的classic script，不能添加`async`或反转顺序。`app.js`在末尾立即执行`initApp()`；项目记忆模块因此必须先登记`window.ThesisProjectMemory`接口。
+`cytoscape`位于`<head>`，两个功能模块与`app.js`位于`</body>`前；都是classic script，不能添加`async`或反转顺序。`app.js`在末尾立即执行`initApp()`，功能模块因此必须先登记`window.ThesisProjectMemory`和`window.ThesisEvidence`接口。
 
 现有页面仍含少量内联事件属性，暂不能直接切换为`type="module"`。后续拆分应先把通用网络、转义、通知和任务状态收敛为核心运行时接口，再迁移证据、研究、分节和作业模块。
 
@@ -45,6 +47,7 @@ vendor/cytoscape.min.js
 ```bash
 node --check ui/js/app.js
 node --check ui/js/components/project-memory.js
+node --check ui/js/components/evidence.js
 python -m pytest tests/test_ui_workbench.py -q
 ```
 

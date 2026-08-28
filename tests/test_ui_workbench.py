@@ -19,18 +19,20 @@ CYTOSCAPE_PATH = UI_PATH.parent / "vendor" / "cytoscape.min.js"
 STYLE_PATH = UI_PATH.parent / "styles" / "app.css"
 APP_JS_PATH = UI_PATH.parent / "js" / "app.js"
 MEMORY_JS_PATH = UI_PATH.parent / "js" / "components" / "project-memory.js"
+EVIDENCE_JS_PATH = UI_PATH.parent / "js" / "components" / "evidence.js"
+JS_PATHS = (MEMORY_JS_PATH, EVIDENCE_JS_PATH, APP_JS_PATH)
 
 
 def _ui_source() -> str:
     return "\n".join(
         path.read_text(encoding="utf-8")
-        for path in (UI_PATH, STYLE_PATH, APP_JS_PATH, MEMORY_JS_PATH)
+        for path in (UI_PATH, STYLE_PATH, *JS_PATHS)
     )
 
 
 def _js_source() -> str:
     return "\n".join(
-        path.read_text(encoding="utf-8") for path in (APP_JS_PATH, MEMORY_JS_PATH)
+        path.read_text(encoding="utf-8") for path in JS_PATHS
     )
 
 
@@ -63,6 +65,7 @@ def test_ui_assets_are_split_and_referenced_locally():
     script_sources = [
         './vendor/cytoscape.min.js',
         './js/components/project-memory.js',
+        './js/components/evidence.js',
         './js/app.js',
     ]
     positions = [html.index(f'<script src="{source}"></script>') for source in script_sources]
@@ -76,6 +79,12 @@ def test_ui_assets_are_split_and_referenced_locally():
     assert "function loadProjectMemoryPanel" not in APP_JS_PATH.read_text(encoding="utf-8")
     assert "window.ThesisProjectMemory.loadPanel" in APP_JS_PATH.read_text(encoding="utf-8")
     assert "window.ThesisProjectMemory = Object.freeze" in MEMORY_JS_PATH.read_text(encoding="utf-8")
+    assert "function loadEvidencePanel" not in APP_JS_PATH.read_text(encoding="utf-8")
+    assert "function apiTaskSources" not in APP_JS_PATH.read_text(encoding="utf-8")
+    assert "function apiEvidenceAudit" not in APP_JS_PATH.read_text(encoding="utf-8")
+    assert "window.ThesisEvidence.loadPanel" in APP_JS_PATH.read_text(encoding="utf-8")
+    assert "window.ThesisEvidence = Object.freeze" in EVIDENCE_JS_PATH.read_text(encoding="utf-8")
+    assert "function loadEvidencePanel" in EVIDENCE_JS_PATH.read_text(encoding="utf-8")
 
 
 def test_split_ui_assets_are_served_with_expected_content_types():
@@ -96,6 +105,7 @@ def test_split_ui_assets_are_served_with_expected_content_types():
             "/styles/app.css": {"text/css"},
             "/js/app.js": {"text/javascript", "application/javascript"},
             "/js/components/project-memory.js": {"text/javascript", "application/javascript"},
+            "/js/components/evidence.js": {"text/javascript", "application/javascript"},
             "/vendor/cytoscape.min.js": {"text/javascript", "application/javascript"},
         }
         for path, content_types in expected.items():
@@ -171,7 +181,7 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js 未安装")
 def test_external_javascript_parses():
-    for path in (APP_JS_PATH, MEMORY_JS_PATH):
+    for path in JS_PATHS:
         completed = subprocess.run(
             [shutil.which("node") or "node", "--check", str(path)],
             check=False,

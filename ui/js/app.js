@@ -444,7 +444,7 @@ function activateWorkbenchTab(target) {
   if (target === 'notes') loadNotes(sid);
   if (target === 'graph') renderGraph(sid);
   if (target === 'memory') window.ThesisProjectMemory.loadPanel();
-  if (target === 'evidence') loadEvidencePanel();
+  if (target === 'evidence') window.ThesisEvidence.loadPanel();
   if (target === 'research') loadResearchPanel();
   if (target === 'writing') loadSectionsPanel();
   if (target === 'jobs') loadJobsPanel();
@@ -2158,14 +2158,8 @@ async function apiGenerateDocx(taskId) {
 }
 
 // ---- 可信工作台：记忆 / 证据 / 分节 / 作业 ----
-async function apiTaskSources(taskId) {
-  return apiGet(`/api/v1/console/tasks/${taskId}/sources`);
-}
 async function apiTaskClaims(taskId) {
   return apiGet(`/api/v1/console/tasks/${taskId}/claims`);
-}
-async function apiEvidenceAudit(taskId) {
-  return apiGet(`/api/v1/console/tasks/${taskId}/evidence-audit`);
 }
 async function apiArgumentMaps(taskId) {
   return apiGet(`/api/v1/console/tasks/${taskId}/research/argument-maps`);
@@ -2477,53 +2471,6 @@ async function loadSecurityAudit() {
     <div class="wb-card-meta">${escapeHtml2(item.method || '')} ${escapeHtml2(item.path || item.resource_id || '')} · HTTP ${item.status_code || 0}</div>
     <div class="wb-card-meta">${escapeHtml2(item.created_at)} · ${escapeHtml2(item.request_id || '')}</div>
   </article>`).join('') : '<div class="wb-empty">暂无审计记录。</div>';
-}
-
-async function loadEvidencePanel() {
-  const claimBox = document.getElementById('claim-audit-list');
-  const sourceBox = document.getElementById('source-ledger-list');
-  const mapBox = document.getElementById('argument-map-list');
-  if (!claimBox || !sourceBox || !mapBox) return;
-  if (!currentSession) {
-    claimBox.innerHTML = '<div class="wb-empty">选择论文任务后查看证据。</div>';
-    sourceBox.innerHTML = '';
-    mapBox.innerHTML = '';
-    return;
-  }
-  const taskId = currentSession;
-  claimBox.setAttribute('aria-busy', 'true');
-  const [auditResponse, sourceResponse, mapResponse] = await Promise.all([
-    apiEvidenceAudit(taskId), apiTaskSources(taskId), apiArgumentMaps(taskId),
-  ]);
-  if (taskId !== currentSession) return;
-  claimBox.removeAttribute('aria-busy');
-  if (auditResponse.code !== 0) {
-    claimBox.innerHTML = `<div class="wb-error">${escapeHtml2(auditResponse.msg)}<div class="wb-card-actions"><button class="btn btn-secondary btn-sm" onclick="loadEvidencePanel()">重试</button></div></div>`;
-  } else {
-    const audit = auditResponse.data || {};
-    const claims = audit.claims || [];
-    claimBox.innerHTML = `<div class="wb-card">
-      <div class="wb-card-title">论断覆盖：${audit.supported_count || 0}/${audit.claim_count || 0}</div>
-      <div class="wb-card-meta">未支持 ${audit.unsupported_count || 0} · 有争议 ${audit.disputed_count || 0}</div>
-    </div>` + (claims.length ? claims.map(claim => `<article class="wb-card">
-      <div style="display:flex;justify-content:space-between;gap:8px;"><div class="wb-card-title">${escapeHtml2(claim.text)}</div><span class="wb-status ${wbStatusClass(claim.status)}">${escapeHtml2(claim.status)}</span></div>
-      <div class="wb-card-meta">${escapeHtml2(claim.section_id || '未分节')} · ${escapeHtml2(claim.claim_type || '')}</div>
-      <div class="wb-card-meta">支持证据 ${(claim.supporting_evidence_ids || []).length} · 反证 ${(claim.contradicting_evidence_ids || []).length}</div>
-    </article>`).join('') : '<div class="wb-empty">尚未登记论断；批准论证图后会自动出现。</div>');
-  }
-  const sources = sourceResponse.code === 0 ? (sourceResponse.data || []) : [];
-  sourceBox.innerHTML = `<div class="kb-section-title"><span>来源账本</span><span class="count">${sources.length}</span></div>` +
-    (sources.length ? sources.slice(0, 100).map(source => `<article class="wb-card">
-      <div class="wb-card-title">${escapeHtml2(source.title || source.doi || source.source_id)}</div>
-      <div class="wb-card-meta">${escapeHtml2(source.verification_status)}${source.doi ? ` · DOI ${escapeHtml2(source.doi)}` : ''}</div>
-    </article>`).join('') : '<div class="wb-empty">来源账本为空；批准环3文献后会自动登记。</div>');
-  const maps = mapResponse.code === 0 ? (mapResponse.data || []) : [];
-  mapBox.innerHTML = `<div class="kb-section-title"><span>论证图版本</span><span class="count">${maps.length}</span></div>` +
-    (maps.length ? maps.map(map => `<article class="wb-card">
-      <div style="display:flex;justify-content:space-between;gap:8px;"><div class="wb-card-title">v${map.version} ${escapeHtml2(map.payload?.title || '论证图')}</div><span class="wb-status ${wbStatusClass(map.status)}">${escapeHtml2(map.status)}</span></div>
-      <div class="wb-card-meta">${(map.payload?.claims || []).length} 个论断 · ${(map.payload?.research_questions || []).length} 个研究问题</div>
-    </article>`).join('') : '<div class="wb-empty">尚未创建论证图，可在环5通过 API 或 Agent 引导创建。</div>');
-  document.getElementById('evidence-live').textContent = `证据审计与 ${sources.length} 个来源已更新`;
 }
 
 let researchFiles = [];
@@ -3093,7 +3040,7 @@ async function assembleSectionsFromPanel(event) {
 async function loadActiveWorkbenchPane() {
   const target = document.querySelector('.kb-tab.active')?.dataset.tab || 'refs';
   if (target === 'memory') await window.ThesisProjectMemory.loadPanel();
-  else if (target === 'evidence') await loadEvidencePanel();
+  else if (target === 'evidence') await window.ThesisEvidence.loadPanel();
   else if (target === 'writing') await loadSectionsPanel();
   else if (target === 'research') await loadResearchPanel();
   else if (target === 'jobs') await loadJobsPanel(false);
@@ -3496,7 +3443,7 @@ async function initApp() {
   }
   const refreshBindings = [
     ['memory-refresh', window.ThesisProjectMemory.loadPanel],
-    ['evidence-refresh', loadEvidencePanel],
+    ['evidence-refresh', window.ThesisEvidence.loadPanel],
     ['research-refresh', loadResearchPanel],
     ['sections-refresh', loadSectionsPanel],
     ['jobs-refresh', loadJobsPanel],

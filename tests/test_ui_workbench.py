@@ -1,10 +1,14 @@
-"""单文件工作台的结构、真实 API 接线与脚本语法看门。"""
+"""模块化工作台的结构、真实 API 接线与脚本语法看门。"""
 
 from __future__ import annotations
 
 import shutil
 import subprocess
+import threading
+import urllib.request
+import re
 from html.parser import HTMLParser
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -12,6 +16,22 @@ import pytest
 
 UI_PATH = Path(__file__).resolve().parents[1] / "ui" / "index.html"
 CYTOSCAPE_PATH = UI_PATH.parent / "vendor" / "cytoscape.min.js"
+STYLE_PATH = UI_PATH.parent / "styles" / "app.css"
+APP_JS_PATH = UI_PATH.parent / "js" / "app.js"
+MEMORY_JS_PATH = UI_PATH.parent / "js" / "components" / "project-memory.js"
+
+
+def _ui_source() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (UI_PATH, STYLE_PATH, APP_JS_PATH, MEMORY_JS_PATH)
+    )
+
+
+def _js_source() -> str:
+    return "\n".join(
+        path.read_text(encoding="utf-8") for path in (APP_JS_PATH, MEMORY_JS_PATH)
+    )
 
 
 class _IdParser(HTMLParser):
@@ -37,11 +57,80 @@ def test_cytoscape_is_vendored_locally():
     assert CYTOSCAPE_PATH.stat().st_size > 300_000
 
 
+def test_ui_assets_are_split_and_referenced_locally():
+    html = UI_PATH.read_text(encoding="utf-8")
+    assert '<link rel="stylesheet" href="./styles/app.css">' in html
+    script_sources = [
+        './vendor/cytoscape.min.js',
+        './js/components/project-memory.js',
+        './js/app.js',
+    ]
+    positions = [html.index(f'<script src="{source}"></script>') for source in script_sources]
+    assert positions == sorted(positions)
+    assert "<style>" not in html
+    assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html)
+    for source in ('./styles/app.css', *script_sources):
+        target = (UI_PATH.parent / source.removeprefix('./')).resolve()
+        assert target.is_relative_to(UI_PATH.parent.resolve())
+        assert target.is_file()
+    assert "function loadProjectMemoryPanel" not in APP_JS_PATH.read_text(encoding="utf-8")
+    assert "window.ThesisProjectMemory.loadPanel" in APP_JS_PATH.read_text(encoding="utf-8")
+    assert "window.ThesisProjectMemory = Object.freeze" in MEMORY_JS_PATH.read_text(encoding="utf-8")
+
+
+def test_split_ui_assets_are_served_with_expected_content_types():
+    class QuietHandler(SimpleHTTPRequestHandler):
+        def log_message(self, *_args) -> None:
+            return
+
+    handler = lambda *args, **kwargs: QuietHandler(  # noqa: E731
+        *args, directory=str(UI_PATH.parent), **kwargs
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+        expected = {
+            "/": {"text/html"},
+            "/styles/app.css": {"text/css"},
+            "/js/app.js": {"text/javascript", "application/javascript"},
+            "/js/components/project-memory.js": {"text/javascript", "application/javascript"},
+            "/vendor/cytoscape.min.js": {"text/javascript", "application/javascript"},
+        }
+        for path, content_types in expected.items():
+            with urllib.request.urlopen(base + path, timeout=5) as response:
+                assert response.status == 200
+                assert response.headers.get_content_type() in content_types
+                assert response.read(32)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
     html = UI_PATH.read_text(encoding="utf-8")
+    javascript = _js_source()
     for fragment in (
         'role="tablist" aria-label="项目工作台"',
         'role="status" aria-live="polite"',
+        'id="protocol-form"',
+        'id="argument-claim-rows"',
+        'id="research-file-input"',
+        'id="login-form"',
+        'id="session-search"',
+        'for="session-search"',
+        'id="session-search-status"',
+        'id="inference-form"',
+        'id="inference-api-key" type="password" autocomplete="off"',
+        'id="wb-tab-memory"',
+        'id="memory-form"',
+        'aria-describedby="memory-help memory-error"',
+        './vendor/cytoscape.min.js',
+    ):
+        assert fragment in html
+    for fragment in (
         '/writing/sections/${draftId}/revise',
         '/jobs/${jobId}/cancel',
         '/jobs/${jobId}/retry',
@@ -49,20 +138,13 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         '/research/argument-maps',
         '/research/protocols',
         '/research/runs/${runId}/transition',
-        'id="protocol-form"',
-        'id="argument-claim-rows"',
-        'id="research-file-input"',
         '/template/mapping',
         'data-section-action="compare"',
         'computeLineDiff',
         'AbortController',
         'showAccessibleDialog',
-        'id="login-form"',
         '/api/v1/auth/login',
         '/api/v1/auth/audit',
-        'id="session-search"',
-        'for="session-search"',
-        'id="session-search-status"',
         'aria-current="true"',
         'bindSessionSearch',
         'resolveSessionSelection',
@@ -73,53 +155,42 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         'const form = event.currentTarget',
         'Math.min(pollDelay * 1.6, 5000)',
         'data-action="generate-all-sections"',
-        './vendor/cytoscape.min.js',
         'relevance_score',
         'literature-relevance',
-        'id="inference-form"',
-        'id="inference-api-key" type="password" autocomplete="off"',
         '/api/v1/console/provider/deepseek',
         'applyDeepSeekConfigView',
         'syncDeepSeekPresetCapabilities',
-        'id="wb-tab-memory"',
-        'id="memory-form"',
-        'aria-describedby="memory-help memory-error"',
         '/api/v1/console/tasks/${taskId}/memory',
         'loadProjectMemoryPanel',
     ):
-        assert fragment in html
-    assert "localStorage.setItem('inference-api-key'" not in html
-    assert 'OpenAI / Anthropic' not in html
+        assert fragment in javascript
+    source = _ui_source()
+    assert "localStorage.setItem('inference-api-key'" not in source
+    assert 'OpenAI / Anthropic' not in source
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js 未安装")
-def test_inline_javascript_parses():
-    script = r"""
-const fs = require('fs');
-const html = fs.readFileSync(process.argv[1], 'utf8');
-const blocks = [...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi)]
-  .map(match => match[1]).filter(Boolean);
-for (const block of blocks) new Function(block);
-"""
-    completed = subprocess.run(
-        [shutil.which("node") or "node", "-e", script, str(UI_PATH)],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=20,
-    )
-    assert completed.returncode == 0, completed.stderr
+def test_external_javascript_parses():
+    for path in (APP_JS_PATH, MEMORY_JS_PATH):
+        completed = subprocess.run(
+            [shutil.which("node") or "node", "--check", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        assert completed.returncode == 0, f"{path.name}: {completed.stderr}"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js 未安装")
 def test_session_selection_and_search_helpers():
     script = r"""
 const fs = require('fs');
-const html = fs.readFileSync(process.argv[1], 'utf8');
-const start = html.indexOf('function resolveSessionSelection');
-const end = html.indexOf('function formatI18n');
+const source = fs.readFileSync(process.argv[1], 'utf8');
+const start = source.indexOf('function resolveSessionSelection');
+const end = source.indexOf('function formatI18n');
 if (start < 0 || end <= start) throw new Error('session helpers not found');
-const helpers = html.slice(start, end);
+const helpers = source.slice(start, end);
 const run = new Function('DEGREE_LABEL', `${helpers}
   const items = [
     { task_id: 'one', title: 'AI 写作 🤖', subject_field: 'Natural Language', degree: 'MASTER', current_ring_no: 3 },
@@ -136,7 +207,7 @@ const run = new Function('DEGREE_LABEL', `${helpers}
 run({ BACHELOR: '本科', MASTER: '硕士', PHD: '博士' });
 """
     completed = subprocess.run(
-        [shutil.which("node") or "node", "-e", script, str(UI_PATH)],
+        [shutil.which("node") or "node", "-e", script, str(APP_JS_PATH)],
         check=False,
         capture_output=True,
         text=True,

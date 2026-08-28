@@ -58,7 +58,7 @@
 当前关键缺口：
 
 - 结构化表格/图片编辑器、复杂公式管线和学校模板样式差异诊断仍待完成。
-- UI 仍是单文件原型；桌面打包、独立 Worker 运维、MFA/SSO 和密钥托管尚未完成。
+- UI已完成第一步无构建拆分，但主`app.js`仍偏大；桌面打包、独立 Worker 运维、MFA/SSO 和密钥托管尚未完成。
 - 需要把环6的有界Agent和已批准项目记忆扩展到更多环节，并补齐流式进度和变更级HITL。
 - 需要补充全文相关性/证据评测、提示词回归，以及硕士/博士真实长论文压力测试。
 
@@ -121,18 +121,20 @@ python -m uvicorn application.main:app --host 127.0.0.1 --port 8000
 **前端 UI**（Claude 桌面风格界面，独立端口）：
 
 ```bash
-# 用任意静态服务器托管 ui/index.html（如 VSCode Live Server / python -m http.server）
+# 用任意静态服务器托管完整 ui 目录（必须保留 js/styles/vendor 相对结构）
 cd ui
 python -m http.server 8787
 ```
 
 浏览器打开 http://localhost:8787（后端 8000 需同时运行）。
 
+前端仍使用原生HTML/CSS/JavaScript且无npm构建步骤；`pip install ./backend`只安装API后端，不包含UI静态资源。前端目录与加载顺序见[UI说明](ui/README.md)。
+
 后端默认只允许 `http://127.0.0.1:8787` 与 `http://localhost:8787` 的带凭证跨域请求。部署到其他域名时，通过 `THESIS_CORS_ORIGINS` 逗号分隔显式配置真实前端来源；认证模式禁止使用 `*`。
 
 ## 运行测试
 
-当前回归基线：**230 项 pytest 全部通过**（2026-08-28）。
+当前回归基线：**232 项 pytest 全部通过**（2026-08-28）。
 
 ```bash
 # 项目根执行（conftest 自动注入路径）

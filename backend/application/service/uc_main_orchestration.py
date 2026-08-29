@@ -34,6 +34,7 @@ from common.aicoding.exception.error_code import ErrorCode
 from common.workflow_contracts import get_stage_contract
 from common.citation import format_gbt7714
 from common.project_memory import validate_project_memory
+from common.resume import WorkspaceState, validate_workspace_state
 from common.trust import (
     TrustCheckStatus,
     build_citation_trust_assessment,
@@ -330,6 +331,7 @@ class _TaskStore:
         if db_path is None and os.getenv("THESIS_TASK_STORE_MEMORY", "").lower() == "true":
             self._path = None
             self._tasks = {}
+            self._workspace = {}
             self._db = None
             return
         self._path = db_path or self._default_path()
@@ -339,6 +341,10 @@ class _TaskStore:
             "CREATE TABLE IF NOT EXISTS t_task_store ("
             "task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, "
             "created_at TEXT, updated_at TEXT)"
+        )
+        self._db.execute(
+            "CREATE TABLE IF NOT EXISTS t_workspace_state ("
+            "workspace_key TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL)"
         )
         self._db.commit()
 
@@ -408,6 +414,76 @@ class _TaskStore:
             )
             self._db.commit()
             return cur.rowcount > 0
+
+    def put_workspace(self, workspace_key: str, value: Dict[str, Any]) -> Dict[str, Any]:
+        workspace_key = workspace_key.strip()
+        if not workspace_key or len(workspace_key) > 200:
+            raise ValueError("workspace_key非法")
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        payload = {**dict(value), "updated_at": now}
+        with self._lock:
+            if self._db is None:
+                self._workspace[workspace_key] = payload
+            else:
+                self._db.execute(
+                    "INSERT INTO t_workspace_state(workspace_key, payload, updated_at) "
+                    "VALUES(?, ?, ?) ON CONFLICT(workspace_key) DO UPDATE SET "
+                    "payload=excluded.payload, updated_at=excluded.updated_at",
+                    (workspace_key, json.dumps(payload, ensure_ascii=False), now),
+                )
+                self._db.commit()
+        return dict(payload)
+
+    def get_workspace(self, workspace_key: str) -> Dict[str, Any]:
+        workspace_key = workspace_key.strip()
+        with self._lock:
+            if self._db is None:
+                return dict(self._workspace.get(workspace_key, {}))
+            row = self._db.execute(
+                "SELECT payload FROM t_workspace_state WHERE workspace_key=?",
+                (workspace_key,),
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            value = json.loads(str(row[0]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return dict(value) if isinstance(value, dict) else {}
+
+    def clear_workspace_task(self, task_id: str) -> None:
+        """删除任务后清理所有指向它的工作区位置，包括展开项和编辑锚点。"""
+        cleared_position = {
+            "last_task_id": "",
+            "active_tab": "refs",
+            "expanded_items": [],
+            "editor_anchor": "",
+        }
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        with self._lock:
+            if self._db is None:
+                for key, value in list(self._workspace.items()):
+                    if str(value.get("last_task_id", "")) == task_id:
+                        self._workspace[key] = {
+                            **value, **cleared_position, "updated_at": now,
+                        }
+                return
+            rows = self._db.execute(
+                "SELECT workspace_key, payload FROM t_workspace_state"
+            ).fetchall()
+            for workspace_key, raw in rows:
+                try:
+                    value = json.loads(str(raw))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if str(value.get("last_task_id", "")) != task_id:
+                    continue
+                value.update({**cleared_position, "updated_at": now})
+                self._db.execute(
+                    "UPDATE t_workspace_state SET payload=?, updated_at=? WHERE workspace_key=?",
+                    (json.dumps(value, ensure_ascii=False), now, str(workspace_key)),
+                )
+            self._db.commit()
 
 
 # =====================================================================
@@ -502,6 +578,7 @@ class MainOrchestration:
         if rec is None:
             raise BizException(ErrorCode.TASK_NOT_FOUND, msg=f"任务不存在: {task_id}")
         self._store.delete(task_id)
+        self._store.clear_workspace_task(task_id)
         self._artifacts.delete_task(task_id)
         self._evidence.delete_task(task_id)
         self._research.delete_task(task_id)
@@ -614,6 +691,198 @@ class MainOrchestration:
             },
             msg="任务查询成功",
         )
+
+    # ------------------------------------------------------------------
+    # 跨天断点续作：恢复摘要 + 工作区位置
+    # ------------------------------------------------------------------
+    def get_resume_summary(self, task_id: str) -> Result[Dict[str, Any]]:
+        rec = self._require(task_id)
+        progress = self.progress(task_id).data or {}
+        artifacts = self._artifacts.list_task(task_id)
+        approved_artifacts = [
+            item for item in artifacts if item.status == ArtifactStatus.APPROVED
+        ]
+        approved_artifacts.sort(key=lambda item: (item.stage_no, item.version))
+        last_approved = approved_artifacts[-1] if approved_artifacts else None
+        pending_approvals = [
+            {
+                "type": "ARTIFACT",
+                "id": item.artifact_id,
+                "kind": item.kind.value,
+                "stage_no": item.stage_no,
+                "version": item.version,
+            }
+            for item in artifacts
+            if item.status == ArtifactStatus.WAITING_APPROVAL
+        ]
+        if progress.get("phase_state") == PhaseState.WAITING_APPROVAL.value:
+            pending_approvals.insert(0, {
+                "type": "RING_GATE",
+                "id": f"RING-{progress.get('current_ring_no', 0)}",
+                "kind": "RING_CONFIRMATION",
+                "stage_no": int(progress.get("current_ring_no", 0) or 0),
+                "version": 0,
+            })
+        for draft in self._sections.list_task(task_id):
+            if draft.status == SectionDraftStatus.WAITING_APPROVAL:
+                pending_approvals.append({
+                    "type": "SECTION_DRAFT",
+                    "id": draft.section_draft_id,
+                    "kind": "SECTION_DRAFT",
+                    "stage_no": 6,
+                    "version": draft.version,
+                })
+
+        jobs = self._jobs.list_task(task_id, limit=100)
+
+        def _job_summary(job) -> Dict[str, Any]:
+            return {
+                "job_id": job.job_id,
+                "operation": job.operation,
+                "status": job.status.value,
+                "attempt": job.attempt,
+                "max_attempts": job.max_attempts,
+                "tokens_used": job.input_tokens + job.output_tokens,
+                "token_budget": job.token_budget,
+                "updated_at": job.updated_at,
+            }
+
+        active_jobs = [
+            _job_summary(job) for job in jobs
+            if job.status.value in {"PENDING", "RUNNING", "CANCEL_REQUESTED"}
+        ]
+        recoverable_jobs = [
+            _job_summary(job) for job in jobs
+            if job.status.value in {"FAILED", "CANCELLED"}
+        ]
+        consistency_status = (
+            "NEEDS_REPAIR"
+            if progress.get("artifact_projection_pending")
+            else "CONSISTENT"
+        )
+
+        ring_no = int(progress.get("current_ring_no", 1) or 1)
+        if consistency_status != "CONSISTENT":
+            action = {
+                "type": "REPAIR_REQUIRED",
+                "label": "修复产物投影不一致后再继续",
+                "ring_no": ring_no,
+            }
+        elif active_jobs:
+            action = {
+                "type": "MONITOR_JOB",
+                "label": "继续查看正在运行的后台作业",
+                "ring_no": ring_no,
+                "job_id": active_jobs[0]["job_id"],
+            }
+        elif progress.get("phase_state") == PhaseState.WAITING_APPROVAL.value:
+            if progress.get("author_decision_ready") is False:
+                action = {
+                    "type": "COMPLETE_AUTHOR_DECISION",
+                    "label": str(progress.get("author_decision_blocker", "")) or "完成作者决定",
+                    "ring_no": ring_no,
+                }
+            else:
+                action = {
+                    "type": "CONFIRM_RING",
+                    "label": f"审阅并确认环{ring_no}产物",
+                    "ring_no": ring_no,
+                }
+        elif progress.get("phase_state") == PhaseState.FALLBACK.value:
+            action = {
+                "type": "RECOVER_STAGE",
+                "label": f"修复环{ring_no}阻断项后重试",
+                "ring_no": ring_no,
+            }
+        elif int(progress.get("complete_percent", 0) or 0) >= 100:
+            action = {
+                "type": "REVIEW_DELIVERY",
+                "label": "查看最终交付文件与清单",
+                "ring_no": 10,
+            }
+        else:
+            action = {
+                "type": "EXECUTE_RING",
+                "label": f"继续执行环{ring_no}",
+                "ring_no": ring_no,
+            }
+
+        return Result.ok(data={
+            "task_id": rec.task_id,
+            "title": rec.title,
+            "current_ring_no": ring_no,
+            "current_ring": progress.get("current_ring", f"RING_{ring_no}"),
+            "phase_state": progress.get("phase_state", "NOT_STARTED"),
+            "complete_percent": int(progress.get("complete_percent", 0) or 0),
+            "last_approved_artifact": (
+                {
+                    "artifact_id": last_approved.artifact_id,
+                    "kind": last_approved.kind.value,
+                    "stage_no": last_approved.stage_no,
+                    "version": last_approved.version,
+                    "updated_at": last_approved.updated_at,
+                }
+                if last_approved is not None
+                else None
+            ),
+            "pending_approvals": pending_approvals,
+            "active_jobs": active_jobs,
+            "recoverable_jobs": recoverable_jobs,
+            "autosaved_drafts": [],
+            "consistency_status": consistency_status,
+            "consistency_issues": list(progress.get("artifact_projection_issues", []) or []),
+            "next_safe_action": action,
+            "capabilities": {
+                "workspace_restore": True,
+                "formal_artifact_restore": True,
+                "draft_autosave": False,
+            },
+        }, msg="任务恢复摘要")
+
+    def save_workspace_state(
+        self,
+        workspace_key: str,
+        value: Dict[str, Any],
+        *,
+        tenant_id: str = "",
+    ) -> Result[Dict[str, Any]]:
+        state = validate_workspace_state(value)
+        if state.last_task_id:
+            rec = self._require(state.last_task_id)
+            if tenant_id and rec.tenant_id != tenant_id:
+                raise PermissionError("无权将工作区指向其他租户任务")
+        stored = self._store.put_workspace(
+            workspace_key,
+            state.model_dump(exclude={"updated_at"}),
+        )
+        return Result.ok(data=stored, msg="工作区位置已保存")
+
+    def get_workspace_state(
+        self,
+        workspace_key: str,
+        *,
+        tenant_id: str = "",
+    ) -> Result[Dict[str, Any]]:
+        raw = self._store.get_workspace(workspace_key)
+        try:
+            state = validate_workspace_state(raw or {})
+        except ValueError:
+            state = WorkspaceState()
+        resume = None
+        if state.last_task_id:
+            rec = self._store.get(state.last_task_id)
+            if rec is None or (tenant_id and rec.tenant_id != tenant_id):
+                state = WorkspaceState(active_tab="refs")
+                self._store.put_workspace(
+                    workspace_key,
+                    state.model_dump(exclude={"updated_at"}),
+                )
+            else:
+                resume = self.get_resume_summary(state.last_task_id).data
+        return Result.ok(data={
+            "workspace": state.model_dump(),
+            "resume": resume,
+        }, msg="工作区恢复状态")
 
     # ------------------------------------------------------------------
     # 论文级项目记忆（版本化 + 作者审批）

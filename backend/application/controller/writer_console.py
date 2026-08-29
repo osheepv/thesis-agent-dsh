@@ -30,6 +30,13 @@ def get_orchestration(request: Request) -> MainOrchestration:
     return request.app.state.orchestration
 
 
+def _workspace_identity(request: Request) -> tuple[str, str]:
+    principal = getattr(request.state, "principal", None)
+    if principal is None:
+        return "local:default", "default"
+    return f"{principal.tenant_id}:{principal.user_id}", principal.tenant_id
+
+
 @router.get("/provider/deepseek", response_model=None)
 async def get_deepseek_provider() -> Result[Any]:
     """返回不含密钥的当前DeepSeek运行时配置。"""
@@ -54,6 +61,35 @@ async def set_deepseek_provider(req: Dict[str, Any]) -> Result[Any]:
         }, msg="DeepSeek运行时配置已更新；重启后恢复.env配置")
     except ValueError as exc:
         return Result.fail(code=2, msg=str(exc))
+
+
+@router.get("/workspace", response_model=None)
+async def get_workspace_state(
+    request: Request,
+    orchestration: MainOrchestration = Depends(get_orchestration),
+) -> Result[Any]:
+    try:
+        workspace_key, tenant_id = _workspace_identity(request)
+        return orchestration.get_workspace_state(
+            workspace_key, tenant_id=tenant_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/workspace", response_model=None)
+async def save_workspace_state(
+    request: Request,
+    req: Dict[str, Any],
+    orchestration: MainOrchestration = Depends(get_orchestration),
+) -> Result[Any]:
+    try:
+        workspace_key, tenant_id = _workspace_identity(request)
+        return orchestration.save_workspace_state(
+            workspace_key, req, tenant_id=tenant_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
 
 
 # ---------------------------------------------------------------------
@@ -131,6 +167,19 @@ async def get_template_config(task_id: str, session_id: str = "",
     try:
         orchestration.assert_session(task_id, session_id)
         return orchestration.get_template_config(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/resume", response_model=None)
+async def get_resume_summary(
+    task_id: str,
+    session_id: str = "",
+    orchestration: MainOrchestration = Depends(get_orchestration),
+) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.get_resume_summary(task_id)
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 

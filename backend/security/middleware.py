@@ -22,6 +22,7 @@ _NATIVE_TASK_ID_RE = re.compile(r"^/api/v1/tasks/([^/]+)(?:/|$)")
 _KB_RE = re.compile(r"^/api/v1/kb/([^/]+)")
 _DOCX_FILE_RE = re.compile(r"^/api/v1/docx/files/([^/]+)$")
 _DEEPSEEK_PROVIDER_PATH = "/api/v1/console/provider/deepseek"
+_WORKSPACE_STATE_PATH = "/api/v1/console/workspace"
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
@@ -110,6 +111,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         elif path.startswith("/api/v1/docx") or path.startswith("/api/v1/templates"):
             raise AuthorizationError("安全模式下请使用论文任务内的模板和 DOCX 工作流接口")
         if method in {"GET", "HEAD"}:
+            return
+        if path == _WORKSPACE_STATE_PATH and method == "POST":
+            # 工作区位置是当前登录用户的私有偏好，不改变任务/FSM。
             return
         if method == "DELETE" and principal.role != UserRole.OWNER:
             raise AuthorizationError("只有租户所有者可以删除资源")

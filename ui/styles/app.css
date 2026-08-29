@@ -485,6 +485,28 @@ a:hover { text-decoration: underline; }
 .stage-line.done { background: var(--success); }
 .stage-line.done-limited { background: var(--warning); }
 
+.resume-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 12px 24px 0;
+  padding: 12px 14px;
+  border: 1px solid var(--permission);
+  border-radius: 12px;
+  background: var(--permission-soft);
+}
+.resume-banner[hidden] { display: none; }
+.resume-banner-copy { min-width: 0; }
+.resume-banner h2 { font-size: 13px; line-height: 18px; }
+.resume-banner p { margin: 3px 0 0; color: var(--text-subtle); font-size: 12px; line-height: 17px; }
+.resume-banner .resume-next { color: var(--text-primary); }
+
+@media (max-width: 700px) {
+  .resume-banner { align-items: stretch; flex-direction: column; margin-inline: 12px; }
+  .resume-banner .btn { width: 100%; }
+}
+
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 1px var(--claude), 0 0 0 6px var(--claude-soft); }
   50%      { box-shadow: 0 0 0 1px var(--claude), 0 0 0 10px rgba(215,119,87,0.04); }

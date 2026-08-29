@@ -228,3 +228,373 @@ run({ BACHELOR: '本科', MASTER: '硕士', PHD: '博士' });
         timeout=20,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+# ---------------------------------------------------------------------
+# 跨天断点续作：前端初始化与工作区状态流的真实执行验证
+# ---------------------------------------------------------------------
+_JS_HARNESS_TEMPLATE = r"""
+const fs = require('fs');
+const path = require('path');
+const appSource = fs.readFileSync(process.argv[2], 'utf8');
+
+function slice(startMarker, endMarker) {
+  const start = appSource.indexOf(startMarker);
+  if (start < 0) throw new Error('缺少起始锚点: ' + startMarker);
+  const end = appSource.indexOf(endMarker, start);
+  if (end < 0) throw new Error('缺少结束锚点: ' + endMarker);
+  return appSource.slice(start, end);
+}
+
+const blocks = [
+  slice('const WORKSPACE_TABS = new Set(', 'function sessionItemHtml'),
+  slice('function resolveSessionSelection', 'function normalizeSessionSearch'),
+  slice('async function loadSessions(options = {}) {', 'let sessionDetailRequest'),
+  slice('async function submitNewSession', 'function bindNewSessionModal'),
+  slice('async function apiListSessions', 'async function apiSessionProgress'),
+].join('\n');
+
+const preamble = `
+const state = {
+  timers: [], saves: [], gets: [], posts: [], detailCalls: [], activeTabs: [],
+  toasts: [], sessionRenders: 0, cleared: 0, focused: null, announcements: [],
+};
+state.workspaceResponse = { code: 0, data: { workspace: null, resume: null } };
+state.listResponse = { code: 0, data: [] };
+state.createResponse = { code: 0, data: { task_id: '' } };
+state.saveResponse = { code: 0 };
+state.resumeResponse = { code: 0, data: null };
+
+const elements = new Map();
+function element(id) {
+  if (!elements.has(id)) {
+    elements.set(id, {
+      id, hidden: false, disabled: false, textContent: '', value: '',
+      dataset: {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+      focus() { state.focused = id; },
+      removeAttribute() {}, setAttribute() {}, addEventListener() {},
+      querySelector() { return null; }, querySelectorAll() { return []; },
+      scrollIntoView() {}, closest() { return null; },
+    });
+  }
+  return elements.get(id);
+}
+global.document = {
+  getElementById: (id) => element(id),
+  querySelector: () => null,
+  querySelectorAll: () => [],
+};
+const windowListeners = {};
+global.window = { addEventListener: (name, fn) => { windowListeners[name] = fn; } };
+
+async function flushTimers() {
+  for (let round = 0; round < 5 && state.timers.length; round += 1) {
+    const pending = state.timers;
+    state.timers = [];
+    for (const timer of pending) await timer.fn();
+  }
+}
+global.setTimeout = (fn, ms) => { state.timers.push({ fn, ms }); return state.timers.length; };
+global.clearTimeout = () => { state.timers = []; };
+global.requestAnimationFrame = (fn) => { fn(); return 1; };
+
+let sessionCache = [];
+let currentSession = null;
+let currentSessionTitle = '';
+let currentKnowledgeSession = '';
+let sessionListRequest = 0;
+const API_BASE = 'http://127.0.0.1:8000';
+const RING_NAMES = { 1: '选题', 2: '开题评审', 3: '文献调研', 6: '撰写', 10: '定稿' };
+
+function toast(message) { state.toasts.push(message); }
+function showAccessibleDialog() {}
+function hideAccessibleDialog() {}
+async function renderSessionList() { state.sessionRenders += 1; }
+async function loadSessionDetail(taskId) { state.detailCalls.push(taskId); }
+async function clearSessionContext() { state.cleared += 1; }
+function activateWorkbenchTab(target) {
+  state.activeTabs.push(target);
+  scheduleWorkspaceSave({
+    active_tab: target,
+    last_task_id: currentSession || workspaceState.last_task_id || '',
+  });
+}
+async function apiGet(target) {
+  state.gets.push(target);
+  if (target.includes('/console/workspace')) return state.workspaceResponse;
+  if (target.includes('/resume')) return state.resumeResponse;
+  return state.listResponse;
+}
+async function apiPost(target, body) {
+  state.posts.push({ target, body });
+  if (target.includes('/console/workspace')) { state.saves.push(body); return state.saveResponse; }
+  if (target === '/api/v1/console/tasks') return state.createResponse;
+  return { code: -1, msg: '未预期的写入请求' };
+}
+function lastSave() { return state.saves[state.saves.length - 1] || null; }
+function assert(condition, message) { if (!condition) throw new Error(message); }
+`;
+
+const epilogue = `
+async function main() {
+__BODY__
+}
+main().then(() => process.exit(0)).catch(error => {
+  console.error(error && error.stack ? error.stack : String(error));
+  process.exit(1);
+});
+`;
+
+const body = preamble + '\n' + blocks + '\n' + epilogue;
+new Function('require', body)(require);
+"""
+
+
+def _run_workspace_harness(test_body: str) -> None:
+    """在 Node 中真实执行工作区状态机，而不是只检查函数文本是否存在。"""
+    import subprocess
+    import tempfile
+
+    script = _JS_HARNESS_TEMPLATE.replace("__BODY__", test_body)
+    with tempfile.TemporaryDirectory() as tmp:
+        script_path = Path(tmp) / "workspace-harness.js"
+        script_path.write_text(script, encoding="utf-8")
+        completed = subprocess.run(
+            ["node", str(script_path), str(APP_JS_PATH)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_init_app_reads_server_workspace_before_session_list():
+    """启动顺序：先读服务端工作区，再加载任务列表，且页签由服务端决定。"""
+    source = APP_JS_PATH.read_text(encoding="utf-8")
+    start = source.index("async function initApp()")
+    end = source.index("// 新建对话按钮（.new-chat-btn 或 sidebar 新建）")
+    init_head = source[start:end]
+
+    assert "pauseWorkspacePersistence()" in init_head
+    assert init_head.index("loadWorkspaceState()") < init_head.index(
+        "loadSessionsWithWorkspaceFallback("
+    )
+    assert "preferredTaskId: restoredWorkspace.last_task_id" in init_head
+    assert "forceDetail: true" in init_head
+
+    tail_start = source.index("// 使用服务端保存的页签")
+    tail = source[tail_start:]
+    assert "activateWorkbenchTab(restoredTab)" in tail
+    # HTML 里的默认选中项不得再覆盖服务端恢复页签。
+    assert ".kb-tab.active" not in tail
+    assert "continueButton.addEventListener('click', continueLastThesis)" in tail
+    assert tail.index("activateWorkbenchTab(restoredTab)") < tail.index(
+        "workspacePersistenceReady = true"
+    )
+
+
+def test_workspace_saves_are_skipped_until_recovery_completes():
+    _run_workspace_harness(r"""
+  assert(workspacePersistenceReady === false, '恢复完成前持久化开关必须为关闭');
+  scheduleWorkspaceSave({ last_task_id: 'T1', active_tab: 'memory' });
+  await flushTimers();
+  assert(state.saves.length === 0, '恢复完成前的保存必须被跳过');
+
+  // 恢复链路成功后才允许写回服务端。
+  workspaceServerLoaded = true;
+  sessionListLoaded = true;
+  updateWorkspaceTrust();
+  workspacePersistenceReady = true;
+  scheduleWorkspaceSave({ last_task_id: 'T1', active_tab: 'memory' });
+  scheduleWorkspaceSave({ last_task_id: 'T1', active_tab: 'evidence' });
+  await flushTimers();
+  assert(state.saves.length === 1, '防抖应合并为 1 次保存，实际 ' + state.saves.length);
+  assert(lastSave().active_tab === 'evidence', '必须发送最新快照');
+  assert(lastSave().last_task_id === 'T1', '任务指针必须一起保存');
+""")
+
+
+def test_degraded_recovery_never_writes_back_to_server():
+    """断网导致的降级本地状态绝不能覆盖服务端恢复位置。"""
+    _run_workspace_harness(r"""
+  state.workspaceResponse = { code: -1, msg: '无法连接后端' };
+  state.listResponse = { code: -1, msg: '无法连接后端' };
+  await loadWorkspaceState();
+  await loadSessions();
+  assert(workspaceRecoveryTrusted === false, '恢复未成功时必须拒绝写回');
+
+  workspacePersistenceReady = true;
+  scheduleWorkspaceSave({ last_task_id: '', active_tab: 'evidence' });
+  await flushTimers();
+  flushWorkspaceSaveOnExit();
+  assert(state.saves.length === 0,
+    '降级状态绝不能写回服务端，否则一次断网就会清空恢复位置');
+  assert(state.posts.length === 0, '降级状态不得发出任何写入请求');
+""")
+
+
+def test_list_recovery_reloads_server_pointer():
+    """列表恢复成功后必须重新读取服务端指针，而不是停留在断网时的默认值。"""
+    _run_workspace_harness(r"""
+  state.workspaceResponse = { code: -1, msg: '无法连接后端' };
+  state.listResponse = { code: -1, msg: '无法连接后端' };
+  await loadWorkspaceState();
+  await loadSessions();
+  assert(workspaceState.last_task_id === '', '断网时应使用安全本地默认值');
+
+  state.workspaceResponse = {
+    code: 0,
+    data: {
+      workspace: {
+        last_task_id: 'T-SERVER', active_tab: 'jobs',
+        expanded_items: [], editor_anchor: '',
+      },
+      resume: null,
+    },
+  };
+  state.listResponse = { code: 0, data: [{ task_id: 'T-SERVER', title: '服务端任务' }] };
+  await loadSessionsWithWorkspaceFallback();
+
+  assert(workspaceState.last_task_id === 'T-SERVER', '列表恢复后必须重新读取服务端指针');
+  assert(currentSession === 'T-SERVER', '必须按服务端指针重新选择任务');
+  assert(workspaceRecoveryTrusted === true, '恢复成功后应重新允许写回');
+""")
+
+
+def test_list_request_failure_keeps_valid_resume_pointer():
+    _run_workspace_harness(r"""
+  assert(await apiListSessions() !== null, '成功但为空应返回数组');
+  state.listResponse = { code: -1, msg: '无法连接后端' };
+  assert(await apiListSessions() === null, '请求失败必须返回 null，不能伪装成空列表');
+
+  currentSession = 'T-RESTORED';
+  sessionCache = [{ task_id: 'T-RESTORED', title: '上次论文' }];
+  const failed = await loadSessions();
+  assert(failed.ok === false, '列表失败必须标记为未成功');
+  assert(failed.items === null, '失败不得返回空数组');
+  assert(currentSession === 'T-RESTORED', '断网不得清空已有恢复指针');
+  assert(state.cleared === 0, '断网不得清空工作区上下文');
+
+  state.listResponse = { code: 0, data: [] };
+  const empty = await loadSessions();
+  assert(empty.ok === true, '请求成功但为空必须标记为成功');
+  assert(empty.selected === null, '确实为空时不应选中任何任务');
+  assert(currentSession === null, '只有请求明确成功且为空时才能清空指针');
+""")
+
+
+def test_selecting_and_creating_task_persists_correct_pointer():
+    _run_workspace_harness(r"""
+  sessionCache = [
+    { task_id: 'T-OLD', title: '旧论文' },
+    { task_id: 'T-NEW', title: '新论文' },
+  ];
+  workspaceServerLoaded = true;
+  sessionListLoaded = true;
+  updateWorkspaceTrust();
+  workspacePersistenceReady = true;
+  workspaceState = { last_task_id: 'T-OLD', active_tab: 'jobs', expanded_items: ['job-1'], editor_anchor: 'section-1' };
+
+  await selectSession('T-NEW');
+  await flushTimers();
+  assert(currentSession === 'T-NEW', '必须切换到被选中的任务');
+  assert(lastSave().last_task_id === 'T-NEW', '选择任务必须保存新指针');
+  assert(lastSave().expanded_items.length === 0, '切换任务必须清空上一任务的展开项');
+  assert(lastSave().editor_anchor === '', '切换任务必须清空上一任务的编辑锚点');
+
+  state.saves.length = 0;
+  element('ns-title-input').value = ' 新建的论文 ';
+  element('ns-degree').value = 'MASTER';
+  element('ns-subject').value = '信息管理';
+  state.createResponse = { code: 0, data: { task_id: 'T-CREATED' } };
+  state.listResponse = { code: 0, data: [
+    { task_id: 'T-NEW', title: '新论文' },
+    { task_id: 'T-CREATED', title: '新建的论文' },
+  ] };
+  await submitNewSession();
+  await flushTimers();
+  assert(currentSession === 'T-CREATED', '创建后必须锁定新任务，不能跳回旧任务');
+  assert(lastSave().last_task_id === 'T-CREATED', '创建后必须保存新任务指针');
+""")
+
+
+def test_continue_action_only_navigates_and_focuses():
+    _run_workspace_harness(r"""
+  sessionCache = [{ task_id: 'T1', title: '论文一' }];
+  workspaceServerLoaded = true;
+  sessionListLoaded = true;
+  updateWorkspaceTrust();
+  workspacePersistenceReady = true;
+  state.saves.length = 0;
+  state.posts.length = 0;
+
+  renderResumeBanner({
+    task_id: 'T1', title: '论文一', current_ring_no: 1, complete_percent: 0,
+    pending_approvals: [], active_jobs: [], consistency_issues: [],
+    next_safe_action: { type: 'EXECUTE_RING', label: '执行环1', ring_no: 1 },
+  });
+  assert(element('resume-banner').hidden === false, '横幅必须真实可见');
+  assert(element('resume-continue').dataset.taskId === 'T1', '继续按钮必须绑定任务');
+
+  await continueLastThesis();
+  assert(state.detailCalls.includes('T1'), '继续必须加载任务详情');
+  assert(element('resume-banner').hidden === true, '继续后必须隐藏横幅');
+  assert(state.focused === 'run-cur-ring', 'EXECUTE_RING 必须聚焦执行按钮');
+  assert(state.posts.every(item => item.target.includes('/console/workspace')),
+    '继续动作只能写工作区，不得触发环执行或审批');
+
+  // 被阻断的恢复不得把焦点带向执行按钮。
+  state.focused = null;
+  state.saves.length = 0;
+  renderResumeBanner({
+    task_id: 'T1', title: '论文一', current_ring_no: 6, complete_percent: 50,
+    pending_approvals: [], active_jobs: [], consistency_issues: ['outbox:unprojected'],
+    next_safe_action: { type: 'REPAIR_REQUIRED', label: '修复产物投影', ring_no: 6 },
+  });
+  await continueLastThesis();
+  assert(state.focused === null, 'REPAIR_REQUIRED 不得聚焦任何执行入口');
+  assert(String(element('resume-live').textContent).includes('恢复被阻断'),
+    '阻断状态必须如实播报');
+""")
+
+
+def test_identity_switch_discards_stale_saves_and_banner():
+    _run_workspace_harness(r"""
+  workspacePersistenceReady = true;
+  workspaceState = { last_task_id: 'T-OLD-USER', active_tab: 'writing', expanded_items: [], editor_anchor: '' };
+  renderResumeBanner({
+    task_id: 'T-OLD-USER', title: '旧用户论文', current_ring_no: 1,
+    complete_percent: 0, pending_approvals: [], active_jobs: [],
+    next_safe_action: { type: 'EXECUTE_RING', label: '执行环1', ring_no: 1 },
+  });
+  assert(element('resume-banner').hidden === false, '旧用户横幅应可见');
+
+  // 旧身份已排队但尚未发出的保存请求，切换身份后不得再落到服务端。
+  scheduleWorkspaceSave({ last_task_id: 'T-OLD-USER' });
+  state.workspaceResponse = { code: 0, data: { workspace: null, resume: null } };
+  state.listResponse = { code: 0, data: [] };
+  await switchWorkspaceIdentity();
+  await flushTimers();
+
+  assert(element('resume-banner').hidden === true, '切换身份后不得残留旧用户横幅');
+  assert(workspaceState.last_task_id === '', '切换身份后必须清空旧工作区指针');
+  assert(state.saves.every(item => item.last_task_id !== 'T-OLD-USER'),
+    '旧身份的延迟保存不得在新身份下发出');
+""")
+
+
+def test_workspace_snapshot_rejects_unknown_tabs_and_oversized_fields():
+    _run_workspace_harness(r"""
+  const normalized = normalizeWorkspaceState({
+    last_task_id: 'T1', active_tab: 'not-a-tab',
+    expanded_items: [1, 'ok'], editor_anchor: 'x',
+  });
+  assert(normalized.active_tab === 'refs', '非法页签必须回退到安全默认值');
+  assert(normalized.expanded_items.length === 1, '非字符串展开项必须被过滤');
+
+  workspaceState = { last_task_id: 'T1', active_tab: 'memory', expanded_items: [], editor_anchor: '' };
+  const snapshot = workspaceSnapshot();
+  assert(Object.keys(snapshot).sort().join(',') === 'active_tab,editor_anchor,expanded_items,last_task_id',
+    '快照字段必须与后端契约一致');
+""")

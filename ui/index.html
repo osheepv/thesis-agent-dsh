@@ -95,6 +95,16 @@
         <!-- 节点 + 连线 由 JS 注入 -->
       </div>
 
+      <section class="resume-banner" id="resume-banner" aria-labelledby="resume-title" hidden>
+        <div class="resume-banner-copy">
+          <h2 id="resume-title">继续上次论文</h2>
+          <p id="resume-summary">正在读取上次进度…</p>
+          <p class="resume-next" id="resume-next"></p>
+        </div>
+        <button class="btn btn-primary" id="resume-continue" type="button">继续写作</button>
+      </section>
+      <div class="sr-only" id="resume-live" role="status" aria-live="polite" aria-atomic="true"></div>
+
       <!-- 对话流 -->
       <div class="chat-flow" id="chat-flow">
         <div class="chat-inner">

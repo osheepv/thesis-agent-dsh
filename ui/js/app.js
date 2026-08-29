@@ -448,6 +448,10 @@ function activateWorkbenchTab(target) {
   if (target === 'research') loadResearchPanel();
   if (target === 'writing') loadSectionsPanel();
   if (target === 'jobs') loadJobsPanel();
+  scheduleWorkspaceSave({
+    active_tab: target,
+    last_task_id: currentSession || workspaceState.last_task_id || '',
+  });
 }
 
 /* —— 折叠知识库面板 —— */
@@ -494,9 +498,21 @@ document.getElementById('del-confirm').addEventListener('click', async () => {
     if (r.code === 0) {
       if (currentSession === taskId) {
         currentSession = null;
+        currentSessionTitle = '';
         currentKnowledgeSession = '';
       }
-      await loadSessions();
+      workspaceState = { ...workspaceState, expanded_items: [], editor_anchor: '' };
+      hideResumeBanner();
+      const result = await loadSessions();
+      // 只有列表请求明确成功时，才把实际回退选中的任务写回；请求失败则保留服务端旧指针。
+      if (result.ok) {
+        scheduleWorkspaceSave({
+          last_task_id: currentSession || '',
+          active_tab: workspaceState.active_tab || 'refs',
+          expanded_items: [],
+          editor_anchor: '',
+        });
+      }
       toast(r.msg || '对话已删除');
     } else {
       toast('删除失败: ' + (r.msg || ''));
@@ -1662,15 +1678,14 @@ async function submitLogin(event) {
   const name = document.querySelector('.menu-head-name');
   if (name) name.textContent = response.data?.username || username;
   toast('登录成功');
-  currentSession = null;
-  await loadSessions();
+  // 丢弃旧身份的工作区状态与待发请求，重新读取新用户自己的恢复位置。
+  await switchWorkspaceIdentity();
 }
 
 async function logoutCurrentUser() {
   const response = await apiLogout();
   if (response.code !== 0) { toast(response.msg || '退出失败'); return; }
-  currentSession = null;
-  await loadSessions();
+  await switchWorkspaceIdentity();
   showLoginModal();
 }
 
@@ -1705,6 +1720,308 @@ let currentKnowledgeSession = '';
 let sessionCache = [];
 let sessionListRequest = 0;
 let sessionSearchTimer = null;
+const WORKSPACE_TABS = new Set([
+  'refs', 'memory', 'evidence', 'research', 'writing', 'jobs', 'notes', 'graph',
+]);
+let workspaceState = defaultWorkspaceState();
+let workspacePersistenceReady = false;
+let workspaceSaveTimer = null;
+let workspaceSaveInFlight = false;
+let workspaceSaveQueued = false;
+let workspaceIdentityToken = 0;
+let resumeSummaryCache = null;
+// 只有真正读到服务端工作区、且任务列表请求成功时，才允许把本地状态写回服务端。
+// 否则一次断网就会让本地默认值覆盖并清空用户的恢复位置。
+let workspaceServerLoaded = false;
+let sessionListLoaded = false;
+let workspaceRecoveryTrusted = false;
+
+function updateWorkspaceTrust() {
+  workspaceRecoveryTrusted = workspaceServerLoaded && sessionListLoaded;
+}
+
+function defaultWorkspaceState() {
+  return {
+    last_task_id: '', active_tab: 'refs', expanded_items: [], editor_anchor: '',
+  };
+}
+
+function normalizeWorkspaceState(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  return {
+    last_task_id: typeof source.last_task_id === 'string' ? source.last_task_id : '',
+    active_tab: WORKSPACE_TABS.has(source.active_tab) ? source.active_tab : 'refs',
+    expanded_items: Array.isArray(source.expanded_items)
+      ? source.expanded_items.filter(item => typeof item === 'string').slice(0, 30)
+      : [],
+    editor_anchor: typeof source.editor_anchor === 'string' ? source.editor_anchor : '',
+  };
+}
+
+function workspaceSnapshot() {
+  return normalizeWorkspaceState(workspaceState);
+}
+
+function announceWorkspace(message) {
+  const live = document.getElementById('resume-live');
+  if (live) live.textContent = message || '';
+}
+
+function scheduleWorkspaceSave(changes = {}) {
+  workspaceState = normalizeWorkspaceState({ ...workspaceState, ...changes });
+  if (!workspacePersistenceReady) return;
+  clearTimeout(workspaceSaveTimer);
+  workspaceSaveTimer = setTimeout(() => { runWorkspaceSave(); }, 300);
+}
+
+async function runWorkspaceSave() {
+  if (workspaceSaveInFlight) { workspaceSaveQueued = true; return; }
+  if (!workspacePersistenceReady || !workspaceRecoveryTrusted) return;
+  workspaceSaveInFlight = true;
+  const token = workspaceIdentityToken;
+  try {
+    const response = await apiSaveWorkspaceState(workspaceSnapshot());
+    // 身份已切换时丢弃旧身份的回包，绝不让旧用户的位置覆盖新用户。
+    if (token === workspaceIdentityToken && response.code !== 0) {
+      announceWorkspace(`工作位置保存失败：${response.msg || '未知错误'}`);
+    }
+  } catch (error) {
+    if (token === workspaceIdentityToken) {
+      announceWorkspace('工作位置保存失败：无法连接后端，正式论文状态不受影响');
+    }
+  } finally {
+    workspaceSaveInFlight = false;
+  }
+  if (workspaceSaveQueued && token === workspaceIdentityToken) {
+    workspaceSaveQueued = false;
+    clearTimeout(workspaceSaveTimer);
+    workspaceSaveTimer = setTimeout(() => { runWorkspaceSave(); }, 300);
+  }
+}
+
+function flushWorkspaceSaveOnExit() {
+  // 恢复链路没有成功读到服务端状态时绝不回写，避免关闭页面时清空恢复位置。
+  if (!workspacePersistenceReady || !workspaceRecoveryTrusted) return;
+  try {
+    fetch(API_BASE + '/api/v1/console/workspace', {
+      method: 'POST',
+      keepalive: true,
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(workspaceSnapshot()),
+    }).catch(() => {});
+  } catch (_) {
+    // 关闭前的末次保存失败不得影响正式论文状态。
+  }
+}
+window.addEventListener('pagehide', flushWorkspaceSaveOnExit);
+
+function pauseWorkspacePersistence() {
+  clearTimeout(workspaceSaveTimer);
+  workspaceSaveTimer = null;
+  workspacePersistenceReady = false;
+  workspaceSaveQueued = false;
+  workspaceServerLoaded = false;
+  sessionListLoaded = false;
+  workspaceRecoveryTrusted = false;
+  workspaceIdentityToken += 1;
+}
+
+function clearWorkspaceForIdentity() {
+  pauseWorkspacePersistence();
+  workspaceState = defaultWorkspaceState();
+  resumeSummaryCache = null;
+  hideResumeBanner();
+  announceWorkspace('');
+}
+
+function hideResumeBanner() {
+  const banner = document.getElementById('resume-banner');
+  if (banner) banner.hidden = true;
+  resumeSummaryCache = null;
+}
+
+function renderResumeBanner(resume) {
+  const banner = document.getElementById('resume-banner');
+  const summary = document.getElementById('resume-summary');
+  const next = document.getElementById('resume-next');
+  const button = document.getElementById('resume-continue');
+  if (!banner || !summary || !next || !button || !resume?.task_id) {
+    hideResumeBanner();
+    return;
+  }
+  resumeSummaryCache = resume;
+  const pendingCount = (resume.pending_approvals || []).length;
+  const activeJobCount = (resume.active_jobs || []).length;
+  summary.textContent = `${resume.title || '当前论文'} · 环${resume.current_ring_no} ${RING_NAMES[resume.current_ring_no] || ''} · 完成 ${resume.complete_percent || 0}% · 待审批 ${pendingCount} · 运行中作业 ${activeJobCount}`;
+  next.textContent = `下一步：${resume.next_safe_action?.label || '查看当前任务'}`;
+  button.dataset.taskId = resume.task_id;
+  button.textContent = resume.next_safe_action?.type === 'REVIEW_DELIVERY'
+    ? '查看交付结果'
+    : '继续写作';
+  banner.hidden = false;
+}
+
+async function resolveResumeForSelected(selectedTaskId, cachedResume) {
+  if (!selectedTaskId) return null;
+  if (cachedResume && cachedResume.task_id === selectedTaskId) return cachedResume;
+  const response = await apiTaskResume(selectedTaskId);
+  return response?.code === 0 ? (response.data || null) : null;
+}
+
+function findJobCard(jobId) {
+  if (!jobId) return null;
+  return Array.from(document.querySelectorAll('[data-job-id]'))
+    .find(element => element.dataset.jobId === jobId) || null;
+}
+
+function resumeFocusTarget(resume) {
+  const type = resume.next_safe_action?.type;
+  const ringNo = resume.current_ring_no;
+  if (type === 'CONFIRM_RING') {
+    return document.querySelector(`.gate-block[data-ring="${ringNo}"] [data-gate]`)
+      || document.querySelector('[data-gate]');
+  }
+  if (type === 'MONITOR_JOB') {
+    const jobCard = findJobCard(resume.next_safe_action?.job_id);
+    return jobCard?.querySelector('[data-job-action]')
+      || document.getElementById('jobs-refresh');
+  }
+  if (type === 'COMPLETE_AUTHOR_DECISION') {
+    if (ringNo === 1) return document.querySelector('.cand-item');
+    if (ringNo === 3) {
+      return document.getElementById('save-literature-curation')
+        || document.querySelector('.ring3-include');
+    }
+    return document.getElementById('run-cur-ring');
+  }
+  if (type === 'RECOVER_STAGE') {
+    const retry = document.querySelector('[data-job-id] [data-job-action="retry"]');
+    return retry || document.getElementById('run-cur-ring');
+  }
+  if (type === 'REVIEW_DELIVERY') {
+    const runButton = document.getElementById('run-cur-ring');
+    return runButton && !runButton.disabled ? runButton : null;
+  }
+  if (type === 'REPAIR_REQUIRED') return null;
+  return document.getElementById('run-cur-ring');
+}
+
+function resumeTargetTab(resume, fallbackTab) {
+  // 只在目标确实位于后台作业面板时才切页签，避免无谓打断用户保存的页签。
+  const type = resume.next_safe_action?.type;
+  if (type === 'MONITOR_JOB') return 'jobs';
+  if (type === 'RECOVER_STAGE' && (resume.recoverable_jobs || []).length) return 'jobs';
+  return fallbackTab || 'refs';
+}
+
+async function continueLastThesis() {
+  const resume = resumeSummaryCache;
+  if (!resume?.task_id) return;
+  const selected = sessionCache.find(item => item.task_id === resume.task_id);
+  if (!selected) {
+    hideResumeBanner();
+    announceWorkspace('上次论文已不存在，已清除恢复入口。');
+    return;
+  }
+  const type = resume.next_safe_action?.type;
+  // 只导航与聚焦：切换任务、加载详情、打开对应页签。不执行环、不确认闸门、不调用模型。
+  currentSession = selected.task_id;
+  currentSessionTitle = selected.title || '';
+  workspaceState = { ...workspaceState, expanded_items: [], editor_anchor: '' };
+  renderSessionList();
+  await loadSessionDetail(currentSession);
+  const targetTab = resumeTargetTab(resume, workspaceState.active_tab);
+  activateWorkbenchTab(targetTab);
+  hideResumeBanner();
+  scheduleWorkspaceSave({
+    last_task_id: currentSession,
+    active_tab: targetTab,
+    expanded_items: [],
+    editor_anchor: '',
+  });
+  if (type === 'REPAIR_REQUIRED') {
+    const issues = (resume.consistency_issues || []).slice(0, 3).join('；');
+    announceWorkspace(
+      `恢复被阻断：${resume.next_safe_action?.label || '需要先修复一致性问题'}`
+      + (issues ? `（${issues}）` : '') + '。已停止在恢复入口，不会继续推进。',
+    );
+    return;
+  }
+  if (type === 'REVIEW_DELIVERY') {
+    announceWorkspace('论文十环已完成。完整交付下载视图仍在建设中，请在当前任务中查看各环已批准产物。');
+  } else {
+    announceWorkspace(`已恢复${resume.title || '上次论文'}，${resume.next_safe_action?.label || ''}`);
+  }
+  const target = resumeFocusTarget(resume);
+  if (target) requestAnimationFrame(() => target.focus?.());
+}
+
+async function selectSession(taskId) {
+  const selected = sessionCache.find(item => item.task_id === taskId);
+  if (!selected) return;
+  currentSession = selected.task_id;
+  currentSessionTitle = selected.title || '';
+  // 展开项和编辑锚点属于上一任务，切换任务时必须清空。
+  workspaceState = { ...workspaceState, expanded_items: [], editor_anchor: '' };
+  renderSessionList();
+  hideResumeBanner();
+  await loadSessionDetail(currentSession);
+  scheduleWorkspaceSave({
+    last_task_id: currentSession,
+    active_tab: workspaceState.active_tab || 'refs',
+    expanded_items: [],
+    editor_anchor: '',
+  });
+}
+
+async function switchWorkspaceIdentity() {
+  clearWorkspaceForIdentity();
+  currentSession = null;
+  currentSessionTitle = '';
+  const restored = await loadWorkspaceState();
+  currentSession = restored.last_task_id || null;
+  const result = await loadSessionsWithWorkspaceFallback({
+    preferredTaskId: restored.last_task_id,
+    forceDetail: true,
+  });
+  activateWorkbenchTab(workspaceState.active_tab || 'refs');
+  renderResumeBanner(await resolveResumeForSelected(currentSession, resumeSummaryCache));
+  workspacePersistenceReady = true;
+  return result;
+}
+
+async function loadWorkspaceState() {
+  const response = await apiWorkspaceState();
+  if (!response || !response.workspace) {
+    // 读取失败时保留安全本地默认值，绝不向服务端写空值覆盖旧状态。
+    workspaceState = defaultWorkspaceState();
+    resumeSummaryCache = null;
+    workspaceServerLoaded = false;
+    updateWorkspaceTrust();
+    return workspaceState;
+  }
+  workspaceState = normalizeWorkspaceState(response.workspace);
+  resumeSummaryCache = response.resume || null;
+  workspaceServerLoaded = true;
+  updateWorkspaceTrust();
+  return workspaceState;
+}
+
+async function loadSessionsWithWorkspaceFallback(options = {}) {
+  const result = await loadSessions(options);
+  if (!result.ok) return result;
+  // 工作区读取失败但列表随后成功时，重新读取服务端指针并据此重新选择。
+  const pointer = workspaceState.last_task_id;
+  if (
+    workspaceServerLoaded && pointer
+    && pointer !== currentSession
+    && sessionCache.some(item => item.task_id === pointer)
+  ) {
+    return loadSessions({ preferredTaskId: pointer, forceDetail: true });
+  }
+  return result;
+}
 
 function sessionItemHtml(s, isActive = false) {
   const degree = DEGREE_LABEL[s.degree] || s.degree || '';
@@ -1790,12 +2107,7 @@ function renderSessionList() {
   box.querySelectorAll('.session-item').forEach(item => {
     const opener = item.querySelector('.session-main');
     opener.addEventListener('click', () => {
-      const selected = sessionCache.find(session => session.task_id === item.dataset.task);
-      if (!selected) return;
-      currentSession = selected.task_id;
-      currentSessionTitle = selected.title || '';
-      renderSessionList();
-      loadSessionDetail(currentSession);
+      selectSession(item.dataset.task);
     });
     const del = item.querySelector('.session-delete');
     if (del) del.addEventListener('click', (event) => {
@@ -1857,22 +2169,45 @@ async function clearSessionContext() {
   await loadActiveWorkbenchPane();
 }
 
-async function loadSessions() {
+async function loadSessions(options = {}) {
   const requestId = ++sessionListRequest;
   const items = await apiListSessions();
-  if (requestId !== sessionListRequest) return;
-  sessionCache = Array.isArray(items) ? items : [];
+  if (requestId !== sessionListRequest) {
+    return { ok: false, items: null, selected: null };
+  }
+  if (items === null) {
+    // 列表请求失败：保留现有列表和恢复指针，断网不能被当成“没有论文任务”。
+    sessionListLoaded = false;
+    updateWorkspaceTrust();
+    announceWorkspace('论文任务列表加载失败，已保留上次恢复位置，可稍后重试。');
+    return { ok: false, items: null, selected: null };
+  }
+  sessionListLoaded = true;
+  if (!workspaceServerLoaded) {
+    // 上次读取工作区失败，列表恢复后重新读取，避免用本地默认值覆盖服务端指针。
+    await loadWorkspaceState();
+  }
+  updateWorkspaceTrust();
+  sessionCache = items;
   const previousSession = currentSession;
-  const selected = resolveSessionSelection(sessionCache, previousSession);
-  if (!items.length) {
+  const selected = resolveSessionSelection(
+    sessionCache, options.preferredTaskId || previousSession,
+  );
+  if (!selected) {
+    currentSession = null;
+    currentSessionTitle = '';
     renderSessionList();
     await clearSessionContext();
-    return;
+    return { ok: true, items, selected: null };
   }
   currentSession = selected.task_id;
   currentSessionTitle = selected.title || '';
   renderSessionList();
-  if (previousSession !== currentSession) await loadSessionDetail(currentSession);
+  // 首次恢复时即使前后 ID 相同，也必须加载一次详情。
+  if (options.forceDetail || previousSession !== currentSession) {
+    await loadSessionDetail(currentSession);
+  }
+  return { ok: true, items, selected };
 }
 
 let sessionDetailRequest = 0;
@@ -2112,7 +2447,22 @@ async function submitNewSession() {
     toast('会话已创建：' + title);
     document.getElementById('ns-title-input').value = '';
     document.getElementById('ns-subject').value = '';
-    await loadSessions();
+    const createdTaskId = r.data?.task_id || '';
+    workspaceState = { ...workspaceState, expanded_items: [], editor_anchor: '' };
+    hideResumeBanner();
+    // 用创建响应中的 task_id 锁定当前任务，列表刷新后不能跳回旧任务。
+    const result = await loadSessions({
+      preferredTaskId: createdTaskId,
+      forceDetail: true,
+    });
+    if (result.ok) {
+      scheduleWorkspaceSave({
+        last_task_id: currentSession || '',
+        active_tab: workspaceState.active_tab || 'refs',
+        expanded_items: [],
+        editor_anchor: '',
+      });
+    }
   } else {
     toast('创建失败: ' + (r.msg || ''));
   }
@@ -2181,9 +2531,20 @@ async function apiPost(path, body) {
 }
 
 // ---- 会话（console）----
+// 返回 null 表示“请求失败”，返回数组表示“请求成功”。调用方不得把失败当成空列表。
 async function apiListSessions() {
   const r = await apiGet('/api/v1/console/tasks');
-  return r.code === 0 ? (r.data || []) : [];
+  return r.code === 0 ? (Array.isArray(r.data) ? r.data : []) : null;
+}
+async function apiWorkspaceState() {
+  const response = await apiGet('/api/v1/console/workspace');
+  return response.code === 0 ? (response.data || null) : null;
+}
+async function apiSaveWorkspaceState(payload) {
+  return apiPost('/api/v1/console/workspace', payload);
+}
+async function apiTaskResume(taskId) {
+  return apiGet(`/api/v1/console/tasks/${encodeURIComponent(taskId)}/resume`);
 }
 async function apiCreateSession(payload) {
   return apiPost('/api/v1/console/tasks', payload);
@@ -3467,7 +3828,21 @@ async function kbUpload(files) {
 async function initApp() {
   restoreJobBudget();
   bindSessionSearch();
-  await loadSessions();
+  // 1. 恢复完成前必须保持持久化关闭，禁止把本地默认值回写到服务端。
+  pauseWorkspacePersistence();
+  // 2. 先读取服务端工作区；失败时保留安全本地默认值。
+  const restoredWorkspace = await loadWorkspaceState();
+  currentSession = restoredWorkspace.last_task_id || null;
+  // 3. 加载任务列表，优先选择服务端的最后活动任务。
+  const sessionResult = await loadSessionsWithWorkspaceFallback({
+    preferredTaskId: restoredWorkspace.last_task_id,
+    forceDetail: true,
+  });
+  // 页签以重新读取后的服务端状态为准，避免用过期的本地默认值覆盖。
+  const restoredTab = workspaceState.active_tab || 'refs';
+  if (sessionResult.ok && !sessionResult.selected) {
+    scheduleWorkspaceSave({ last_task_id: '', active_tab: restoredTab });
+  }
   // 新建对话按钮（.new-chat-btn 或 sidebar 新建）
   const newBtn = document.querySelector('.new-chat-btn') || document.querySelector('.sidebar-top button.btn-primary, #new-chat');
   if (newBtn && !newBtn.dataset.bound) {
@@ -3570,6 +3945,16 @@ async function initApp() {
       event.target.value = '';
     });
   }
-  activateWorkbenchTab(document.querySelector('.kb-tab.active')?.dataset.tab || 'refs');
+  // 使用服务端保存的页签，不能用 HTML 里的默认选中项覆盖恢复页签。
+  activateWorkbenchTab(restoredTab);
+  // 横幅只展示当前选中任务的摘要，避免显示已失效的恢复信息。
+  renderResumeBanner(await resolveResumeForSelected(currentSession, resumeSummaryCache));
+  const continueButton = document.getElementById('resume-continue');
+  if (continueButton && !continueButton.dataset.bound) {
+    continueButton.dataset.bound = '1';
+    continueButton.addEventListener('click', continueLastThesis);
+  }
+  // 恢复链路全部完成后才允许写回服务端。
+  workspacePersistenceReady = true;
 }
 initApp();

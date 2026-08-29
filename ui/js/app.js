@@ -772,6 +772,8 @@ function renderRingResult(ringNo, data) {
         el.setAttribute('aria-pressed', 'true');
         setGateReady(1, true);
         toast('作者选择已保存：' + el.dataset.title);
+        // 作者决定已改变，横幅必须从“作者决定”推进到“待确认”。
+        await refreshVisibleResumeSummary();
       });
     });
     if (selectedIndex !== null) {
@@ -821,6 +823,7 @@ function renderRingResult(ringNo, data) {
       setGateReady(3, true);
       await loadKbPanel(currentKnowledgeSession || currentSession);
       toast(response.msg);
+      await refreshVisibleResumeSummary();
     });
     document.querySelectorAll('.literature-move').forEach(button => {
       button.addEventListener('click', () => {
@@ -955,6 +958,7 @@ async function runRingShow(taskId, ringNo, path) {
   }
   await loadSessionDetail(taskId);
   await loadSessions();
+  await refreshVisibleResumeSummary();
 }
 
 /* —— 从失败 Gate 安全回到契约允许的上游环节 —— */
@@ -973,6 +977,7 @@ async function rollbackRing(targetRingNo) {
   toast(r.msg);
   await loadSessionDetail(currentSession);
   await loadSessions();
+  await refreshVisibleResumeSummary();
   appendAIMsg(`<p><strong>已回到环${targetRingNo}</strong>（${RING_NAMES[targetRingNo] || ''}）。请完成修订后重新执行。</p>`, `恢复 · 环${targetRingNo}`);
 }
 
@@ -1726,15 +1731,38 @@ const WORKSPACE_TABS = new Set([
 let workspaceState = defaultWorkspaceState();
 let workspacePersistenceReady = false;
 let workspaceSaveTimer = null;
-let workspaceSaveInFlight = false;
-let workspaceSaveQueued = false;
 let workspaceIdentityToken = 0;
 let resumeSummaryCache = null;
+// 服务端可验证的单调版本。每次真实位置变化在“发送时”递增，
+// 乱序到达的旧 POST 会被服务端按 revision 拒绝，旧快照无法倒退覆盖新状态。
+let workspaceRevision = 0;
+// 每次身份切换创建新的保存世代：旧世代请求自然结束，但只修改旧世代自己的
+// in-flight / queued / lastSnapshot，绝不会占用或复用新身份的保存状态。
+let workspaceSaveGeneration = newWorkspaceSaveGeneration();
 // 只有真正读到服务端工作区、且任务列表请求成功时，才允许把本地状态写回服务端。
 // 否则一次断网就会让本地默认值覆盖并清空用户的恢复位置。
 let workspaceServerLoaded = false;
 let sessionListLoaded = false;
 let workspaceRecoveryTrusted = false;
+
+function newWorkspaceSaveGeneration() {
+  workspaceIdentityToken += 1;
+  return {
+    token: workspaceIdentityToken,
+    inFlight: false,
+    queued: false,
+    lastSnapshot: null,
+  };
+}
+
+function adoptWorkspaceRevision(value) {
+  // 客户端计数器只增不减：即使旧身份请求仍在途，新身份也不会复用同一个
+  // revision，从而避免“同版本不同内容”把新用户的首次保存挤成冲突。
+  const candidate = Number(value);
+  if (Number.isFinite(candidate) && candidate > workspaceRevision) {
+    workspaceRevision = candidate;
+  }
+}
 
 function updateWorkspaceTrust() {
   workspaceRecoveryTrusted = workspaceServerLoaded && sessionListLoaded;
@@ -1762,6 +1790,10 @@ function workspaceSnapshot() {
   return normalizeWorkspaceState(workspaceState);
 }
 
+function sameWorkspaceContent(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function announceWorkspace(message) {
   const live = document.getElementById('resume-live');
   if (live) live.textContent = message || '';
@@ -1774,41 +1806,73 @@ function scheduleWorkspaceSave(changes = {}) {
   workspaceSaveTimer = setTimeout(() => { runWorkspaceSave(); }, 300);
 }
 
-async function runWorkspaceSave() {
-  if (workspaceSaveInFlight) { workspaceSaveQueued = true; return; }
-  if (!workspacePersistenceReady || !workspaceRecoveryTrusted) return;
-  workspaceSaveInFlight = true;
-  const token = workspaceIdentityToken;
-  try {
-    const response = await apiSaveWorkspaceState(workspaceSnapshot());
-    // 身份已切换时丢弃旧身份的回包，绝不让旧用户的位置覆盖新用户。
-    if (token === workspaceIdentityToken && response.code !== 0) {
-      announceWorkspace(`工作位置保存失败：${response.msg || '未知错误'}`);
-    }
-  } catch (error) {
-    if (token === workspaceIdentityToken) {
-      announceWorkspace('工作位置保存失败：无法连接后端，正式论文状态不受影响');
-    }
-  } finally {
-    workspaceSaveInFlight = false;
+function isWorkspaceConflict(response) {
+  return Boolean(response?.data?.conflict);
+}
+
+function handleWorkspaceSaveFailure(response) {
+  if (isWorkspaceConflict(response)) {
+    // 冲突只影响 UI 位置：以服务端为准重新读取，不自动用本地旧状态强行覆盖，
+    // 也不自动重发，避免循环 POST。
+    announceWorkspace('工作位置已在另一页面更新，请确认当前任务位置');
+    loadWorkspaceState();
+    return;
   }
-  if (workspaceSaveQueued && token === workspaceIdentityToken) {
-    workspaceSaveQueued = false;
-    clearTimeout(workspaceSaveTimer);
-    workspaceSaveTimer = setTimeout(() => { runWorkspaceSave(); }, 300);
+  announceWorkspace(`工作位置保存失败：${response.msg || '未知错误'}`);
+}
+
+async function runWorkspaceSave() {
+  // 捕获当前世代：即使身份随后切换，旧请求也只影响旧世代对象。
+  const generation = workspaceSaveGeneration;
+  if (generation.inFlight) { generation.queued = true; return; }
+  if (!workspacePersistenceReady || !workspaceRecoveryTrusted) return;
+  const content = workspaceSnapshot();
+  if (generation.lastSnapshot && sameWorkspaceContent(generation.lastSnapshot, content)) {
+    // 无真实变化不得伪造一次用户修改，也不得递增 revision。
+    return;
+  }
+  generation.inFlight = true;
+  // 在发送时同步预留 revision：跨世代或 pagehide 的并发请求不会撞到同一个
+  // 版本号，从而避免“同版本不同内容”把较新的保存挤成冲突。
+  const revision = workspaceRevision + 1;
+  workspaceRevision = revision;
+  try {
+    const response = await apiSaveWorkspaceState({ ...content, revision });
+    // 身份已切换时丢弃旧世代回包，绝不让旧用户的位置或错误提示影响新身份。
+    if (generation !== workspaceSaveGeneration) return;
+    if (response.code !== 0) { handleWorkspaceSaveFailure(response); return; }
+    adoptWorkspaceRevision(response.data?.revision);
+    generation.lastSnapshot = content;
+  } catch (error) {
+    if (generation !== workspaceSaveGeneration) return;
+    announceWorkspace('工作位置保存失败：无法连接后端，正式论文状态不受影响');
+  } finally {
+    generation.inFlight = false;
+    if (generation.queued && generation === workspaceSaveGeneration) {
+      generation.queued = false;
+      clearTimeout(workspaceSaveTimer);
+      workspaceSaveTimer = setTimeout(() => { runWorkspaceSave(); }, 300);
+    }
   }
 }
 
 function flushWorkspaceSaveOnExit() {
   // 恢复链路没有成功读到服务端状态时绝不回写，避免关闭页面时清空恢复位置。
   if (!workspacePersistenceReady || !workspaceRecoveryTrusted) return;
+  const generation = workspaceSaveGeneration;
+  const content = workspaceSnapshot();
+  if (generation.lastSnapshot && sameWorkspaceContent(generation.lastSnapshot, content)) return;
+  // keepalive 无法等待回包，这里同步占用更高 revision：
+  // 仍在途的普通保存 revision 更低，注定被服务端拒绝，不会倒退覆盖本次快照。
+  const revision = workspaceRevision + 1;
+  workspaceRevision = revision;
   try {
     fetch(API_BASE + '/api/v1/console/workspace', {
       method: 'POST',
       keepalive: true,
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(workspaceSnapshot()),
+      body: JSON.stringify({ ...content, revision }),
     }).catch(() => {});
   } catch (_) {
     // 关闭前的末次保存失败不得影响正式论文状态。
@@ -1820,11 +1884,14 @@ function pauseWorkspacePersistence() {
   clearTimeout(workspaceSaveTimer);
   workspaceSaveTimer = null;
   workspacePersistenceReady = false;
-  workspaceSaveQueued = false;
+  // 注意：workspaceRevision 故意不归零。旧身份的请求可能仍在途并占用某个
+  // revision，新身份必须从更高的值继续，否则会与之撞版本导致首次保存被拒。
+  // 创建新世代：旧世代的 in-flight / queued 随旧世代一起失效，
+  // 新身份的首次保存不会被旧身份仍在途的请求阻塞或吞掉。
+  workspaceSaveGeneration = newWorkspaceSaveGeneration();
   workspaceServerLoaded = false;
   sessionListLoaded = false;
   workspaceRecoveryTrusted = false;
-  workspaceIdentityToken += 1;
 }
 
 function clearWorkspaceForIdentity() {
@@ -1867,6 +1934,40 @@ async function resolveResumeForSelected(selectedTaskId, cachedResume) {
   if (cachedResume && cachedResume.task_id === selectedTaskId) return cachedResume;
   const response = await apiTaskResume(selectedTaskId);
   return response?.code === 0 ? (response.data || null) : null;
+}
+
+function invalidateResumeSummary() {
+  // 任何会改变 FSM、Artifact 审批、作者决定、分节或 Job 状态的成功操作，
+  // 都必须先失效旧摘要，绝不能继续展示已知的过期数量与“唯一安全下一步”。
+  resumeSummaryCache = null;
+}
+
+async function refreshVisibleResumeSummary() {
+  const banner = document.getElementById('resume-banner');
+  if (!banner || banner.hidden) { invalidateResumeSummary(); return; }
+  if (!currentSession) { hideResumeBanner(); return; }
+  const response = await apiTaskResume(currentSession);
+  // 只有与当前任务一致的最新摘要才允许上屏；拿不到就隐藏，绝不展示旧摘要。
+  if (response?.code === 0 && response.data?.task_id === currentSession) {
+    renderResumeBanner(response.data);
+    return;
+  }
+  hideResumeBanner();
+}
+
+function syncResumeBannerWithJobs(jobs) {
+  const banner = document.getElementById('resume-banner');
+  if (!banner || banner.hidden || !resumeSummaryCache) return;
+  const ACTIVE_STATUSES = ['PENDING', 'RUNNING', 'CANCEL_REQUESTED'];
+  const activeIds = (jobs || [])
+    .filter(job => ACTIVE_STATUSES.includes(job.status))
+    .map(job => job.job_id)
+    .sort()
+    .join(',');
+  const cachedIds = (resumeSummaryCache.active_jobs || [])
+    .map(job => job.job_id).sort().join(',');
+  // Job 轮询发现活动作业集合变化时，立即重取摘要或隐藏横幅。
+  if (activeIds !== cachedIds) refreshVisibleResumeSummary();
 }
 
 function findJobCard(jobId) {
@@ -1995,6 +2096,7 @@ async function loadWorkspaceState() {
   const response = await apiWorkspaceState();
   if (!response || !response.workspace) {
     // 读取失败时保留安全本地默认值，绝不向服务端写空值覆盖旧状态。
+    // workspaceRevision 只增不减，避免读到失败后发出更低的版本被服务端拒绝。
     workspaceState = defaultWorkspaceState();
     resumeSummaryCache = null;
     workspaceServerLoaded = false;
@@ -2002,6 +2104,11 @@ async function loadWorkspaceState() {
     return workspaceState;
   }
   workspaceState = normalizeWorkspaceState(response.workspace);
+  // 从服务端 revision 继续，客户端只发出比它更大的版本。
+  adoptWorkspaceRevision(response.workspace?.revision);
+  // 服务端当前内容就是这个世代的基线：初始化时激活默认页签属于“无变化重放”，
+  // 不得伪造一次用户修改，也不得递增 revision。
+  workspaceSaveGeneration.lastSnapshot = workspaceSnapshot();
   resumeSummaryCache = response.resume || null;
   workspaceServerLoaded = true;
   updateWorkspaceTrust();
@@ -2341,6 +2448,7 @@ async function confirmNextRing(event) {
     button?.closest('.gate-block')?.remove();
     await loadSessionDetail(currentSession);
     await loadSessions();
+    await refreshVisibleResumeSummary();
   } else {
     if (button) button.disabled = false;
     toast('确认失败: ' + (r.msg || '当前产物状态异常'));
@@ -2390,6 +2498,8 @@ async function runCurrentRing() {
     }
     await loadSessionDetail(currentSession);
     await loadSessions();
+    // 无论成功或失败，环执行都会改变阶段状态；只有重取摘要才能保证横幅准确。
+    await refreshVisibleResumeSummary();
   } finally {
     ringRunning = false;
     if (label) label.style.display = '';
@@ -2843,6 +2953,8 @@ async function loadJobsPanel(announce = true) {
   }
   renderJobs(response.data || []);
   if (announce) document.getElementById('jobs-live').textContent = `已加载 ${(response.data || []).length} 个作业`;
+  // 轮询发现活动作业集合变化时，横幅必须跟着更新或隐藏。
+  syncResumeBannerWithJobs(response.data || []);
 }
 
 function renderJobs(jobs) {
@@ -2886,6 +2998,8 @@ async function handleJobAction(event) {
     : await apiRetryJob(currentSession, jobId);
   toast(response.code === 0 ? response.msg : `${action === 'cancel' ? '取消' : '重试'}失败：${response.msg}`);
   await loadJobsPanel(false);
+  // 取消 / 重试会改变活动作业集合；只有成功才刷新摘要，失败不得伪造新状态。
+  if (response.code === 0) await refreshVisibleResumeSummary();
 }
 
 async function loadSecurityAudit() {
@@ -3128,6 +3242,8 @@ async function handleResearchAction(event) {
   }
   toast(response?.code === 0 ? response.msg : `研究操作失败：${response?.msg || '未知错误'}`);
   await loadResearchPanel();
+  // 协议 / 论证图 / 结果账本审批会改变待审批集合；只有成功才刷新摘要。
+  if (response?.code === 0) await refreshVisibleResumeSummary();
 }
 
 async function submitProtocolForm(event) {
@@ -3159,6 +3275,7 @@ async function submitProtocolForm(event) {
     form.reset();
     document.getElementById('protocol-builder').open = false;
     await loadResearchPanel();
+    await refreshVisibleResumeSummary();
   }
 }
 
@@ -3186,7 +3303,7 @@ async function submitArgumentForm(event) {
   error.textContent = '';
   const response = await apiCreateArgumentMap(currentSession, payload);
   if (response.code !== 0) error.textContent = response.msg;
-  else { toast(response.msg); document.getElementById('argument-builder').open = false; await loadResearchPanel(); }
+  else { toast(response.msg); document.getElementById('argument-builder').open = false; await loadResearchPanel(); await refreshVisibleResumeSummary(); }
 }
 
 async function uploadResearchFiles(files) {
@@ -3221,7 +3338,11 @@ async function submitResultForm(event) {
   if (!payload.metric || !payload.value || !payload.source_file_id || !payload.computation) { error.textContent = '请填写指标、值、来源文件和复算方法。'; return; }
   const response = await apiAddResearchResult(currentSession, runId, payload);
   if (response.code !== 0) error.textContent = response.msg;
-  else { toast(response.msg); await loadResearchPanel(); }
+  else {
+    toast(response.msg);
+    await loadResearchPanel();
+    await refreshVisibleResumeSummary();
+  }
 }
 
 let sectionDraftCache = new Map();
@@ -3314,6 +3435,7 @@ async function generateAllSectionsFromPanel(event) {
   );
   toast(response.code === 0 ? response.msg : `批量生成失败：${response.msg}`);
   await loadSectionsPanel();
+  if (response.code === 0) await refreshVisibleResumeSummary();
 }
 
 async function approveAllSectionsFromPanel(event) {
@@ -3321,6 +3443,7 @@ async function approveAllSectionsFromPanel(event) {
   const response = await apiReviewAllSections(currentSession, true);
   toast(response.code === 0 ? response.msg : `批量批准失败：${response.msg}`);
   await loadSectionsPanel();
+  if (response.code === 0) await refreshVisibleResumeSummary();
 }
 
 function renderTemplateConfig(response) {
@@ -3408,6 +3531,8 @@ async function handleSectionAction(event) {
   }
   toast(response?.code === 0 ? response.msg : `操作失败：${response?.msg || '未知错误'}`);
   await loadSectionsPanel();
+  // 分节生成 / 修订 / 审批会改变待审批集合；只有成功才刷新摘要。
+  if (response?.code === 0) await refreshVisibleResumeSummary();
 }
 
 function renderSectionDiff(card) {

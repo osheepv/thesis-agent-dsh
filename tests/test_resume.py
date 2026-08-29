@@ -680,3 +680,217 @@ def test_viewer_can_save_own_position_but_cannot_advance_fsm(
     ).json()
     assert progress["code"] == 0
     assert progress["data"]["phase_state"] == "WAITING_APPROVAL"
+
+
+# ---------------------------------------------------------------------
+# H4-001R：服务端单调 revision（阻断缺陷 B02）
+# ---------------------------------------------------------------------
+def test_workspace_revision_persists_and_survives_reopen(tmp_path):
+    path = tmp_path / "task-store-revision.db"
+    first = _TaskStore(path)
+    stored = first.put_workspace("local:default", {
+        "last_task_id": "TASK-1",
+        "active_tab": "memory",
+        "expanded_items": [],
+        "editor_anchor": "",
+        "revision": 4,
+    })
+    assert stored["revision"] == 4
+    first._db.close()  # noqa: SLF001 - 模拟进程结束
+
+    second = _TaskStore(path)
+    restored = second.get_workspace("local:default")
+    second._db.close()  # noqa: SLF001
+    assert restored["revision"] == 4
+    assert restored["active_tab"] == "memory"
+
+
+def test_legacy_workspace_row_without_revision_reads_as_zero(tmp_path):
+    import json
+
+    path = tmp_path / "task-store-legacy.db"
+    store = _TaskStore(path)
+    # 直接写入 H4-001R 之前的历史行：payload 里没有 revision。
+    store._db.execute(  # noqa: SLF001 - 构造历史数据
+        "INSERT INTO t_workspace_state(workspace_key, payload, updated_at) VALUES(?, ?, ?)",
+        ("local:default", json.dumps({
+            "last_task_id": "TASK-OLD",
+            "active_tab": "writing",
+            "expanded_items": [],
+            "editor_anchor": "",
+            "updated_at": "2026-08-29T00:00:00Z",
+        }), "2026-08-29T00:00:00Z"),
+    )
+    store._db.commit()  # noqa: SLF001
+
+    raw = store.get_workspace("local:default")
+    assert raw["last_task_id"] == "TASK-OLD"
+    assert raw.get("revision", 0) == 0
+
+    # 旧行首次写入只能接受更高的 revision。
+    store.put_workspace("local:default", {
+        "last_task_id": "TASK-OLD",
+        "active_tab": "jobs",
+        "expanded_items": [],
+        "editor_anchor": "",
+        "revision": 1,
+    })
+    assert store.get_workspace("local:default")["revision"] == 1
+    store._db.close()  # noqa: SLF001
+
+
+def test_out_of_order_writes_never_rollback_revision():
+    from common.resume import WorkspaceRevisionConflict, read_revision
+
+    store = _TaskStore()
+    store.put_workspace("local:default", {
+        "last_task_id": "T1", "active_tab": "refs",
+        "expanded_items": [], "editor_anchor": "", "revision": 1,
+    })
+    # revision 2 先落库，revision 1 因网络延迟后到达。
+    store.put_workspace("local:default", {
+        "last_task_id": "T1", "active_tab": "jobs",
+        "expanded_items": [], "editor_anchor": "", "revision": 2,
+    })
+    with pytest.raises(WorkspaceRevisionConflict) as caught:
+        store.put_workspace("local:default", {
+            "last_task_id": "T1", "active_tab": "writing",
+            "expanded_items": [], "editor_anchor": "", "revision": 1,
+        })
+    assert caught.value.current_revision == 2
+
+    final = store.get_workspace("local:default")
+    assert final["revision"] == 2
+    assert final["active_tab"] == "jobs", '乱序完成不得让状态倒退回旧快照'
+    assert read_revision(final) == 2
+
+
+def test_same_revision_same_content_is_idempotent():
+    store = _TaskStore()
+    payload = {
+        "last_task_id": "T1", "active_tab": "memory",
+        "expanded_items": [], "editor_anchor": "", "revision": 3,
+    }
+    store.put_workspace("local:default", payload)
+    replayed = store.put_workspace("local:default", dict(payload))
+    assert replayed["revision"] == 3
+    assert store.get_workspace("local:default")["revision"] == 3
+
+
+def test_same_revision_different_content_conflicts_without_overwrite():
+    from common.resume import WorkspaceRevisionConflict
+
+    store = _TaskStore()
+    store.put_workspace("local:default", {
+        "last_task_id": "T1", "active_tab": "memory",
+        "expanded_items": [], "editor_anchor": "", "revision": 3,
+    })
+    with pytest.raises(WorkspaceRevisionConflict) as caught:
+        store.put_workspace("local:default", {
+            "last_task_id": "T1", "active_tab": "writing",
+            "expanded_items": [], "editor_anchor": "", "revision": 3,
+        })
+    assert caught.value.incoming_revision == 3
+    final = store.get_workspace("local:default")
+    assert final["active_tab"] == "memory", '同版本不同内容不得静默覆盖'
+    assert final["revision"] == 3
+
+
+def test_deleting_task_bumps_workspace_revision(monkeypatch):
+    monkeypatch.setenv("THESIS_JOB_WORKER_ENABLED", "false")
+    orchestration = MainOrchestration()
+    task = orchestration.create_task(
+        "删除后版本递增", Degree.MASTER, "教育学", session_id="resume-revision-delete"
+    ).data
+    orchestration.save_workspace_state("local:default", {
+        "last_task_id": task["task_id"],
+        "active_tab": "jobs",
+        "expanded_items": [],
+        "editor_anchor": "",
+        "revision": 5,
+    })
+    assert orchestration.get_workspace_state("local:default").data[
+        "workspace"
+    ]["revision"] == 5
+
+    assert orchestration.delete_task(task["task_id"]).is_ok
+    after = orchestration.get_workspace_state("local:default").data["workspace"]
+    assert after["last_task_id"] == ""
+    assert after["revision"] > 5, '删除任务清理位置必须生成更高的 revision'
+
+
+def test_self_healing_ghost_pointer_bumps_revision():
+    orchestration = MainOrchestration()
+    orchestration._store.put_workspace(  # noqa: SLF001 - 构造残留指针
+        "local:default",
+        {
+            "last_task_id": "TASK-DOES-NOT-EXIST",
+            "active_tab": "jobs",
+            "expanded_items": [],
+            "editor_anchor": "",
+            "revision": 8,
+        },
+    )
+    healed = orchestration.get_workspace_state("local:default").data["workspace"]
+    assert healed["last_task_id"] == ""
+    assert healed["revision"] > 8, '自愈幽灵指针必须生成更高的 revision'
+
+
+def test_workspace_revisions_are_independent_per_user(monkeypatch, tmp_path):
+    _store, app, owner, _boot = _secured_console(monkeypatch, tmp_path)
+    user_one = _login_as(app, owner, "revision-user-one", "EDITOR")
+    user_two = _login_as(app, owner, "revision-user-two", "EDITOR")
+
+    first = user_one.post("/api/v1/console/workspace", json={
+        "last_task_id": "", "active_tab": "writing",
+        "expanded_items": [], "editor_anchor": "", "revision": 12,
+    }).json()
+    second = user_two.post("/api/v1/console/workspace", json={
+        "last_task_id": "", "active_tab": "evidence",
+        "expanded_items": [], "editor_anchor": "", "revision": 2,
+    }).json()
+    assert first["code"] == 0 and second["code"] == 0
+
+    # 用户二的低 revision 不得被用户一的高 revision 影响（各自独立单调）。
+    assert user_one.get("/api/v1/console/workspace").json()[
+        "data"]["workspace"]["revision"] == 12
+    assert user_two.get("/api/v1/console/workspace").json()[
+        "data"]["workspace"]["revision"] == 2
+    assert user_two.post("/api/v1/console/workspace", json={
+        "last_task_id": "", "active_tab": "notes",
+        "expanded_items": [], "editor_anchor": "", "revision": 1,
+    }).json()["code"] != 0, '同一用户的旧 revision 必须被拒绝'
+
+
+def test_workspace_conflict_does_not_touch_fsm_or_formal_state(monkeypatch):
+    monkeypatch.setenv("THESIS_JOB_WORKER_ENABLED", "false")
+    monkeypatch.setattr(
+        "application.service.uc_main_orchestration.get_executor",
+        _FlowExecutor().for_ring,
+    )
+    orchestration = MainOrchestration()
+    task_id = orchestration.create_task(
+        "冲突不影响正式状态", Degree.MASTER, "计算机科学", session_id="resume-conflict"
+    ).data["task_id"]
+    orchestration.save_workspace_state("local:default", {
+        "last_task_id": task_id, "active_tab": "memory",
+        "expanded_items": [], "editor_anchor": "", "revision": 6,
+    })
+    progress_before = orchestration.progress(task_id).data
+    artifacts_before = len(orchestration.list_artifacts(task_id).data or [])
+
+    conflicted = orchestration.save_workspace_state("local:default", {
+        "last_task_id": task_id, "active_tab": "writing",
+        "expanded_items": [], "editor_anchor": "", "revision": 6,
+    })
+    assert not conflicted.is_ok
+    assert conflicted.data["conflict"] is True
+    assert conflicted.data["current_revision"] == 6
+
+    progress_after = orchestration.progress(task_id).data
+    assert progress_after["phase_state"] == progress_before["phase_state"]
+    assert progress_after["current_ring_no"] == progress_before["current_ring_no"]
+    assert len(orchestration.list_artifacts(task_id).data or []) == artifacts_before
+    assert orchestration.get_workspace_state("local:default").data[
+        "workspace"
+    ]["revision"] == 6

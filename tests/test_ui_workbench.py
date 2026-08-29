@@ -264,6 +264,11 @@ state.listResponse = { code: 0, data: [] };
 state.createResponse = { code: 0, data: { task_id: '' } };
 state.saveResponse = { code: 0 };
 state.resumeResponse = { code: 0, data: null };
+state.server = null;
+state.serverMode = false;
+state.gatePosts = false;
+state.gateWaiters = [];
+state.fetches = [];
 
 const elements = new Map();
 function element(id) {
@@ -321,15 +326,86 @@ function activateWorkbenchTab(target) {
 }
 async function apiGet(target) {
   state.gets.push(target);
-  if (target.includes('/console/workspace')) return state.workspaceResponse;
+  if (target.includes('/console/workspace')) {
+    if (state.serverMode) return serverGetWorkspace();
+    return state.workspaceResponse;
+  }
   if (target.includes('/resume')) return state.resumeResponse;
   return state.listResponse;
 }
 async function apiPost(target, body) {
   state.posts.push({ target, body });
-  if (target.includes('/console/workspace')) { state.saves.push(body); return state.saveResponse; }
+  if (target.includes('/console/workspace')) {
+    // 可控在途：gatePosts 打开时请求挂起，由测试决定完成顺序。
+    if (state.gatePosts) {
+      await new Promise(resolve => { state.gateWaiters.push(resolve); });
+    }
+    const result = state.serverMode ? serverPutWorkspace(body) : state.saveResponse;
+    state.saves.push(body);
+    return result;
+  }
   if (target === '/api/v1/console/tasks') return state.createResponse;
   return { code: -1, msg: '未预期的写入请求' };
+}
+// 迷你工作区服务端：实现与后端一致的 revision CAS，用于乱序请求验证。
+function serverGetWorkspace() {
+  if (!state.server) return { code: 0, data: { workspace: null, resume: null } };
+  return { code: 0, data: { workspace: { ...state.server }, resume: null } };
+}
+function serverPutWorkspace(payload) {
+  const incoming = Number(payload && payload.revision) || 0;
+  const current = state.server;
+  if (current) {
+    if (incoming < current.revision) {
+      return {
+        code: 400003,
+        msg: '服务端revision ' + current.revision + '，请求 ' + incoming + ' 更旧',
+        data: { conflict: true, current_revision: current.revision, incoming_revision: incoming },
+      };
+    }
+    if (incoming === current.revision) {
+      const strip = value => {
+        const copy = { ...value };
+        delete copy.revision;
+        delete copy.updated_at;
+        return copy;
+      };
+      if (JSON.stringify(strip(current)) === JSON.stringify(strip(payload))) {
+        return { code: 0, data: current };
+      }
+      return {
+        code: 400003,
+        msg: '服务端revision ' + current.revision + ' 内容已变化',
+        data: { conflict: true, current_revision: current.revision, incoming_revision: incoming },
+      };
+    }
+  }
+  state.server = { ...payload };
+  return { code: 0, data: state.server };
+}
+function releasePostAt(index) {
+  const resolve = state.gateWaiters.splice(index, 1)[0];
+  if (resolve) resolve();
+}
+function releaseAllPosts() {
+  state.gateWaiters.splice(0, state.gateWaiters.length).forEach(resolve => resolve());
+}
+// pagehide 的 keepalive 走原生 fetch，必须接入同一服务端与网关才能验证乱序。
+global.fetch = async (target, options = {}) => {
+  const body = options && options.body ? JSON.parse(options.body) : {};
+  state.fetches.push({ target, body });
+  state.posts.push({ target, body });
+  if (state.gatePosts) {
+    await new Promise(resolve => { state.gateWaiters.push(resolve); });
+  }
+  const result = serverPutWorkspace(body);
+  state.saves.push(body);
+  return { ok: true, status: 200, json: async () => result };
+};
+async function settle() {
+  for (let round = 0; round < 8; round += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
 }
 function lastSave() { return state.saves[state.saves.length - 1] || null; }
 function assert(condition, message) { if (!condition) throw new Error(message); }
@@ -597,4 +673,246 @@ def test_workspace_snapshot_rejects_unknown_tabs_and_oversized_fields():
   const snapshot = workspaceSnapshot();
   assert(Object.keys(snapshot).sort().join(',') === 'active_tab,editor_anchor,expanded_items,last_task_id',
     '快照字段必须与后端契约一致');
+""")
+
+
+def _bootstrap_trusted_workspace(generation=True):
+    """在 harness 中建立“恢复已完成、允许写回”的前置状态。"""
+    return r"""
+  workspaceServerLoaded = true;
+  sessionListLoaded = true;
+  updateWorkspaceTrust();
+  workspacePersistenceReady = true;
+"""
+
+
+def test_inflight_save_of_old_identity_cannot_block_new_identity():
+    """B01：用户A请求在途时切换身份，B的首次保存必须立即发出且不被A回包污染。"""
+    _run_workspace_harness(_bootstrap_trusted_workspace(generation=True) + r"""
+  state.serverMode = true;
+  state.server = { last_task_id: 'T-A', active_tab: 'refs', expanded_items: [], editor_anchor: '', revision: 5 };
+  workspaceState = { last_task_id: 'T-A', active_tab: 'refs', expanded_items: [], editor_anchor: '' };
+  workspaceRevision = 5;
+  workspaceSaveGeneration = newWorkspaceSaveGeneration();
+  const generationA = workspaceSaveGeneration;
+
+  // 1. 用户A的保存请求保持在途。
+  state.gatePosts = true;
+  scheduleWorkspaceSave({ active_tab: 'writing' });
+  await flushTimers();
+  assert(generationA.inFlight === true, 'A 的请求必须处于在途状态');
+  assert(state.gateWaiters.length === 1, 'A 的请求应被网关挂起');
+
+  // 2. 身份切换 -> 创建 B 世代。
+  pauseWorkspacePersistence();
+  assert(workspaceSaveGeneration !== generationA, '身份切换必须创建新的保存世代');
+  assert(workspaceRevision === 6, '身份切换不得回退 A 已预留的 revision');
+  workspaceServerLoaded = true;
+  sessionListLoaded = true;
+  updateWorkspaceTrust();
+  workspacePersistenceReady = true;
+  workspaceState = { last_task_id: 'T-B', active_tab: 'refs', expanded_items: [], editor_anchor: '' };
+  const generationB = workspaceSaveGeneration;
+
+  // 3-4. B 只做一次操作，不制造第二次。
+  scheduleWorkspaceSave({ active_tab: 'memory' });
+  await flushTimers();
+
+  // 5. B 的 POST 必须真的发出，且带 B 的最新快照。
+  const memoryPosts = state.posts.filter(item => item.body.active_tab === 'memory');
+  assert(memoryPosts.length === 1, 'B 的首次保存不得被 A 的在途请求阻塞，实际 '
+    + memoryPosts.length);
+  assert(memoryPosts[0].body.last_task_id === 'T-B', '必须携带 B 的任务指针');
+  assert(memoryPosts[0].body.revision === 7, 'B 必须使用高于 A 在途请求的 revision');
+  assert(generationB.inFlight === true, 'B 世代自己的 inFlight 必须独立生效');
+
+  // 6. A 的请求现在才返回（服务端按 revision 拒绝旧快照）。
+  releaseAllPosts();
+  await settle();
+
+  // 7. A 的回包不得改变 B 的队列、播报或保存状态。
+  assert(state.server.active_tab === 'memory', '服务端必须保留 B 的最新位置');
+  assert(state.server.revision === 7, '服务端 revision 必须是 B 的 7');
+  assert(state.gateWaiters.length === 0, '所有请求都应已返回');
+  assert(String(element('resume-live').textContent).indexOf('另一页面') === -1,
+    '旧世代的冲突回包不得污染新身份的播报');
+  assert(generationB.queued === false, 'B 世代不得被 A 的回包重新排队');
+""")
+
+
+def test_out_of_order_pagehide_cannot_rollback_newer_snapshot():
+    """B02：S1 在途、S2 通过 pagehide 发出；S2 先完成、S1 后完成，服务端必须保留 S2。"""
+    _run_workspace_harness(_bootstrap_trusted_workspace() + r"""
+  state.serverMode = true;
+  state.server = { last_task_id: '', active_tab: 'refs', expanded_items: [], editor_anchor: '', revision: 0 };
+  workspaceState = { last_task_id: '', active_tab: 'refs', expanded_items: [], editor_anchor: '' };
+  workspaceRevision = 0;
+  workspaceSaveGeneration = newWorkspaceSaveGeneration();
+
+  // S1：普通防抖保存进入在途（revision 1）。
+  state.gatePosts = true;
+  scheduleWorkspaceSave({ active_tab: 'writing' });
+  await flushTimers();
+  assert(state.posts.length === 1, 'S1 应已发出');
+  assert(state.posts[0].body.revision === 1, 'S1 应使用 revision 1');
+
+  // S2：用户又切换页签，页面关闭时 keepalive 发出（revision 2）。
+  scheduleWorkspaceSave({ active_tab: 'jobs' });
+  flushWorkspaceSaveOnExit();
+  assert(state.posts.length === 2, 'S2 应已通过 pagehide 发出');
+  assert(state.posts[1].body.revision === 2, 'S2 必须使用比 S1 更高的 revision');
+
+  // S2 先落库，S1 因网络延迟后落库。
+  releasePostAt(1);
+  await settle();
+  releasePostAt(0);
+  await settle();
+
+  assert(state.server.active_tab === 'jobs', '乱序完成后服务端必须保留较新的 S2');
+  assert(state.server.revision === 2, '服务端 revision 不得倒退');
+
+  // S1 被拒绝后客户端以服务端为准重读，且不得循环 POST。
+  assert(state.posts.length === 2, '冲突处理不得触发新的写入请求');
+  assert(state.serverMode === true, '服务端状态未被客户端强行覆盖');
+""")
+
+
+def test_rapid_tab_changes_send_only_latest_content_and_highest_revision():
+    _run_workspace_harness(_bootstrap_trusted_workspace() + r"""
+  state.serverMode = true;
+  state.server = { last_task_id: '', active_tab: 'refs', expanded_items: [], editor_anchor: '', revision: 3 };
+  workspaceState = { last_task_id: '', active_tab: 'refs', expanded_items: [], editor_anchor: '' };
+  workspaceRevision = 3;
+  workspaceSaveGeneration = newWorkspaceSaveGeneration();
+
+  scheduleWorkspaceSave({ active_tab: 'writing' });
+  scheduleWorkspaceSave({ active_tab: 'research' });
+  scheduleWorkspaceSave({ active_tab: 'notes' });
+  await flushTimers();
+
+  assert(state.posts.length === 1, '连续快速变化必须被防抖合并为一次保存，实际 '
+    + state.posts.length);
+  assert(lastSave().active_tab === 'notes', '必须只发送最新内容');
+  assert(lastSave().revision === 4, '必须使用最高 revision');
+  assert(state.server.revision === 4, '服务端 revision 必须递增到 4');
+  assert(state.server.active_tab === 'notes', '服务端必须保留最新页签');
+""")
+
+
+def test_initial_recovery_does_not_inflate_revision():
+    _run_workspace_harness(r"""
+  state.serverMode = true;
+  state.server = { last_task_id: 'T-SERVER', active_tab: 'jobs', expanded_items: [], editor_anchor: '', revision: 7 };
+  state.listResponse = { code: 0, data: [{ task_id: 'T-SERVER', title: '服务端任务' }] };
+  const revisionBefore = state.server.revision;
+
+  // 复现 initApp 的恢复序列：读取工作区 -> 加载列表 -> 激活服务端页签。
+  pauseWorkspacePersistence();
+  await loadWorkspaceState();
+  currentSession = workspaceState.last_task_id || null;
+  await loadSessionsWithWorkspaceFallback({
+    preferredTaskId: workspaceState.last_task_id,
+    forceDetail: true,
+  });
+  activateWorkbenchTab(workspaceState.active_tab || 'refs');
+  // 关键：页签激活的防抖定时器在持久化开启之后才会触发，
+  // 必须证明那一刻也不会伪造一次用户修改。
+  workspacePersistenceReady = true;
+  await flushTimers();
+  await settle();
+
+  assert(state.posts.length === 0, '初始化恢复不得向服务端写入，实际 '
+    + state.posts.length);
+  assert(state.server.revision === revisionBefore, '初始化恢复不得伪造 revision 增长');
+  assert(currentSession === 'T-SERVER', '必须恢复服务端指针');
+  assert(workspaceRevision === 7, '客户端必须从服务端 revision 继续');
+""")
+
+
+def test_workspace_conflict_rereads_server_without_posting_loop():
+    _run_workspace_harness(_bootstrap_trusted_workspace() + r"""
+  // 另一页面已经推进到 revision 10，本页仍停留在 revision 9。
+  state.serverMode = true;
+  state.server = { last_task_id: 'T-OTHER', active_tab: 'graph', expanded_items: [], editor_anchor: '', revision: 10 };
+  workspaceState = { last_task_id: 'T-OTHER', active_tab: 'graph', expanded_items: [], editor_anchor: '' };
+  workspaceRevision = 9;
+  workspaceSaveGeneration = newWorkspaceSaveGeneration();
+
+  scheduleWorkspaceSave({ active_tab: 'writing' });
+  const staleGeneration = workspaceSaveGeneration;
+  staleGeneration.lastSnapshot = { last_task_id: 'T-OTHER', active_tab: 'refs', expanded_items: [], editor_anchor: '' };
+  await runWorkspaceSave();
+  await settle();
+
+  assert(state.server.active_tab === 'graph', '冲突不得覆盖服务端已保存状态');
+  assert(state.server.revision === 10, '同版本不同内容不得递增服务端 revision');
+  assert(String(element('resume-live').textContent).indexOf('另一页面') !== -1,
+    '冲突必须通过稳定 aria-live 区域提示');
+  assert(workspaceState.active_tab === 'graph', '冲突后必须以服务端状态为准');
+  assert(workspaceRevision === 10, '冲突后客户端必须采纳服务端 revision');
+  assert(state.posts.length === 1, '冲突后不得循环重发 POST');
+""")
+
+
+def test_resume_banner_refreshes_when_active_job_set_changes():
+    """B03：取消 PENDING 作业后，横幅必须立即更新为准确下一动作。"""
+    _run_workspace_harness(_bootstrap_trusted_workspace() + r"""
+  state.serverMode = true;
+  state.server = { last_task_id: 'T1', active_tab: 'jobs', expanded_items: [], editor_anchor: '', revision: 1 };
+  sessionCache = [{ task_id: 'T1', title: '论文一' }];
+  currentSession = 'T1';
+
+  renderResumeBanner({
+    task_id: 'T1', title: '论文一', current_ring_no: 1, complete_percent: 0,
+    pending_approvals: [], recoverable_jobs: [],
+    active_jobs: [{ job_id: 'J1', status: 'RUNNING', operation: 'ring.execute' }],
+    next_safe_action: { type: 'MONITOR_JOB', label: '继续查看正在运行的后台作业', job_id: 'J1' },
+  });
+  assert(element('resume-banner').hidden === false, '横幅应可见');
+  assert(String(element('resume-summary').textContent).indexOf('运行中作业 1') !== -1,
+    '取消前应显示运行中作业 1');
+
+  // 作业已取消，但后端摘要已经变成 EXECUTE_RING。
+  state.resumeResponse = {
+    code: 0,
+    data: {
+      task_id: 'T1', title: '论文一', current_ring_no: 1, complete_percent: 0,
+      pending_approvals: [], active_jobs: [],
+      recoverable_jobs: [{ job_id: 'J1', status: 'CANCELLED', operation: 'ring.execute' }],
+      next_safe_action: { type: 'EXECUTE_RING', label: '继续执行环1', ring_no: 1 },
+    },
+  };
+  syncResumeBannerWithJobs([{ job_id: 'J1', status: 'CANCELLED', operation: 'ring.execute' }]);
+  await settle();
+
+  assert(String(element('resume-summary').textContent).indexOf('运行中作业 0') !== -1,
+    '取消后横幅不得继续显示运行中作业 1');
+  assert(String(element('resume-next').textContent).indexOf('继续执行环1') !== -1,
+    '取消后横幅必须显示准确的下一动作');
+
+  // 活动集合未变化时不得触发无意义刷新。
+  state.posts.length = 0;
+  const summaryBefore = element('resume-summary').textContent;
+  syncResumeBannerWithJobs([]);
+  await settle();
+  assert(element('resume-summary').textContent === summaryBefore,
+    '活动集合未变化时不得刷新横幅');
+""")
+
+
+def test_resume_banner_hides_when_accurate_summary_unavailable():
+    _run_workspace_harness(_bootstrap_trusted_workspace() + r"""
+  sessionCache = [{ task_id: 'T1', title: '论文一' }];
+  currentSession = 'T1';
+  renderResumeBanner({
+    task_id: 'T1', title: '论文一', current_ring_no: 1, complete_percent: 0,
+    pending_approvals: [], active_jobs: [], recoverable_jobs: [],
+    next_safe_action: { type: 'EXECUTE_RING', label: '继续执行环1', ring_no: 1 },
+  });
+  assert(element('resume-banner').hidden === false, '横幅应可见');
+
+  // 拿不到与当前任务一致的准确摘要时必须隐藏，绝不继续展示旧摘要。
+  state.resumeResponse = { code: -1, msg: '无法连接后端' };
+  await refreshVisibleResumeSummary();
+  assert(element('resume-banner').hidden === true, '刷新失败必须隐藏横幅而不是展示旧摘要');
 """)

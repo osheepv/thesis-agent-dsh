@@ -34,7 +34,13 @@ from common.aicoding.exception.error_code import ErrorCode
 from common.workflow_contracts import get_stage_contract
 from common.citation import format_gbt7714
 from common.project_memory import validate_project_memory
-from common.resume import WorkspaceState, validate_workspace_state
+from common.resume import (
+    WorkspaceRevisionConflict,
+    WorkspaceState,
+    read_revision,
+    validate_workspace_state,
+    workspace_content,
+)
 from common.trust import (
     TrustCheckStatus,
     build_citation_trust_assessment,
@@ -415,34 +421,34 @@ class _TaskStore:
             self._db.commit()
             return cur.rowcount > 0
 
-    def put_workspace(self, workspace_key: str, value: Dict[str, Any]) -> Dict[str, Any]:
-        workspace_key = workspace_key.strip()
-        if not workspace_key or len(workspace_key) > 200:
-            raise ValueError("workspace_key非法")
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        payload = {**dict(value), "updated_at": now}
-        with self._lock:
-            if self._db is None:
-                self._workspace[workspace_key] = payload
-            else:
-                self._db.execute(
-                    "INSERT INTO t_workspace_state(workspace_key, payload, updated_at) "
-                    "VALUES(?, ?, ?) ON CONFLICT(workspace_key) DO UPDATE SET "
-                    "payload=excluded.payload, updated_at=excluded.updated_at",
-                    (workspace_key, json.dumps(payload, ensure_ascii=False), now),
-                )
-                self._db.commit()
+    def _write_workspace(
+        self, workspace_key: str, value: Dict[str, Any], now: str
+    ) -> Dict[str, Any]:
+        """无条件写入（调用方必须已经在锁内并完成 revision 判定）。"""
+        payload = {
+            **dict(value),
+            "revision": read_revision(value),
+            "updated_at": now,
+        }
+        if self._db is None:
+            self._workspace[workspace_key] = payload
+        else:
+            self._db.execute(
+                "INSERT INTO t_workspace_state(workspace_key, payload, updated_at) "
+                "VALUES(?, ?, ?) ON CONFLICT(workspace_key) DO UPDATE SET "
+                "payload=excluded.payload, updated_at=excluded.updated_at",
+                (workspace_key, json.dumps(payload, ensure_ascii=False), now),
+            )
         return dict(payload)
 
-    def get_workspace(self, workspace_key: str) -> Dict[str, Any]:
-        workspace_key = workspace_key.strip()
-        with self._lock:
-            if self._db is None:
-                return dict(self._workspace.get(workspace_key, {}))
-            row = self._db.execute(
-                "SELECT payload FROM t_workspace_state WHERE workspace_key=?",
-                (workspace_key,),
-            ).fetchone()
+    def _read_workspace_locked(self, workspace_key: str) -> Dict[str, Any]:
+        """在锁内读取当前行（不额外加锁，供 CAS 判定复用）。"""
+        if self._db is None:
+            return dict(self._workspace.get(workspace_key, {}))
+        row = self._db.execute(
+            "SELECT payload FROM t_workspace_state WHERE workspace_key=?",
+            (workspace_key,),
+        ).fetchone()
         if row is None:
             return {}
         try:
@@ -451,8 +457,65 @@ class _TaskStore:
             return {}
         return dict(value) if isinstance(value, dict) else {}
 
+    def put_workspace(self, workspace_key: str, value: Dict[str, Any]) -> Dict[str, Any]:
+        """按 revision 单调写入工作区位置。
+
+        - incoming > current：接受；
+        - incoming < current：拒绝（旧请求不能倒退覆盖）；
+        - incoming == current 且内容相同：幂等重放，返回现有状态；
+        - incoming == current 且内容不同：明确冲突，不覆盖；
+        - 无历史行：作为首次写入接受。
+        比较与写入都在同一把锁内完成，乱序到达的请求不会互相倒退。
+        """
+        workspace_key = workspace_key.strip()
+        if not workspace_key or len(workspace_key) > 200:
+            raise ValueError("workspace_key非法")
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        incoming_revision = read_revision(value)
+        with self._lock:
+            current = self._read_workspace_locked(workspace_key)
+            if current:
+                current_revision = read_revision(current)
+                if incoming_revision < current_revision:
+                    raise WorkspaceRevisionConflict(
+                        current_revision, incoming_revision, "旧快照"
+                    )
+                if incoming_revision == current_revision:
+                    if workspace_content(current) == workspace_content(value):
+                        return dict(current)
+                    raise WorkspaceRevisionConflict(
+                        current_revision, incoming_revision, "同版本内容不同"
+                    )
+            stored = self._write_workspace(workspace_key, value, now)
+            if self._db is not None:
+                self._db.commit()
+            return stored
+
+    def bump_workspace_revision(self, workspace_key: str) -> int:
+        """把指定工作区的 revision 提升到当前值 + 1，返回新 revision。"""
+        workspace_key = workspace_key.strip()
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        with self._lock:
+            current = self._read_workspace_locked(workspace_key)
+            if not current:
+                return 0
+            next_revision = read_revision(current) + 1
+            self._write_workspace(workspace_key, {**current, "revision": next_revision}, now)
+            if self._db is not None:
+                self._db.commit()
+            return next_revision
+
+    def get_workspace(self, workspace_key: str) -> Dict[str, Any]:
+        workspace_key = workspace_key.strip()
+        with self._lock:
+            return self._read_workspace_locked(workspace_key)
+
     def clear_workspace_task(self, task_id: str) -> None:
-        """删除任务后清理所有指向它的工作区位置，包括展开项和编辑锚点。"""
+        """删除任务后清理所有指向它的工作区位置，包括展开项和编辑锚点。
+
+        服务端状态修改必须产生比当前更高的 revision，
+        这样客户端仍在途的旧 POST 不会把位置倒退回被删任务。
+        """
         cleared_position = {
             "last_task_id": "",
             "active_tab": "refs",
@@ -465,24 +528,35 @@ class _TaskStore:
                 for key, value in list(self._workspace.items()):
                     if str(value.get("last_task_id", "")) == task_id:
                         self._workspace[key] = {
-                            **value, **cleared_position, "updated_at": now,
+                            **value, **cleared_position,
+                            "revision": read_revision(value) + 1, "updated_at": now,
                         }
                 return
             rows = self._db.execute(
                 "SELECT workspace_key, payload FROM t_workspace_state"
             ).fetchall()
+            dirty = False
             for workspace_key, raw in rows:
                 try:
                     value = json.loads(str(raw))
                 except (TypeError, ValueError, json.JSONDecodeError):
                     continue
+                if not isinstance(value, dict):
+                    continue
                 if str(value.get("last_task_id", "")) != task_id:
                     continue
-                value.update({**cleared_position, "updated_at": now})
+                value.update({
+                    **cleared_position,
+                    "revision": read_revision(value) + 1,
+                    "updated_at": now,
+                })
                 self._db.execute(
                     "UPDATE t_workspace_state SET payload=?, updated_at=? WHERE workspace_key=?",
                     (json.dumps(value, ensure_ascii=False), now, str(workspace_key)),
                 )
+                dirty = True
+            if dirty:
+                self._db.commit()
             self._db.commit()
 
 
@@ -851,10 +925,25 @@ class MainOrchestration:
             rec = self._require(state.last_task_id)
             if tenant_id and rec.tenant_id != tenant_id:
                 raise PermissionError("无权将工作区指向其他租户任务")
-        stored = self._store.put_workspace(
-            workspace_key,
-            state.model_dump(exclude={"updated_at"}),
-        )
+        try:
+            stored = self._store.put_workspace(
+                workspace_key,
+                state.model_dump(exclude={"updated_at"}),
+            )
+        except WorkspaceRevisionConflict as exc:
+            # 工作区冲突只影响 UI 位置，绝不上升为论文业务失败，也不覆盖已保存状态。
+            return Result.fail(
+                code=ErrorCode.STATE_CONFLICT.value,
+                msg=str(exc),
+                data={
+                    "conflict": True,
+                    "current_revision": exc.current_revision,
+                    "incoming_revision": exc.incoming_revision,
+                    "workspace": self.get_workspace_state(
+                        workspace_key, tenant_id=tenant_id
+                    ).data,
+                },
+            )
         return Result.ok(data=stored, msg="工作区位置已保存")
 
     def get_workspace_state(
@@ -872,11 +961,17 @@ class MainOrchestration:
         if state.last_task_id:
             rec = self._store.get(state.last_task_id)
             if rec is None or (tenant_id and rec.tenant_id != tenant_id):
-                state = WorkspaceState(active_tab="refs")
+                # 自愈幽灵指针属于服务端状态修改，revision 必须高于当前值，
+                # 否则客户端仍在途的旧 POST 会把指针写回已不存在的任务。
+                healed = WorkspaceState(
+                    active_tab="refs",
+                    revision=read_revision(raw) + 1,
+                )
                 self._store.put_workspace(
                     workspace_key,
-                    state.model_dump(exclude={"updated_at"}),
+                    healed.model_dump(exclude={"updated_at"}),
                 )
+                state = healed
             else:
                 resume = self.get_resume_summary(state.last_task_id).data
         return Result.ok(data={

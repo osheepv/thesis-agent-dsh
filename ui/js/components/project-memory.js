@@ -182,6 +182,8 @@ async function submitProjectMemoryForm(event) {
   submit.textContent = '生成待审批版本';
   document.getElementById('memory-builder').open = false;
   await loadProjectMemoryPanel();
+  // 新增待审批记忆版本会改变恢复摘要里的待审批集合。
+  await refreshVisibleResumeSummary();
 }
 
 async function handleProjectMemoryAction(event) {
@@ -212,6 +214,8 @@ async function handleProjectMemoryAction(event) {
   );
   toast(reviewed.code === 0 ? reviewed.msg : `审批失败：${reviewed.msg}`);
   await loadProjectMemoryPanel();
+  // 记忆批准 / 驳回会改变待审批集合；失败不得伪造新状态。
+  if (reviewed.code === 0) await refreshVisibleResumeSummary();
 }
 
 window.ThesisProjectMemory = Object.freeze({

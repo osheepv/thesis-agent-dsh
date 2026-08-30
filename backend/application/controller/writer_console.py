@@ -161,12 +161,17 @@ async def discard_autosave_draft(
     request: Request,
     task_id: str,
     draft_key: str,
+    req: Dict[str, Any],
     orchestration: MainOrchestration = Depends(get_orchestration),
 ) -> Result[Any]:
     try:
         tenant_id, author_id = _author_identity(request)
         return orchestration.discard_autosave_draft(
-            task_id, draft_key, tenant_id=tenant_id, author_id=author_id
+            task_id,
+            draft_key,
+            revision=req.get("revision"),
+            tenant_id=tenant_id,
+            author_id=author_id,
         )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)

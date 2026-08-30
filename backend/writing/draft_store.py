@@ -57,6 +57,7 @@ MAX_DRAFT_BYTES = 512 * 1024
 MAX_ACTIVE_DRAFTS_PER_TASK_AUTHOR = 50
 MAX_DRAFT_KEY_LENGTH = 160
 MAX_STALE_REASON_LENGTH = 300
+MAX_DRAFT_REVISION = 9_007_199_254_740_991
 
 
 class AutosaveDraftError(ValueError):
@@ -237,17 +238,25 @@ class AutosaveDraftStore:
         key = validate_draft_key(object_type, draft_key)
         if not isinstance(content, dict):
             raise AutosaveDraftError("草稿内容必须是结构化JSON对象")
+        if isinstance(revision, bool):
+            raise AutosaveDraftError("revision必须是整数")
         try:
             incoming_revision = int(revision)
         except (TypeError, ValueError) as exc:
             raise AutosaveDraftError("revision必须是整数") from exc
-        if incoming_revision < 0:
-            raise AutosaveDraftError("revision不能为负数")
+        if incoming_revision < 0 or incoming_revision > MAX_DRAFT_REVISION:
+            raise AutosaveDraftError(
+                f"revision必须在0到{MAX_DRAFT_REVISION}之间"
+            )
         try:
             stage_no = int(stage_no)
             base_version = int(base_version)
         except (TypeError, ValueError) as exc:
             raise AutosaveDraftError("stage_no与base_version必须是整数") from exc
+        if not 0 <= stage_no <= 10:
+            raise AutosaveDraftError("stage_no必须在0到10之间")
+        if base_version < 0:
+            raise AutosaveDraftError("base_version不能为负数")
 
         serialized = _canonical_json(content)
         size = len(serialized.encode("utf-8"))
@@ -265,16 +274,54 @@ class AutosaveDraftStore:
                 if incoming_revision < current.revision:
                     raise AutosaveDraftRevisionConflict(current, incoming_revision, "旧快照")
                 if incoming_revision == current.revision:
-                    if current.content_hash == content_hash:
+                    same_payload = (
+                        current.content_hash == content_hash
+                        and current.object_type == object_type
+                        and current.stage_no == stage_no
+                        and current.base_artifact_id == str(base_artifact_id or "")
+                        and current.base_version == base_version
+                    )
+                    if same_payload:
                         # 同版本同内容：幂等重放，不产生新的写入。
                         return current
                     raise AutosaveDraftRevisionConflict(
                         current, incoming_revision, "同版本内容不同"
                     )
-            elif self._count_active_locked(task_id, author_id) >= MAX_ACTIVE_DRAFTS_PER_TASK_AUTHOR:
+            activates_inactive = current is not None and current.status in {
+                "SUBMITTED", "DISCARDED"
+            }
+            if (
+                (current is None or activates_inactive)
+                and self._count_active_locked(task_id, author_id)
+                >= MAX_ACTIVE_DRAFTS_PER_TASK_AUTHOR
+            ):
                 raise AutosaveDraftError(
                     f"每任务每作者活动草稿数量上限为 {MAX_ACTIVE_DRAFTS_PER_TASK_AUTHOR}"
                 )
+
+            if current is None:
+                next_status = "ACTIVE"
+                next_stale_reason = ""
+                next_submitted_to_id = ""
+            elif current.status in {"SUBMITTED", "DISCARDED"}:
+                # 正式提交或明确丢弃之后再次编辑，开启新的 ACTIVE 工作副本。
+                next_status = "ACTIVE"
+                next_stale_reason = ""
+                next_submitted_to_id = ""
+            elif current.status == "STALE":
+                # 只有显式换到更新的同一上游版本，才解除 STALE。
+                rebased = (
+                    bool(current.base_artifact_id)
+                    and str(base_artifact_id or "") == current.base_artifact_id
+                    and base_version > current.base_version
+                )
+                next_status = "ACTIVE" if rebased else "STALE"
+                next_stale_reason = "" if rebased else current.stale_reason
+                next_submitted_to_id = ""
+            else:
+                next_status = "ACTIVE"
+                next_stale_reason = ""
+                next_submitted_to_id = ""
 
             draft = AutosaveDraft(
                 draft_id=current.draft_id if current else f"DRAFT-{uuid.uuid4().hex[:16].upper()}",
@@ -290,10 +337,9 @@ class AutosaveDraftStore:
                 revision=incoming_revision,
                 content_json=dict(content),
                 content_hash=content_hash,
-                status=current.status if current and current.status == "SUBMITTED" else "ACTIVE",
-                stale_reason="" if not current or current.status == "SUBMITTED"
-                    else current.stale_reason,
-                submitted_to_id=current.submitted_to_id if current else "",
+                status=next_status,
+                stale_reason=next_stale_reason,
+                submitted_to_id=next_submitted_to_id,
                 created_at=current.created_at if current else now,
                 updated_at=now,
             )
@@ -359,17 +405,36 @@ class AutosaveDraftStore:
     # ------------------------------------------------------------------
     # 生命周期
     # ------------------------------------------------------------------
-    def discard(self, task_id: str, author_id: str, draft_key: str) -> AutosaveDraft | None:
+    def discard(
+        self, task_id: str, author_id: str, draft_key: str, *, revision: int
+    ) -> AutosaveDraft | None:
+        if isinstance(revision, bool):
+            raise AutosaveDraftError("revision必须是整数")
+        try:
+            incoming_revision = int(revision)
+        except (TypeError, ValueError) as exc:
+            raise AutosaveDraftError("revision必须是整数") from exc
         with self._lock:
             current = self._load_locked(task_id, author_id, draft_key)
             if current is None:
                 return None
-            self._db.execute(
-                "DELETE FROM t_autosave_draft WHERE task_id=? AND author_id=? AND draft_key=?",
-                (task_id, author_id, draft_key),
+            if incoming_revision != current.revision:
+                raise AutosaveDraftRevisionConflict(
+                    current, incoming_revision, "丢弃操作基于旧版本"
+                )
+            if current.status == "DISCARDED":
+                return current
+            updated = self._replace_locked(
+                current,
+                status="DISCARDED",
+                revision=current.revision + 1,
+                content_json={},
+                content_hash=content_hash_of({}),
+                stale_reason="",
+                submitted_to_id="",
             )
             self._db.commit()
-            return current
+            return updated
 
     def mark_stale(
         self, task_id: str, author_id: str, draft_key: str, *, reason: str
@@ -380,21 +445,44 @@ class AutosaveDraftStore:
             if current is None or current.status != "ACTIVE":
                 return current
             updated = self._replace_locked(
-                current, status="STALE", stale_reason=str(reason or "")[:MAX_STALE_REASON_LENGTH]
+                current,
+                status="STALE",
+                revision=current.revision + 1,
+                stale_reason=str(reason or "")[:MAX_STALE_REASON_LENGTH],
             )
             self._db.commit()
             return updated
 
     def mark_submitted(
-        self, task_id: str, author_id: str, draft_key: str, *, submitted_to_id: str
+        self,
+        task_id: str,
+        author_id: str,
+        draft_key: str,
+        *,
+        submitted_to_id: str,
+        revision: int | None = None,
     ) -> AutosaveDraft | None:
         """正式版本创建成功之后调用；失败时必须保留 ACTIVE 草稿。"""
         with self._lock:
             current = self._load_locked(task_id, author_id, draft_key)
             if current is None:
                 return None
+            if revision is not None and int(revision) != current.revision:
+                raise AutosaveDraftRevisionConflict(
+                    current, int(revision), "正式提交基于旧版本"
+                )
+            if current.status == "STALE":
+                raise AutosaveDraftError("过期草稿必须基于最新上游版本重建后才能提交")
+            if (
+                current.status == "SUBMITTED"
+                and current.submitted_to_id == str(submitted_to_id or "")
+            ):
+                return current
             updated = self._replace_locked(
-                current, status="SUBMITTED", submitted_to_id=str(submitted_to_id or ""),
+                current,
+                status="SUBMITTED",
+                revision=current.revision + 1,
+                submitted_to_id=str(submitted_to_id or ""),
                 stale_reason="",
             )
             self._db.commit()
@@ -420,6 +508,7 @@ class AutosaveDraftStore:
                 self._replace_locked(
                     draft,
                     status="STALE",
+                    revision=draft.revision + 1,
                     stale_reason=(
                         f"上游正式版本已由 v{draft.base_version} 更新到 v{current_version}，"
                         "请基于最新版本重新创建草稿"
@@ -458,12 +547,19 @@ class AutosaveDraftStore:
 
     def _replace_locked(self, draft: AutosaveDraft, **changes: Any) -> AutosaveDraft:
         updated = AutosaveDraft(**{**draft.__dict__, **changes, "updated_at": _utc_now()})
+        serialized = _canonical_json(updated.content_json)
         self._db.execute(
-            "UPDATE t_autosave_draft SET status=?, stale_reason=?, submitted_to_id=?, "
-            "updated_at=? WHERE draft_id=?",
+            "UPDATE t_autosave_draft SET revision=?, content_json=?, content_hash=?, "
+            "status=?, stale_reason=?, submitted_to_id=?, updated_at=? WHERE draft_id=?",
             (
-                updated.status, updated.stale_reason, updated.submitted_to_id,
-                updated.updated_at, updated.draft_id,
+                updated.revision,
+                serialized,
+                updated.content_hash,
+                updated.status,
+                updated.stale_reason,
+                updated.submitted_to_id,
+                updated.updated_at,
+                updated.draft_id,
             ),
         )
         return updated

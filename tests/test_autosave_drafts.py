@@ -261,15 +261,70 @@ def test_stale_and_submitted_lifecycle_and_delete_task():
     assert marked == 1
     stale = store.get("T", "A", "project-memory:new")
     assert stale.status == "STALE"
+    assert stale.revision == 2
     assert stale.stale_reason
     # 标记过期保留内容，不静默套用
     assert stale.content_json == {"v": 1}
 
-    submitted = store.mark_submitted("T", "A", "project-memory:new", submitted_to_id="ART-9")
+    with pytest.raises(AutosaveDraftError, match="过期草稿"):
+        store.mark_submitted(
+            "T", "A", "project-memory:new",
+            submitted_to_id="ART-9", revision=stale.revision,
+        )
+
+    rebased = store.save(
+        task_id="T", tenant_id="", author_id="A",
+        object_type="PROJECT_MEMORY_FORM",
+        draft_key="project-memory:new", content={"v": 2},
+        base_artifact_id="ART-1", base_version=3, revision=3,
+    )
+    assert rebased.status == "ACTIVE"
+    assert rebased.stale_reason == ""
+
+    submitted = store.mark_submitted(
+        "T", "A", "project-memory:new",
+        submitted_to_id="ART-9", revision=rebased.revision,
+    )
     assert submitted.status == "SUBMITTED"
+    assert submitted.revision == 4
     assert submitted.submitted_to_id == "ART-9"
     # 已提交草稿不再作为活动草稿返回
     assert store.list_task("T", "A") == []
+
+    # 已提交内容再次编辑时必须开启新的ACTIVE工作副本。
+    reopened = store.save(
+        task_id="T", tenant_id="", author_id="A",
+        object_type="PROJECT_MEMORY_FORM",
+        draft_key="project-memory:new", content={"v": 3},
+        base_artifact_id="ART-1", base_version=3, revision=5,
+    )
+    assert reopened.status == "ACTIVE"
+    assert reopened.submitted_to_id == ""
+
+    discarded = store.discard(
+        "T", "A", "project-memory:new", revision=reopened.revision
+    )
+    assert discarded.status == "DISCARDED"
+    assert discarded.revision == 6
+    assert discarded.content_json == {}
+    assert store.list_task("T", "A") == []
+
+    # 丢弃墓碑的revision必须拒绝仍在途的旧保存，避免草稿复活。
+    with pytest.raises(AutosaveDraftRevisionConflict):
+        store.save(
+            task_id="T", tenant_id="", author_id="A",
+            object_type="PROJECT_MEMORY_FORM",
+            draft_key="project-memory:new", content={"v": "old"},
+            base_artifact_id="ART-1", base_version=3, revision=5,
+        )
+    restarted = store.save(
+        task_id="T", tenant_id="", author_id="A",
+        object_type="PROJECT_MEMORY_FORM",
+        draft_key="project-memory:new", content={"v": 4},
+        base_artifact_id="ART-1", base_version=3, revision=7,
+    )
+    assert restarted.status == "ACTIVE"
+    assert restarted.content_json == {"v": 4}
 
     store.save(
         task_id="T2", tenant_id="", author_id="A", object_type="PROJECT_MEMORY_FORM",
@@ -278,6 +333,50 @@ def test_stale_and_submitted_lifecycle_and_delete_task():
     cleaned = store.delete_task("T2")
     assert cleaned == 1
     assert store.get("T2", "A", "project-memory:new") is None
+
+
+def test_same_revision_metadata_change_conflicts():
+    store = AutosaveDraftStore()
+    store.save(
+        task_id="T", tenant_id="", author_id="A",
+        object_type="PROJECT_MEMORY_FORM",
+        draft_key="project-memory:new", content={"v": 1},
+        stage_no=1, base_artifact_id="ART-1", base_version=1, revision=2,
+    )
+    with pytest.raises(AutosaveDraftRevisionConflict):
+        store.save(
+            task_id="T", tenant_id="", author_id="A",
+            object_type="PROJECT_MEMORY_FORM",
+            draft_key="project-memory:new", content={"v": 1},
+            stage_no=1, base_artifact_id="ART-1", base_version=2, revision=2,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("revision", True, "revision必须是整数"),
+        ("revision", 9_007_199_254_740_992, "revision必须在"),
+        ("stage_no", 11, "stage_no必须在"),
+        ("base_version", -1, "base_version不能为负数"),
+    ],
+)
+def test_draft_numeric_bounds(field, value, message):
+    store = AutosaveDraftStore()
+    payload = {
+        "task_id": "T",
+        "tenant_id": "",
+        "author_id": "A",
+        "object_type": "PROJECT_MEMORY_FORM",
+        "draft_key": "project-memory:new",
+        "content": {"v": 1},
+        "revision": 1,
+        "stage_no": 0,
+        "base_version": 0,
+    }
+    payload[field] = value
+    with pytest.raises(AutosaveDraftError, match=message):
+        store.save(**payload)
 
 
 def test_active_draft_count_limit():
@@ -442,9 +541,19 @@ def test_draft_operations_never_change_fsm_artifacts_or_agent_context(
     assert _put_draft(owner, task_id, key, {"content": {"q": ["问题"]}}, 1)["code"] == 0
     assert _put_draft(owner, task_id, key, {"content": {"q": ["问题二"]}}, 2)["code"] == 0
     assert owner.get(f"/api/v1/console/tasks/{task_id}/autosave-drafts/{key}").json()["code"] == 0
-    assert owner.post(
-        f"/api/v1/console/tasks/{task_id}/autosave-drafts/{key}/discard"
-    ).json()["code"] == 0
+    discarded = owner.post(
+        f"/api/v1/console/tasks/{task_id}/autosave-drafts/{key}/discard",
+        json={"revision": 2},
+    ).json()
+    assert discarded["code"] == 0
+    assert discarded["data"]["draft"]["status"] == "DISCARDED"
+    assert discarded["data"]["draft"]["revision"] == 3
+
+    # 丢弃后的旧在途保存必须被墓碑revision拒绝。
+    stale = _put_draft(
+        owner, task_id, key, {"content": {"q": ["旧请求"]}}, 2
+    )
+    assert stale["data"]["conflict"] is True
 
     after = orchestration.progress(task_id).data
     assert after["phase_state"] == before["phase_state"]

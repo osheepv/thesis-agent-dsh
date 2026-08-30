@@ -1040,15 +1040,43 @@ class MainOrchestration:
         return Result.ok(data=draft.metadata(), msg="草稿已保存")
 
     def discard_autosave_draft(
-        self, task_id: str, draft_key: str, *, tenant_id: str = "", author_id: str = ""
+        self,
+        task_id: str,
+        draft_key: str,
+        *,
+        revision: Any,
+        tenant_id: str = "",
+        author_id: str = "",
     ) -> Result[Dict[str, Any]]:
         rec = self._require(task_id)
         if tenant_id and rec.tenant_id != tenant_id:
             raise PermissionError("无权丢弃其他租户的草稿")
-        removed = self._drafts.discard(task_id, author_id or "default", draft_key)
+        if revision is None:
+            raise AutosaveDraftError("丢弃草稿必须携带当前revision")
+        try:
+            removed = self._drafts.discard(
+                task_id,
+                author_id or "default",
+                draft_key,
+                revision=int(revision),
+            )
+        except AutosaveDraftRevisionConflict as exc:
+            return Result.fail(
+                code=ErrorCode.STATE_CONFLICT.value,
+                msg=str(exc),
+                data={
+                    "conflict": True,
+                    "current_revision": exc.current_revision,
+                    "incoming_revision": exc.incoming_revision,
+                    "remote": exc.remote.metadata(),
+                },
+            )
         if removed is None:
             return Result.ok(data={"discarded": False}, msg="草稿不存在")
-        return Result.ok(data={"discarded": True}, msg="草稿已丢弃")
+        return Result.ok(
+            data={"discarded": True, "draft": removed.metadata()},
+            msg="草稿已丢弃",
+        )
 
     def get_workspace_state(
         self,

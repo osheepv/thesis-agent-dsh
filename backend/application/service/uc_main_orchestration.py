@@ -978,11 +978,13 @@ class MainOrchestration:
     def list_autosave_drafts(
         self, task_id: str, *, tenant_id: str = "", author_id: str = ""
     ) -> Result[Dict[str, Any]]:
-        """列出当前作者的活动草稿元数据，绝不返回正文内容。"""
+        """列出当前作者的草稿元数据（含墓碑），绝不返回正文内容。"""
         rec = self._require(task_id)
         if tenant_id and rec.tenant_id != tenant_id:
             raise PermissionError("无权查看其他租户的草稿")
-        drafts = self._drafts.list_task(task_id, author_id or "default")
+        drafts = self._drafts.list_task(
+            task_id, author_id or "default", include_submitted=True
+        )
         return Result.ok(
             data={"items": [draft.metadata() for draft in drafts]},
             msg="自动草稿列表",
@@ -1076,6 +1078,53 @@ class MainOrchestration:
         return Result.ok(
             data={"discarded": True, "draft": removed.metadata()},
             msg="草稿已丢弃",
+        )
+
+    def _autosave_submission_draft(
+        self,
+        task_id: str,
+        value: Dict[str, Any],
+        *,
+        object_type: str,
+        object_id: str,
+        tenant_id: str = "",
+        author_id: str = "",
+    ):
+        """核验明确提交所引用的作者私有草稿；旧客户端未传草稿键时保持兼容。"""
+        draft_key = str(value.get("autosave_draft_key", "")).strip()
+        if not draft_key:
+            return None
+        rec = self._require(task_id)
+        if tenant_id and rec.tenant_id != tenant_id:
+            raise PermissionError("无权提交其他租户的草稿")
+        draft = self._drafts.get(task_id, author_id or "default", draft_key)
+        if draft is None:
+            raise AutosaveDraftError("要提交的自动草稿不存在")
+        if draft.object_type != object_type or draft.object_id != object_id:
+            raise AutosaveDraftError("自动草稿对象与正式提交目标不匹配")
+        if draft.status == "STALE":
+            raise AutosaveDraftError("过期草稿必须基于最新正式版本重建后才能提交")
+        if draft.status != "ACTIVE":
+            raise AutosaveDraftError(f"当前草稿状态不能提交: {draft.status}")
+        try:
+            incoming_revision = int(value.get("autosave_revision"))
+        except (TypeError, ValueError) as exc:
+            raise AutosaveDraftError("正式提交必须携带当前autosave_revision") from exc
+        if incoming_revision != draft.revision:
+            raise AutosaveDraftRevisionConflict(
+                draft, incoming_revision, "正式提交基于旧版本"
+            )
+        return draft
+
+    def _complete_autosave_submission(self, draft, submitted_to_id: str):
+        if draft is None:
+            return None
+        return self._drafts.mark_submitted(
+            draft.task_id,
+            draft.author_id,
+            draft.draft_key,
+            submitted_to_id=submitted_to_id,
+            revision=draft.revision,
         )
 
     def get_workspace_state(
@@ -3343,16 +3392,56 @@ class MainOrchestration:
         return Result.ok(data=data, msg="分节审批已记录")
 
     def revise_section_draft(
-        self, task_id: str, section_draft_id: str, value: Dict[str, Any]
+        self,
+        task_id: str,
+        section_draft_id: str,
+        value: Dict[str, Any],
+        *,
+        tenant_id: str = "",
+        author_id: str = "",
     ) -> Result[Dict[str, Any]]:
         self._require_current_ring(task_id, 6)
         self._refresh_section_staleness(task_id)
         parent = self._sections.get(task_id, section_draft_id)
         if parent.status == SectionDraftStatus.STALE:
             raise SectionDraftRegistryError("上游已变化，不能基于过期分节继续修订")
+        try:
+            autosave = self._autosave_submission_draft(
+                task_id,
+                value,
+                object_type="SECTION_REVISION",
+                object_id=parent.section_id,
+                tenant_id=tenant_id,
+                author_id=author_id,
+            )
+        except AutosaveDraftRevisionConflict as exc:
+            return Result.fail(
+                code=ErrorCode.STATE_CONFLICT.value,
+                msg=str(exc),
+                data={
+                    "conflict": True,
+                    "current_revision": exc.current_revision,
+                    "incoming_revision": exc.incoming_revision,
+                    "remote": exc.remote.metadata(),
+                },
+            )
         content = str(value.get("content", "")).strip()
         if not content:
             raise SectionDraftRegistryError("修订正文不能为空")
+        if autosave is not None:
+            if (
+                autosave.base_artifact_id != parent.section_draft_id
+                or autosave.base_version != parent.version
+            ):
+                self._drafts.mark_stale(
+                    task_id,
+                    autosave.author_id,
+                    autosave.draft_key,
+                    reason="分节正式基线已变化，请基于最新版本重新修订",
+                )
+                raise AutosaveDraftError("自动草稿的分节基线已变化，已标记为STALE")
+            if str(autosave.content_json.get("content", "")).strip() != content:
+                raise AutosaveDraftError("正式提交内容与指定自动草稿revision不一致")
         marked_evidence = set(re.findall(r"\[(EVD-[A-Z0-9]+)\]", content))
         marked_results = set(re.findall(r"\[(RES-[A-Z0-9]+)\]", content))
         expected_evidence = set(parent.evidence_ids)
@@ -3411,7 +3500,13 @@ class MainOrchestration:
                 msg="作者修订未通过事实/引用指纹 Gate",
                 data=draft.to_dict(),
             )
-        return Result.ok(data=draft.to_dict(), msg="修订已保存为新版本，等待作者审批")
+        submitted_draft = self._complete_autosave_submission(
+            autosave, draft.section_draft_id
+        )
+        data = draft.to_dict()
+        if submitted_draft is not None:
+            data["autosave_draft"] = submitted_draft.metadata()
+        return Result.ok(data=data, msg="修订已保存为新版本，等待作者审批")
 
     def list_section_drafts(self, task_id: str) -> Result[List[Dict[str, Any]]]:
         self._require(task_id)

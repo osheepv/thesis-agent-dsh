@@ -185,13 +185,41 @@ def test_section_generation_requires_supported_claims_and_assembles(monkeypatch)
     second = orchestration.generate_section_draft(task_id, {"section_id": "1.2"}).data
     assert first["status"] == "WAITING_APPROVAL"
     assert first["evidence_ids"] == [evidence["evidence_id"]]
+    rejected_key = "section-revision:1.1"
+    orchestration.save_autosave_draft(
+        task_id,
+        rejected_key,
+        {
+            "object_type": "SECTION_REVISION",
+            "stage_no": 6,
+            "base_artifact_id": first["section_draft_id"],
+            "base_version": first["version"],
+            "revision": 1,
+            "content": {
+                "content": "删除了全部证据标记的错误修订",
+                "section_id": "1.1",
+                "base_section_draft_id": first["section_draft_id"],
+            },
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
     rejected_revision = orchestration.revise_section_draft(
         task_id,
         first["section_draft_id"],
-        {"content": "删除了全部证据标记的错误修订"},
+        {
+            "content": "删除了全部证据标记的错误修订",
+            "autosave_draft_key": rejected_key,
+            "autosave_revision": 1,
+        },
+        tenant_id="default",
+        author_id="author-a",
     )
     assert rejected_revision.is_ok is False
     assert rejected_revision.data["status"] == "AUTO_REJECTED"
+    assert orchestration._drafts.get(  # noqa: SLF001
+        task_id, "author-a", rejected_key
+    ).status == "ACTIVE"
     revised = orchestration.revise_section_draft(
         task_id,
         first["section_draft_id"],
@@ -256,6 +284,61 @@ def test_upstream_argument_revision_stales_approved_sections(monkeypatch):
     listed = orchestration.list_section_drafts(task_id).data
     assert listed[0]["status"] == "STALE"
     assert listed[0]["stale_reason"].startswith("上游产物已失效: ART-")
+
+
+def test_section_revision_submits_matching_autosave_only_after_formal_success(monkeypatch):
+    orchestration = _orchestration(monkeypatch)
+    task_id = _advance_to_ring5(orchestration)
+    argument_map = orchestration.create_argument_map(task_id, _argument_map()).data
+    orchestration.review_argument_map(task_id, argument_map["artifact_id"], approved=True)
+    orchestration.run_ring5(task_id)
+    orchestration.confirm_ring(task_id, 5)
+    parent = orchestration.generate_section_draft(
+        task_id, {"section_id": "1.2"}
+    ).data
+    key = "section-revision:1.2"
+    content = parent["content"] + "\n\n作者补充了局限条件。"
+    saved = orchestration.save_autosave_draft(
+        task_id,
+        key,
+        {
+            "object_type": "SECTION_REVISION",
+            "stage_no": 6,
+            "base_artifact_id": parent["section_draft_id"],
+            "base_version": parent["version"],
+            "revision": 1,
+            "content": {
+                "content": content,
+                "section_id": "1.2",
+                "base_section_draft_id": parent["section_draft_id"],
+            },
+        },
+        tenant_id="default",
+        author_id="author-a",
+    ).data
+    assert saved["status"] == "ACTIVE"
+
+    revised = orchestration.revise_section_draft(
+        task_id,
+        parent["section_draft_id"],
+        {
+            "content": content,
+            "autosave_draft_key": key,
+            "autosave_revision": 1,
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
+    assert revised.is_ok
+    assert revised.data["autosave_draft"]["status"] == "SUBMITTED"
+    assert revised.data["autosave_draft"]["revision"] == 2
+    listed = orchestration.list_autosave_drafts(
+        task_id, tenant_id="default", author_id="author-a"
+    ).data["items"]
+    assert listed[0]["status"] == "SUBMITTED"
+    assert orchestration.get_resume_summary(
+        task_id, author_id="author-a"
+    ).data["autosaved_drafts"] == []
 
 
 def test_section_writing_endpoints_are_available(monkeypatch):

@@ -111,7 +111,7 @@ async def list_autosave_drafts(
     task_id: str,
     orchestration: MainOrchestration = Depends(get_orchestration),
 ) -> Result[Any]:
-    """列出当前作者的活动草稿元数据；列表不返回正文内容。"""
+    """列出当前作者的草稿元数据（含墓碑）；列表不返回正文内容。"""
     try:
         tenant_id, author_id = _author_identity(request)
         return orchestration.list_autosave_drafts(
@@ -647,12 +647,19 @@ async def review_all_section_drafts(task_id: str, req: Dict[str, Any], session_i
 
 
 @router.post("/tasks/{task_id}/writing/sections/{section_draft_id}/revise", response_model=None)
-async def revise_section_draft(task_id: str, section_draft_id: str, req: Dict[str, Any],
-                               session_id: str = "",
+async def revise_section_draft(request: Request, task_id: str, section_draft_id: str,
+                               req: Dict[str, Any], session_id: str = "",
                                orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
     try:
         orchestration.assert_session(task_id, session_id)
-        return orchestration.revise_section_draft(task_id, section_draft_id, req)
+        tenant_id, author_id = _author_identity(request)
+        return orchestration.revise_section_draft(
+            task_id,
+            section_draft_id,
+            req,
+            tenant_id=tenant_id,
+            author_id=author_id,
+        )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 

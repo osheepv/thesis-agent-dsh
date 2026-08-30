@@ -20,7 +20,8 @@ STYLE_PATH = UI_PATH.parent / "styles" / "app.css"
 APP_JS_PATH = UI_PATH.parent / "js" / "app.js"
 MEMORY_JS_PATH = UI_PATH.parent / "js" / "components" / "project-memory.js"
 EVIDENCE_JS_PATH = UI_PATH.parent / "js" / "components" / "evidence.js"
-JS_PATHS = (MEMORY_JS_PATH, EVIDENCE_JS_PATH, APP_JS_PATH)
+AUTOSAVE_JS_PATH = UI_PATH.parent / "js" / "components" / "autosave.js"
+JS_PATHS = (MEMORY_JS_PATH, EVIDENCE_JS_PATH, AUTOSAVE_JS_PATH, APP_JS_PATH)
 
 
 def _ui_source() -> str:
@@ -66,6 +67,7 @@ def test_ui_assets_are_split_and_referenced_locally():
         './vendor/cytoscape.min.js',
         './js/components/project-memory.js',
         './js/components/evidence.js',
+        './js/components/autosave.js',
         './js/app.js',
     ]
     positions = [html.index(f'<script src="{source}"></script>') for source in script_sources]
@@ -85,6 +87,8 @@ def test_ui_assets_are_split_and_referenced_locally():
     assert "window.ThesisEvidence.loadPanel" in APP_JS_PATH.read_text(encoding="utf-8")
     assert "window.ThesisEvidence = Object.freeze" in EVIDENCE_JS_PATH.read_text(encoding="utf-8")
     assert "function loadEvidencePanel" in EVIDENCE_JS_PATH.read_text(encoding="utf-8")
+    assert "window.ThesisAutosave = Object.freeze" in AUTOSAVE_JS_PATH.read_text(encoding="utf-8")
+    assert "registerDraftSurface" in AUTOSAVE_JS_PATH.read_text(encoding="utf-8")
 
 
 def test_split_ui_assets_are_served_with_expected_content_types():
@@ -106,6 +110,7 @@ def test_split_ui_assets_are_served_with_expected_content_types():
             "/js/app.js": {"text/javascript", "application/javascript"},
             "/js/components/project-memory.js": {"text/javascript", "application/javascript"},
             "/js/components/evidence.js": {"text/javascript", "application/javascript"},
+            "/js/components/autosave.js": {"text/javascript", "application/javascript"},
             "/vendor/cytoscape.min.js": {"text/javascript", "application/javascript"},
         }
         for path, content_types in expected.items():
@@ -619,6 +624,18 @@ def test_continue_action_only_navigates_and_focuses():
   assert(state.focused === 'run-cur-ring', 'EXECUTE_RING 必须聚焦执行按钮');
   assert(state.posts.every(item => item.target.includes('/console/workspace')),
     '继续动作只能写工作区，不得触发环执行或审批');
+
+  // MONITOR_JOB必须聚焦不会随作业卡重绘而消失的稳定按钮。
+  state.focused = null;
+  renderResumeBanner({
+    task_id: 'T1', title: '论文一', current_ring_no: 1, complete_percent: 0,
+    pending_approvals: [],
+    active_jobs: [{ job_id: 'J1', status: 'RUNNING' }],
+    next_safe_action: { type: 'MONITOR_JOB', label: '查看后台作业', job_id: 'J1' },
+  });
+  await continueLastThesis();
+  assert(state.focused === 'jobs-refresh',
+    'MONITOR_JOB必须聚焦稳定的刷新按钮，避免列表重绘后焦点掉回body');
 
   // 被阻断的恢复不得把焦点带向执行按钮。
   state.focused = null;

@@ -497,6 +497,7 @@ document.getElementById('del-confirm').addEventListener('click', async () => {
     const r = await apiDeleteSession(taskId);
     if (r.code === 0) {
       if (currentSession === taskId) {
+        window.ThesisAutosave?.resetAutosaveIdentity?.();
         currentSession = null;
         currentSessionTitle = '';
         currentKnowledgeSession = '';
@@ -1671,6 +1672,7 @@ async function submitLogin(event) {
   }
   submit.disabled = true;
   error.textContent = '';
+  await window.ThesisAutosave?.flushAllDrafts?.();
   const response = await apiLogin(username, passwordInput.value);
   passwordInput.value = '';
   submit.disabled = false;
@@ -1688,6 +1690,7 @@ async function submitLogin(event) {
 }
 
 async function logoutCurrentUser() {
+  await window.ThesisAutosave?.flushAllDrafts?.();
   const response = await apiLogout();
   if (response.code !== 0) { toast(response.msg || '退出失败'); return; }
   await switchWorkspaceIdentity();
@@ -1985,8 +1988,9 @@ function resumeFocusTarget(resume) {
   }
   if (type === 'MONITOR_JOB') {
     const jobCard = findJobCard(resume.next_safe_action?.job_id);
-    return jobCard?.querySelector('[data-job-action]')
-      || document.getElementById('jobs-refresh');
+    // 标题栏刷新按钮不会随作业列表异步重绘而被替换，键盘焦点更稳定。
+    return document.getElementById('jobs-refresh')
+      || jobCard?.querySelector('[data-job-action]');
   }
   if (type === 'COMPLETE_AUTHOR_DECISION') {
     if (ringNo === 1) return document.querySelector('.cand-item');
@@ -2061,6 +2065,10 @@ async function continueLastThesis() {
 async function selectSession(taskId) {
   const selected = sessionCache.find(item => item.task_id === taskId);
   if (!selected) return;
+  if (currentSession && currentSession !== selected.task_id) {
+    await window.ThesisAutosave?.flushAllDrafts?.();
+    window.ThesisAutosave?.resetAutosaveIdentity?.();
+  }
   currentSession = selected.task_id;
   currentSessionTitle = selected.title || '';
   // 展开项和编辑锚点属于上一任务，切换任务时必须清空。
@@ -2077,6 +2085,7 @@ async function selectSession(taskId) {
 }
 
 async function switchWorkspaceIdentity() {
+  window.ThesisAutosave?.resetAutosaveIdentity?.();
   clearWorkspaceForIdentity();
   currentSession = null;
   currentSessionTitle = '';
@@ -2246,6 +2255,7 @@ function bindSessionSearch() {
 }
 
 async function clearSessionContext() {
+  window.ThesisAutosave?.resetAutosaveIdentity?.();
   currentSession = null;
   currentSessionTitle = '';
   currentKnowledgeSession = '';
@@ -2548,6 +2558,7 @@ async function submitNewSession() {
   const degree = document.getElementById('ns-degree').value;
   const subject = document.getElementById('ns-subject').value.trim() || '自然语言处理';
   const scope = document.getElementById('ns-scope')?.value || 'all';
+  await window.ThesisAutosave?.flushAllDrafts?.();
   const r = await apiCreateSession({
     title, degree, subject_field: subject, scope,
   });
@@ -2558,6 +2569,7 @@ async function submitNewSession() {
     document.getElementById('ns-title-input').value = '';
     document.getElementById('ns-subject').value = '';
     const createdTaskId = r.data?.task_id || '';
+    window.ThesisAutosave?.resetAutosaveIdentity?.();
     workspaceState = { ...workspaceState, expanded_items: [], editor_anchor: '' };
     hideResumeBanner();
     // 用创建响应中的 task_id 锁定当前任务，列表刷新后不能跳回旧任务。
@@ -2632,9 +2644,9 @@ async function apiGet(path, params) {
   return apiRequest(url.pathname + url.search);
 }
 
-async function apiPost(path, body) {
+async function apiPost(path, body, method = 'POST') {
   return apiRequest(path, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
   });
@@ -2713,6 +2725,26 @@ async function apiSectionDrafts(taskId) {
 async function apiSectionAudit(taskId) {
   return apiGet(`/api/v1/console/tasks/${taskId}/writing/sections-audit`);
 }
+// —— 作者私有自动草稿（未提交工作副本，不推进流程）——
+function autosaveDraftsPath(taskId, draftKey = '') {
+  const base = `/api/v1/console/tasks/${taskId}/autosave-drafts`;
+  return draftKey ? `${base}/${encodeURIComponent(draftKey)}` : base;
+}
+async function apiListAutosaveDrafts(taskId) {
+  return apiGet(autosaveDraftsPath(taskId));
+}
+async function apiGetAutosaveDraft(taskId, draftKey) {
+  return apiGet(autosaveDraftsPath(taskId, draftKey));
+}
+async function apiSaveAutosaveDraft(taskId, draftKey, payload) {
+  return apiPost(autosaveDraftsPath(taskId, draftKey), payload, 'PUT');
+}
+async function apiDiscardAutosaveDraft(taskId, draftKey, revision) {
+  return apiPost(
+    `${autosaveDraftsPath(taskId, draftKey)}/discard`,
+    { revision },
+  );
+}
 async function apiReviewSection(taskId, draftId, approved, reason = '') {
   return apiPost(`/api/v1/console/tasks/${taskId}/writing/sections/${draftId}/review`, { approved, reason });
 }
@@ -2721,8 +2753,16 @@ async function apiReviewAllSections(taskId, approved) {
     approved, actor: 'author',
   });
 }
-async function apiReviseSection(taskId, draftId, content, title = '') {
-  return apiPost(`/api/v1/console/tasks/${taskId}/writing/sections/${draftId}/revise`, { content, title, actor: 'author' });
+async function apiReviseSection(taskId, draftId, content, title = '', autosave = null) {
+  const payload = { content, title, actor: 'author' };
+  if (autosave) {
+    payload.autosave_draft_key = autosave.draftKey;
+    payload.autosave_revision = autosave.revision;
+  }
+  return apiPost(
+    `/api/v1/console/tasks/${taskId}/writing/sections/${draftId}/revise`,
+    payload,
+  );
 }
 async function apiTemplateConfig(taskId) {
   return apiGet(`/api/v1/console/tasks/${taskId}/template`);
@@ -3346,10 +3386,23 @@ async function submitResultForm(event) {
 }
 
 let sectionDraftCache = new Map();
+
+async function teardownSectionDraftSurfaces({ flush = true } = {}) {
+  if (!window.ThesisAutosave?.surfaces) return;
+  const keys = [...window.ThesisAutosave.surfaces.keys()]
+    .filter(key => key.startsWith('section-revision:'));
+  for (const key of keys) {
+    if (flush) await window.ThesisAutosave.flushDraft(key);
+    window.ThesisAutosave.unregisterDraftSurface(key);
+  }
+  activeSectionDraftKey = '';
+}
+
 async function loadSectionsPanel() {
   const listBox = document.getElementById('section-list');
   const auditBox = document.getElementById('section-audit');
   if (!listBox || !auditBox) return;
+  await teardownSectionDraftSurfaces();
   if (!currentSession) {
     auditBox.className = 'wb-empty';
     auditBox.textContent = '选择论文任务后查看分节。';
@@ -3414,6 +3467,8 @@ async function loadSectionsPanel() {
     <div class="section-edit-area" hidden>
       <label class="sr-only" for="editor-${escapeHtml2(draft.section_draft_id)}">编辑 ${escapeHtml2(draft.section_id)} 正文</label>
       <textarea class="section-editor" id="editor-${escapeHtml2(draft.section_draft_id)}">${escapeHtml2(draft.content)}</textarea>
+      <div class="autosave-status" data-autosave-status role="status" aria-live="polite"></div>
+      <div class="autosave-conflict" data-autosave-conflict hidden></div>
       <div class="wb-card-actions"><button class="btn btn-primary btn-sm" data-section-action="save">保存新版本</button><button class="btn btn-secondary btn-sm" data-section-action="cancel-edit">取消</button></div>
     </div>
   </article>`;
@@ -3423,7 +3478,101 @@ async function loadSectionsPanel() {
     if (select.options.length > 1) select.selectedIndex = 1;
   });
   listBox.querySelectorAll('[data-section-action]').forEach(button => button.addEventListener('click', handleSectionAction));
+  await bindSectionDraftSurfaces(listBox, [...latestBySection.values()]);
   document.getElementById('sections-live').textContent = `已加载 ${drafts.length} 个分节版本`;
+}
+
+/* —— 分节修订自动草稿：一个分节一个 draft_key，切换前 flush —— */
+let activeSectionDraftKey = '';
+
+function sectionDraftKey(sectionId) {
+  return `section-revision:${sectionId}`;
+}
+
+async function bindSectionDraftSurfaces(listBox, drafts) {
+  if (typeof window.ThesisAutosave?.registerDraftSurface !== 'function') return;
+  const taskId = currentSession;
+  const listed = await apiListAutosaveDrafts(taskId);
+  if (taskId !== currentSession) return;
+  const activeKeys = new Set(
+    listed?.code === 0
+      ? (listed.data?.items || []).map(item => item.draft_key)
+      : [],
+  );
+  for (const draft of drafts) {
+    const card = listBox.querySelector(
+      `[data-section-id="${CSS.escape(draft.section_id)}"][data-draft-id="${CSS.escape(draft.section_draft_id)}"]`,
+    );
+    if (!card) continue;
+    const editor = card.querySelector('.section-editor');
+    if (!editor) continue;
+    const draftKey = sectionDraftKey(draft.section_id);
+    const surface = window.ThesisAutosave.registerDraftSurface({
+      draftKey,
+      taskId,
+      objectType: 'SECTION_REVISION',
+      objectId: draft.section_id,
+      stageNo: 6,
+      label: `${draft.section_id} ${draft.title}`.trim(),
+      statusEl: card.querySelector('[data-autosave-status]'),
+      conflictHost: card.querySelector('[data-autosave-conflict]'),
+      baseArtifactId: draft.section_draft_id,
+      baseVersion: draft.version || 0,
+      serialize: () => ({
+        content: editor.value,
+        title: draft.title || '',
+        section_id: draft.section_id,
+        base_section_draft_id: draft.section_draft_id,
+      }),
+      hydrate: content => {
+        // 只写 value，不使用 innerHTML 恢复用户输入。
+        if (typeof content?.content === 'string') editor.value = content.content;
+      },
+      reset: () => { editor.value = draft.content || ''; },
+    });
+    surface.editor = editor;
+    editor.addEventListener('input', () => {
+      window.ThesisAutosave.scheduleDraftSave(draftKey);
+    });
+    editor.addEventListener('blur', () => {
+      window.ThesisAutosave.flushDraft(draftKey);
+      updateEditorAnchor(draftKey, editor);
+    });
+    editor.addEventListener('select', () => updateEditorAnchor(draftKey, editor));
+    if (activeKeys.has(draftKey)) {
+      await window.ThesisAutosave.loadDraft(draftKey);
+    }
+  }
+}
+
+async function switchActiveSectionDraft(draftKey) {
+  if (typeof window.ThesisAutosave?.flushDraft !== 'function') return;
+  if (activeSectionDraftKey && activeSectionDraftKey !== draftKey) {
+    await window.ThesisAutosave.flushDraft(activeSectionDraftKey);
+  }
+  activeSectionDraftKey = draftKey || '';
+}
+
+function updateEditorAnchor(draftKey, editor) {
+  // 编辑锚点是 UI 位置：低频更新，不参与正式版本或 FSM。
+  if (!draftKey) return;
+  const start = Number(editor?.selectionStart || 0);
+  const end = Number(editor?.selectionEnd || 0);
+  scheduleWorkspaceSave({ editor_anchor: `${draftKey}#${start}:${end}` });
+}
+
+function restoreEditorAnchor(draftKey, editor) {
+  if (!draftKey || !editor) return;
+  const raw = String(workspaceState.editor_anchor || '');
+  const prefix = draftKey + '#';
+  if (!raw.startsWith(prefix)) return;
+  const match = raw.slice(prefix.length).match(/^(\d+):(\d+)$/);
+  if (!match) return;
+  const length = editor.value.length;
+  const start = Math.min(length, Math.max(0, Number(match[1]) || 0));
+  const end = Math.min(length, Math.max(start, Number(match[2]) || start));
+  editor.setSelectionRange(start, end);
+  editor.scrollIntoView({ block: 'nearest' });
 }
 
 async function generateAllSectionsFromPanel(event) {
@@ -3504,15 +3653,25 @@ async function handleSectionAction(event) {
   const draftId = card?.dataset.draftId;
   const action = button.dataset.sectionAction;
   if (!currentSession || !sectionId) return;
+  const autosaveKey = sectionDraftKey(sectionId);
   if (action === 'compare') {
     renderSectionDiff(card);
     return;
   }
   if (action === 'edit' || action === 'cancel-edit') {
     const area = card.querySelector('.section-edit-area');
-    area.hidden = action !== 'edit';
-    if (action === 'edit') area.querySelector('textarea')?.focus();
-    else button.closest('.wb-card')?.querySelector('[data-section-action="edit"]')?.focus();
+    if (action === 'edit') {
+      await switchActiveSectionDraft(autosaveKey);
+      area.hidden = false;
+      const editor = area.querySelector('textarea');
+      restoreEditorAnchor(autosaveKey, editor);
+      editor?.focus();
+    } else {
+      await window.ThesisAutosave?.flushDraft?.(autosaveKey);
+      area.hidden = true;
+      if (activeSectionDraftKey === autosaveKey) activeSectionDraftKey = '';
+      button.closest('.wb-card')?.querySelector('[data-section-action="edit"]')?.focus();
+    }
     return;
   }
   button.disabled = true;
@@ -3526,8 +3685,36 @@ async function handleSectionAction(event) {
     if (reason === null) { button.disabled = false; return; }
     response = await apiReviewSection(currentSession, draftId, false, reason);
   } else if (action === 'save') {
+    const surface = window.ThesisAutosave?.surfaces?.get(autosaveKey);
+    if (surface) {
+      await window.ThesisAutosave.flushDraft(autosaveKey);
+      if (['conflict', 'stale', 'failed', 'saving', 'dirty'].includes(surface.status)) {
+        toast('自动草稿尚未安全保存或需要处理冲突，暂不能创建正式版本');
+        button.disabled = false;
+        return;
+      }
+    }
     const content = card.querySelector('.section-editor')?.value || '';
-    response = await apiReviseSection(currentSession, draftId, content);
+    const autosave = surface && surface.revision > 0 ? {
+      draftKey: autosaveKey,
+      revision: surface.revision,
+    } : null;
+    response = await apiReviseSection(
+      currentSession, draftId, content, '', autosave,
+    );
+    if (response?.data?.conflict && surface) {
+      window.ThesisAutosave.reportDraftConflict(
+        autosaveKey, response,
+      );
+      toast('正式提交基于旧草稿，已停止并显示冲突');
+      button.disabled = false;
+      return;
+    }
+    if (response?.code === 0 && response.data?.autosave_draft) {
+      window.ThesisAutosave.markDraftSubmitted(
+        autosaveKey, response.data.autosave_draft,
+      );
+    }
   }
   toast(response?.code === 0 ? response.msg : `操作失败：${response?.msg || '未知错误'}`);
   await loadSectionsPanel();

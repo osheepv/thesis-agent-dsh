@@ -30,11 +30,21 @@ def get_orchestration(request: Request) -> MainOrchestration:
     return request.app.state.orchestration
 
 
-def _workspace_identity(request: Request) -> tuple[str, str]:
+def _workspace_identity(request: Request) -> tuple[str, str, str]:
+    """返回 (工作区键, 租户ID, 作者ID)。
+
+    认证关闭时使用固定 local author 身份；开启时草稿按真实用户隔离。
+    """
     principal = getattr(request.state, "principal", None)
     if principal is None:
-        return "local:default", "default"
-    return f"{principal.tenant_id}:{principal.user_id}", principal.tenant_id
+        return "local:default", "default", "default"
+    return f"{principal.tenant_id}:{principal.user_id}", principal.tenant_id, principal.user_id
+
+
+def _author_identity(request: Request) -> tuple[str, str]:
+    """返回 (租户ID, 作者ID)，用于作者私有草稿的隔离与鉴权。"""
+    _workspace_key, tenant_id, author_id = _workspace_identity(request)
+    return tenant_id, author_id
 
 
 @router.get("/provider/deepseek", response_model=None)
@@ -69,9 +79,9 @@ async def get_workspace_state(
     orchestration: MainOrchestration = Depends(get_orchestration),
 ) -> Result[Any]:
     try:
-        workspace_key, tenant_id = _workspace_identity(request)
+        workspace_key, tenant_id, author_id = _workspace_identity(request)
         return orchestration.get_workspace_state(
-            workspace_key, tenant_id=tenant_id
+            workspace_key, tenant_id=tenant_id, author_id=author_id
         )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -84,9 +94,79 @@ async def save_workspace_state(
     orchestration: MainOrchestration = Depends(get_orchestration),
 ) -> Result[Any]:
     try:
-        workspace_key, tenant_id = _workspace_identity(request)
+        workspace_key, tenant_id, _author_id = _workspace_identity(request)
         return orchestration.save_workspace_state(
             workspace_key, req, tenant_id=tenant_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+# ---------------------------------------------------------------------
+# 作者私有自动草稿（未提交工作副本；不推进FSM、不创建正式版本）
+# ---------------------------------------------------------------------
+@router.get("/tasks/{task_id}/autosave-drafts", response_model=None)
+async def list_autosave_drafts(
+    request: Request,
+    task_id: str,
+    orchestration: MainOrchestration = Depends(get_orchestration),
+) -> Result[Any]:
+    """列出当前作者的活动草稿元数据；列表不返回正文内容。"""
+    try:
+        tenant_id, author_id = _author_identity(request)
+        return orchestration.list_autosave_drafts(
+            task_id, tenant_id=tenant_id, author_id=author_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.get("/tasks/{task_id}/autosave-drafts/{draft_key:path}", response_model=None)
+async def get_autosave_draft(
+    request: Request,
+    task_id: str,
+    draft_key: str,
+    orchestration: MainOrchestration = Depends(get_orchestration),
+) -> Result[Any]:
+    """只有草稿所有者明确请求单个草稿时返回 content_json。"""
+    try:
+        tenant_id, author_id = _author_identity(request)
+        return orchestration.get_autosave_draft(
+            task_id, draft_key, tenant_id=tenant_id, author_id=author_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.put("/tasks/{task_id}/autosave-drafts/{draft_key:path}", response_model=None)
+async def save_autosave_draft(
+    request: Request,
+    task_id: str,
+    draft_key: str,
+    req: Dict[str, Any],
+    orchestration: MainOrchestration = Depends(get_orchestration),
+) -> Result[Any]:
+    """按单调 revision 保存草稿；旧请求被拒绝，同版本不同内容返回明确冲突。"""
+    try:
+        tenant_id, author_id = _author_identity(request)
+        return orchestration.save_autosave_draft(
+            task_id, draft_key, req, tenant_id=tenant_id, author_id=author_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
+@router.post("/tasks/{task_id}/autosave-drafts/{draft_key:path}/discard", response_model=None)
+async def discard_autosave_draft(
+    request: Request,
+    task_id: str,
+    draft_key: str,
+    orchestration: MainOrchestration = Depends(get_orchestration),
+) -> Result[Any]:
+    try:
+        tenant_id, author_id = _author_identity(request)
+        return orchestration.discard_autosave_draft(
+            task_id, draft_key, tenant_id=tenant_id, author_id=author_id
         )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
@@ -173,13 +253,15 @@ async def get_template_config(task_id: str, session_id: str = "",
 
 @router.get("/tasks/{task_id}/resume", response_model=None)
 async def get_resume_summary(
+    request: Request,
     task_id: str,
     session_id: str = "",
     orchestration: MainOrchestration = Depends(get_orchestration),
 ) -> Result[Any]:
     try:
         orchestration.assert_session(task_id, session_id)
-        return orchestration.get_resume_summary(task_id)
+        _tenant_id, author_id = _author_identity(request)
+        return orchestration.get_resume_summary(task_id, author_id=author_id)
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 

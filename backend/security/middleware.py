@@ -23,6 +23,7 @@ _KB_RE = re.compile(r"^/api/v1/kb/([^/]+)")
 _DOCX_FILE_RE = re.compile(r"^/api/v1/docx/files/([^/]+)$")
 _DEEPSEEK_PROVIDER_PATH = "/api/v1/console/provider/deepseek"
 _WORKSPACE_STATE_PATH = "/api/v1/console/workspace"
+_AUTOSAVE_DRAFT_RE = re.compile(r"^/api/v1/console/tasks/([^/]+)/autosave-drafts(?:/|$)")
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
@@ -110,6 +111,12 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             )
         elif path.startswith("/api/v1/docx") or path.startswith("/api/v1/templates"):
             raise AuthorizationError("安全模式下请使用论文任务内的模板和 DOCX 工作流接口")
+        if _AUTOSAVE_DRAFT_RE.match(path):
+            # 未提交草稿是作者私有工作副本：reviewer/viewer 不得读取、保存、丢弃或提交。
+            # 工作区位置仍允许 viewer 保存，此处只针对草稿，避免误伤 H4-001 权限。
+            if principal.role not in {UserRole.OWNER, UserRole.EDITOR}:
+                raise AuthorizationError("当前角色无权访问作者私有自动草稿")
+            return
         if method in {"GET", "HEAD"}:
             return
         if path == _WORKSPACE_STATE_PATH and method == "POST":

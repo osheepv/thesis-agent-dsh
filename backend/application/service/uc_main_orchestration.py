@@ -73,6 +73,9 @@ from research import (
     ResearchRegistryError,
 )
 from writing import (
+    AutosaveDraftError,
+    AutosaveDraftRevisionConflict,
+    AutosaveDraftStore,
     SectionDraftGenerator,
     SectionDraftRegistry,
     SectionDraftRegistryError,
@@ -572,6 +575,9 @@ class MainOrchestration:
         store: 任务暂存（默认进程内实例）。
     """
 
+    # 自动草稿能力声明：只有后端、API与至少四个真实编辑面全部可用时才置为 True。
+    DRAFT_AUTOSAVE_CAPABLE = False
+
     _JOB_OPERATIONS = {
         "ring.execute", "section.generate", "sections.generate_all", "docx.generate"
     }
@@ -587,6 +593,7 @@ class MainOrchestration:
         section_registry: Optional[SectionDraftRegistry] = None,
         section_generator: Optional[SectionDraftGenerator] = None,
         job_registry: Optional[JobRegistry] = None,
+        draft_store: Optional[AutosaveDraftStore] = None,
         knowledge_store: Any = None,
     ) -> None:
         self._fsm = fsm or FsmOrchestrator(InMemoryFsmRepository())
@@ -634,6 +641,16 @@ class MainOrchestration:
                 section_registry = SectionDraftRegistry(section_path)
         self._sections = section_registry
         self._section_generator = section_generator or SectionDraftGenerator()
+        if draft_store is None:
+            if os.getenv("THESIS_TASK_STORE_MEMORY", "").lower() == "true":
+                draft_store = AutosaveDraftStore()
+            else:
+                draft_path = os.getenv(
+                    "THESIS_AUTOSAVE_DB",
+                    os.path.join(os.path.dirname(_TaskStore._default_path()), "autosave.db"),
+                )
+                draft_store = AutosaveDraftStore(draft_path)
+        self._drafts = draft_store
         if job_registry is None:
             if os.getenv("THESIS_TASK_STORE_MEMORY", "").lower() == "true":
                 job_registry = JobRegistry()
@@ -657,6 +674,7 @@ class MainOrchestration:
         self._evidence.delete_task(task_id)
         self._research.delete_task(task_id)
         self._sections.delete_task(task_id)
+        self._drafts.delete_task(task_id)
         self._jobs.delete_task(task_id)
         template_deleted = False
         if rec.template_id:
@@ -769,7 +787,9 @@ class MainOrchestration:
     # ------------------------------------------------------------------
     # 跨天断点续作：恢复摘要 + 工作区位置
     # ------------------------------------------------------------------
-    def get_resume_summary(self, task_id: str) -> Result[Dict[str, Any]]:
+    def get_resume_summary(
+        self, task_id: str, *, author_id: str = ""
+    ) -> Result[Dict[str, Any]]:
         rec = self._require(task_id)
         progress = self.progress(task_id).data or {}
         artifacts = self._artifacts.list_task(task_id)
@@ -902,14 +922,20 @@ class MainOrchestration:
             "pending_approvals": pending_approvals,
             "active_jobs": active_jobs,
             "recoverable_jobs": recoverable_jobs,
-            "autosaved_drafts": [],
+            # 只返回草稿元数据，绝不返回 content_json、正文片段或表单全文。
+            "autosaved_drafts": [
+                draft.metadata()
+                for draft in self._drafts.list_task(task_id, author_id or "default")
+            ],
             "consistency_status": consistency_status,
             "consistency_issues": list(progress.get("artifact_projection_issues", []) or []),
             "next_safe_action": action,
             "capabilities": {
                 "workspace_restore": True,
                 "formal_artifact_restore": True,
-                "draft_autosave": False,
+                # 只有后端、API与至少四个真实编辑面全部可用时才允许 True；
+                # M1 仅落地后端与API，因此仍如实声明为 False（禁止只建表就标 true）。
+                "draft_autosave": self.DRAFT_AUTOSAVE_CAPABLE,
             },
         }, msg="任务恢复摘要")
 
@@ -946,11 +972,90 @@ class MainOrchestration:
             )
         return Result.ok(data=stored, msg="工作区位置已保存")
 
+    # ------------------------------------------------------------------
+    # 作者私有自动草稿（未提交工作副本，不推进流程）
+    # ------------------------------------------------------------------
+    def list_autosave_drafts(
+        self, task_id: str, *, tenant_id: str = "", author_id: str = ""
+    ) -> Result[Dict[str, Any]]:
+        """列出当前作者的活动草稿元数据，绝不返回正文内容。"""
+        rec = self._require(task_id)
+        if tenant_id and rec.tenant_id != tenant_id:
+            raise PermissionError("无权查看其他租户的草稿")
+        drafts = self._drafts.list_task(task_id, author_id or "default")
+        return Result.ok(
+            data={"items": [draft.metadata() for draft in drafts]},
+            msg="自动草稿列表",
+        )
+
+    def get_autosave_draft(
+        self, task_id: str, draft_key: str, *, tenant_id: str = "", author_id: str = ""
+    ) -> Result[Dict[str, Any]]:
+        """只有草稿所有者在明确请求单个草稿时返回 content_json。"""
+        rec = self._require(task_id)
+        if tenant_id and rec.tenant_id != tenant_id:
+            raise PermissionError("无权查看其他租户的草稿")
+        draft = self._drafts.get(task_id, author_id or "default", draft_key)
+        if draft is None:
+            return Result.ok(data=None, msg="草稿不存在")
+        return Result.ok(data=draft.to_dict(include_content=True), msg="自动草稿详情")
+
+    def save_autosave_draft(
+        self,
+        task_id: str,
+        draft_key: str,
+        value: Dict[str, Any],
+        *,
+        tenant_id: str = "",
+        author_id: str = "",
+    ) -> Result[Dict[str, Any]]:
+        rec = self._require(task_id)
+        if tenant_id and rec.tenant_id != tenant_id:
+            raise PermissionError("无权在其他租户任务中保存草稿")
+        try:
+            draft = self._drafts.save(
+                task_id=task_id,
+                tenant_id=rec.tenant_id,
+                author_id=author_id or "default",
+                object_type=str(value.get("object_type", "")),
+                draft_key=draft_key,
+                content=value.get("content"),
+                stage_no=value.get("stage_no", 0),
+                base_artifact_id=value.get("base_artifact_id", ""),
+                base_version=value.get("base_version", 0),
+                revision=value.get("revision", 0),
+            )
+        except AutosaveDraftRevisionConflict as exc:
+            # 冲突只影响未提交草稿，不改变任何正式论文状态。
+            return Result.fail(
+                code=ErrorCode.STATE_CONFLICT.value,
+                msg=str(exc),
+                data={
+                    "conflict": True,
+                    "current_revision": exc.current_revision,
+                    "incoming_revision": exc.incoming_revision,
+                    "remote": exc.remote.metadata(),
+                },
+            )
+        return Result.ok(data=draft.metadata(), msg="草稿已保存")
+
+    def discard_autosave_draft(
+        self, task_id: str, draft_key: str, *, tenant_id: str = "", author_id: str = ""
+    ) -> Result[Dict[str, Any]]:
+        rec = self._require(task_id)
+        if tenant_id and rec.tenant_id != tenant_id:
+            raise PermissionError("无权丢弃其他租户的草稿")
+        removed = self._drafts.discard(task_id, author_id or "default", draft_key)
+        if removed is None:
+            return Result.ok(data={"discarded": False}, msg="草稿不存在")
+        return Result.ok(data={"discarded": True}, msg="草稿已丢弃")
+
     def get_workspace_state(
         self,
         workspace_key: str,
         *,
         tenant_id: str = "",
+        author_id: str = "",
     ) -> Result[Dict[str, Any]]:
         raw = self._store.get_workspace(workspace_key)
         try:
@@ -973,7 +1078,9 @@ class MainOrchestration:
                 )
                 state = healed
             else:
-                resume = self.get_resume_summary(state.last_task_id).data
+                resume = self.get_resume_summary(
+                    state.last_task_id, author_id=author_id
+                ).data
         return Result.ok(data={
             "workspace": state.model_dump(),
             "resume": resume,

@@ -49,7 +49,7 @@
 - 环6/7采用逐章调用并保存章节级检查点；重试只继续缺失或不达标章节，空响应的已计费Token同样进入预算。
 - DeepSeek V4结构化JSON调用默认显式关闭高思考模式，避免推理Token耗尽后最终`content`为空；可通过环境变量重新启用。
 - 当前仅支持DeepSeek接口；前端可运行时设置DeepSeek API Key、Base URL、模型、思考模式和能力标记。密钥不回显、不写入浏览器或数据库，进程重启后恢复`.env`。
-- 环6已接入第一个可选的有界Agent Loop：在逐章写作前使用只读工具搜索已登记资料、读取已批准产物、核验引文和章节覆盖；强制轮数/工具数/观测长度上限，默认关闭以避免未预期费用。
+- 环3检索策略与环6写作计划已接入可选的有界Agent Loop：只能调用宿主注册的只读工具，强制轮数、工具数、观测长度和输出Token上限，默认关闭以避免未预期费用。环3当前可读已批准选题/项目记忆并检查相关度与查询语法；环6可搜索已登记资料、核验引文和章节覆盖。
 - 环6 Agent Loop已完成真实DeepSeek V4 Flash小规模验收：2章计划在6轮、11次只读工具调用内收敛，消耗8570 Token，所有建议引文均通过`check_citation`实际核验。详见[真实DeepSeek Agent Loop验收报告](docs/真实DeepSeek_Agent_Loop验收报告_2026-08-27.md)。
 - 论文级项目记忆已落地：研究问题、作者决定、导师意见、术语和写作风格以不可变版本登记，自动校验后必须作者审批；只有当前批准版本会进入环6 Agent和章节写作上下文。
 - 环7/8失败后可安全回到可修订环节，恢复入口同时识别FSM失败态与当前环FAILED Job。
@@ -66,7 +66,7 @@
 - 可选生产认证层提供 HttpOnly 不透明会话、scrypt 密码哈希、登录锁定、owner/editor/reviewer/viewer 授权、任务/知识库租户隔离和不可变操作审计。
 - `demo_run.py` 提供最小严格流程冒烟；`demo_full_10.py`/`scripts/real_full_flow_acceptance.py`按真实Job预算、作者选题、文献筛选和逐环确认协议运行，并生成不含正文与密钥的验收报告。
 - 后端可构建标准wheel，提示词和内置DOCX模板随包分发；核心运行依赖与可选PostgreSQL/Redis基础设施依赖已分离。
-- 用户工作区位置（最后论文任务、工作台页签）已持久化到 SQLite 并按租户 + 用户隔离；前端启动会读取服务端工作区、强制首次加载任务详情、用服务端页签覆盖 HTML 默认、只在恢复成功后打开防抖保存；刷新与后端进程重启后能继续上次论文。统一恢复摘要包含当前环、最后批准产物元数据、待审批闸门 / 产物 / 分节、活动与可恢复作业、一致性状态（当前仅覆盖 Artifact Outbox）、七种 `next_safe_action` 与能力声明；`autosaved_drafts` 仍如实标记为未实现。详见[断点续作第一阶段验收报告](docs/断点续作第一阶段_2026-08-29.md)。
+- 用户工作区位置（最后论文任务、工作台页签、稳定展开项和分节编辑锚点）已持久化到 SQLite 并按租户 + 用户隔离；刷新与后端进程重启后能继续上次论文。作者私有自动草稿已覆盖分节修订、项目记忆、研究协议和论证图四个真实编辑面：按任务/租户/作者/`draft_key`隔离，以服务端 SQLite 和单调 `revision`为真相源，支持防抖保存、pagehide末次保存、刷新/进程重启恢复、过期标记与多页面显式冲突处理。正式提交成功后转为 `SUBMITTED`，失败仍保留 `ACTIVE`；草稿不推进 FSM、不创建正式产物、不进入 Agent 上下文、不触发模型调用。恢复摘要只返回 `ACTIVE/STALE` 草稿元数据，不返回正文，并在适用时给出 `RESUME_DRAFT`。详见[断点续作第一阶段验收报告](docs/断点续作第一阶段_2026-08-29.md)和[H4-002阶段报告](docs/H4-002自动草稿阶段报告_2026-08-30.md)。
 - 工作区位置采用服务端可验证的单调 `revision`：客户端在发送时同步预留递增版本，服务端在锁内做比较并写入，乱序到达的旧 POST 一律被拒绝；删除任务与自愈幽灵指针等服务端修改会生成更高 revision；同 revision 不同内容返回明确冲突而非静默覆盖；冲突只影响 UI 位置，不改变 FSM、Artifact 或正式论文状态。保存控制器按身份世代隔离，旧身份的在途请求不会阻塞新身份的首次保存。Job、FSM 或审批状态变化后，可见的“继续上次论文”横幅会强制重取最新摘要，拿不到准确摘要时立即隐藏。详见[断点续作第一阶段验收报告](docs/断点续作第一阶段_2026-08-29.md)的 H4-001R 修复记录。
 
 当前关键缺口：
@@ -75,7 +75,7 @@
 - UI已完成第一步无构建拆分，但主`app.js`仍偏大；桌面打包、独立 Worker 运维、MFA/SSO 和密钥托管尚未完成。
 - 需要把环6的有界Agent和已批准项目记忆扩展到更多环节，并补齐流式进度和变更级HITL。
 - 需要补充全文相关性/证据评测、提示词回归，以及硕士/博士真实长论文压力测试。
-- 断点续作已交付最后任务、活动页签、继续入口、统一恢复摘要与断网 / 进程重启 / 删除 / 身份切换矩阵；**未提交分节正文与重要表单的自动草稿**、**分节编辑器的展开项与编辑锚点采集 / 恢复**、**跨任务/FSM/产物/分节/Job/知识库的启动对账**、**断电 / Worker 重启 / 重复提交验收矩阵**仍未完成，分别归入 H4-002 / 分节编辑器阶段 / H4-008 / H4-009 / H4-012。
+- 断点续作已交付最后任务、活动页签、继续入口、自动草稿、稳定展开项和分节编辑锚点；仍待完成的是**跨任务/FSM/产物/分节/Job/知识库的全域启动对账**、**进程强杀/断电/Worker 重启/重复提交验收矩阵**，以及真正离线持久草稿和多人协同（本阶段明确不做）。
 
 ## 欢迎参与讨论
 
@@ -98,14 +98,14 @@
 | M1 | FSM 编排器 | `backend/fsm/orchestrator/` | ✅ 已实现（10 环状态机 + HITL 闸门 + 回退） |
 | M2 | 环节执行体 | `backend/executor/`、`backend/writing/` | 🟡 十环、证据约束分节写作、修订审批和汇编已接入；版本差异待建设 |
 | M3 | 验收 Gate / HITL | `backend/fsm/` | ✅ 执行/验收/确认分离，所有环人工确认 |
-| M4 | 状态存储 | `backend/db/`、`backend/fsm/repository/` | ✅ SQLite（任务/环产物/FSM 状态） |
+| M4 | 状态存储 | `backend/db/`、`backend/fsm/repository/`、`backend/application/service/task_store.py`、`backend/writing/draft_store.py` | ✅ SQLite（任务/FSM/工作区/自动草稿及各域账本） |
 | M5/M6 | docx 解析/生成 | `backend/thesis_docx/` | ✅ 用户模板持久化/映射、docxtpl、版式检查、原生书签/REF 域及严格 OOXML 验证 |
 | M7 | 查重 | — | 预留（OOS：只提醒人工自建查重） |
 | M8 | Guardrail | `backend/common/`、`backend/evidence/`、`backend/research/` | ✅ 来源/摘录/论断、结果血缘、环8强制审计和 DOCX 域验证 |
 | M9 | 知识库 | `backend/knowledge/` | ✅ 已实现（文件池/笔记双链/图谱 API + RAG 检索） |
 | 执行治理 | JobRun/预算 | `backend/jobs/` | ✅ 持久化队列、租约恢复、取消重试、Token/费用登记 |
 | 安全治理 | 认证/授权/审计 | `backend/security/` | ✅ 可选 fail-closed 认证、租户隔离、角色授权、会话撤销和操作审计 |
-| 环内智能体 | 有界只读Agent Loop | `backend/common/agent_loop.py`、`backend/executor/ring6_chapter.py` | 🟡 环6写作计划试点已实现；其他环节待扩展 |
+| 环内智能体 | 有界只读Agent Loop | `backend/common/agent_loop.py`、`backend/executor/ring3/`、`backend/executor/ring6_chapter.py` | 🟡 环3检索策略与环6写作计划试点已实现；默认关闭 |
 | 项目记忆 | 版本化长期上下文 | `backend/common/project_memory.py`、`backend/artifacts/` | ✅ 结构校验、版本、审批、环6强制只读消费和前端管理已实现 |
 | 公共 | 公共模块 | `backend/common/` | ✅ 已实现（DeepSeek客户端 / 文献服务 / 引用格式化 / 提示词仓库） |
 
@@ -151,13 +151,15 @@ python -m http.server 8787
 
 ## 运行测试
 
-当前回归基线：**278 项 pytest 全部通过**（2026-08-30）。
+当前回归基线：**352 项 pytest 全部通过**（2026-08-31），另有 **31/31 条离线学术质量规则 case 通过**。
 
-基线演进按公共 Git 历史说明：既有的已提交主干基线是 236 项；H4-001 接手时工作区已有 3 项未提交的工作区测试，随该阶段一并进入主干后为 262 项；H4-001R 修复提交新增 16 项 revision 契约、身份世代隔离与恢复摘要失效测试后，实际完整回归为 278 项。数字以实际运行 `python -m pytest tests -q` 的结果为准，不预先猜测。
+基线演进按公共 Git 历史说明：H4-001R 为 278 项；H4-002 自动草稿完成并修复幽灵草稿/提交墓碑竞态后为 315 项；H4-003 评测契约进入 pytest 后为 327 项；环3 Agent Loop 首版为 337 项；正式编排接线、检索词扩展恢复与 fail-closed 契约补齐后为 352 项。数字以实际运行 `python -m pytest tests -q` 的结果为准。
 
 ```bash
 # 项目根执行（conftest 自动注入路径）
 python -m pytest tests -v
+# 离线学术质量规则评测（不冒充真实模型质量结论）
+python evals/run_academic_eval.py --suite all
 ```
 
 真实DeepSeek Agent小规模验收默认只做安全预检；显式加`--execute`才会产生有上限的真实调用：
@@ -188,7 +190,7 @@ Cytoscape.js 3.30.2（知识图谱）· pytest 8.3.5
 `THESIS_DB_URL` / `THESIS_LIT_ENABLED` / `THESIS_LIT_SCOPE` /
 `THESIS_METASO_ENABLED`（默认 false，省钱）/ `THESIS_RAG_ENABLED` / `THESIS_CORS_ORIGINS` /
 `THESIS_TASK_STORE_MEMORY`（测试用）/ `THESIS_ARTIFACT_DB` / `THESIS_EVIDENCE_DB` /
-`THESIS_RESEARCH_DB` / `THESIS_SECTION_DB` / `THESIS_JOB_DB` /
+`THESIS_RESEARCH_DB` / `THESIS_SECTION_DB` / `THESIS_AUTOSAVE_DB` / `THESIS_JOB_DB` /
 `THESIS_JOB_WORKER_ENABLED` / `THESIS_LLM_INPUT_COST_PER_MILLION` /
 `THESIS_LLM_OUTPUT_COST_PER_MILLION` / `THESIS_KB_MAX_FILE_MB` /
 `THESIS_AUTH_ENABLED` / `THESIS_AUTH_BOOTSTRAP_TOKEN` / `THESIS_SECURITY_DB`。

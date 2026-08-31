@@ -2127,23 +2127,50 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
                 kb_files = get_kb_store().list_documents(rec.session_id)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("知识库读取失败: %s", exc)
-        try:
-            res = get_executor(3).execute(
-                ExecContext(
-                    subject_field=rec.subject_field,
-                    degree=Degree(rec.degree),
-                    theme=theme,
-                    scope=getattr(rec, "scope", "all") or "all",
-                    kb_files=kb_files,
-                    session_id=rec.session_id,
-                    tenant_id=rec.tenant_id,
+
+        from common.agent_loop import AgentLoopSettings
+
+        agent_settings = AgentLoopSettings()
+        if agent_settings.enabled:
+            from common.llm import get_llm_settings
+
+            llm_settings = get_llm_settings()
+            if not llm_settings.supports_tools:
+                raise BizException(
+                    ErrorCode.FSM_INVALID_TRANSITION,
+                    msg=(
+                        f"当前DeepSeek模型 {llm_settings.model} 未启用Tools，"
+                        "不能运行环3检索策略Agent"
+                    ),
                 )
-            )
+        project_memory = self._active_project_memory(rec.task_id)
+        ctx = ExecContext(
+            subject_field=rec.subject_field,
+            degree=Degree(rec.degree),
+            theme=theme,
+            scope=getattr(rec, "scope", "all") or "all",
+            kb_files=kb_files,
+            session_id=rec.session_id,
+            tenant_id=rec.tenant_id,
+        )
+        ctx.agent_loop_enabled = agent_settings.enabled
+        ctx.project_memory = project_memory.payload if project_memory is not None else {}
+        try:
+            res = get_executor(3).execute(ctx)
             data = json.loads(res.output)
             rec.ring3 = data
             self._store.put(rec)
             return data.get("items", [])
-        except Exception:  # noqa: BLE001 - 检索失败不阻塞大纲/撰写流程
+        except BizException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 基础检索失败可返回空池
+            if agent_settings.enabled:
+                raise BizException(
+                    ErrorCode.RING_EXECUTION_FAILED,
+                    msg=f"环3检索策略Agent执行失败: {exc}",
+                    detail={"fallbackTo": 3, "agent_loop": True},
+                ) from exc
+            logger.warning("环3文献检索失败，返回空池: %s", exc)
             return []
 
     def _manuscript_quality_issues(

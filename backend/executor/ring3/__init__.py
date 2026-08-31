@@ -193,13 +193,43 @@ def _llm_expand_queries(subject_field: str, theme: str) -> list[str]:
     if not (settings.enabled and settings.api_key):
         return []
 
+    from pydantic import BaseModel as BM
 
-def _literature_tools(ctx: ExecContext, theme: str) -> list[ReadOnlyTool]:
+    class QueryOut(BM):
+        queries: list[str]
+
+    try:
+        tpl = prompt_repo.render("ring3_queries", {
+            "subject_field": subject_field,
+            "theme": theme,
+        })
+        out = get_llm_client().generate_json(
+            system=tpl["system"],
+            prompt=tpl["prompt"],
+            model_cls=QueryOut,
+            temperature=0.3,
+        )
+        return [q.strip() for q in out.queries if isinstance(q, str) and q.strip()][:3]
+    except (LLMError, StructuredOutputError) as exc:
+        logger.info("环3 LLM 检索词扩展不可用（%s），用基础检索词", exc)
+        return []
+
+
+def _literature_tools(
+    ctx: ExecContext,
+    theme: str,
+    *,
+    context_reads: set[str] | None = None,
+    validated_queries: set[str] | None = None,
+) -> list[ReadOnlyTool]:
     """环3 Agent Loop 只读工具集。"""
     obj = {"type": "object", "additionalProperties": False}
     project_memory = dict(getattr(ctx, "project_memory", {}) or {})
+    context_reads = context_reads if context_reads is not None else set()
+    validated_queries = validated_queries if validated_queries is not None else set()
 
     def read_approved_topic(args: dict) -> dict:
+        context_reads.add("approved_topic")
         return {
             "theme": theme,
             "subject_field": ctx.subject_field,
@@ -207,13 +237,24 @@ def _literature_tools(ctx: ExecContext, theme: str) -> list[ReadOnlyTool]:
         }
 
     def read_project_memory(args: dict) -> dict:
+        context_reads.add("project_memory")
         if not project_memory:
             return {"status": "empty", "message": "当前无已批准项目记忆。"}
+        terminology = list(project_memory.get("terminology", []) or [])
+        decisions = [
+            item for item in (project_memory.get("decisions", []) or [])
+            if isinstance(item, dict) and item.get("active", True)
+        ]
         return {
             "status": "found",
             "research_questions": project_memory.get("research_questions", []),
-            "key_terms": project_memory.get("key_terms", []),
-            "scope_notes": project_memory.get("scope_notes", ""),
+            "key_terms": [
+                str(item.get("preferred_form") or item.get("term") or "").strip()
+                for item in terminology if isinstance(item, dict)
+                and str(item.get("preferred_form") or item.get("term") or "").strip()
+            ],
+            "scope_notes": [str(item.get("text", "")).strip() for item in decisions
+                            if str(item.get("text", "")).strip()],
         }
 
     def check_relevance(args: dict) -> dict:
@@ -239,6 +280,7 @@ def _literature_tools(ctx: ExecContext, theme: str) -> list[ReadOnlyTool]:
         terms = _lexical_terms(q)
         if not terms:
             return {"valid": False, "reason": "检索词全是通用词，无有效关键词"}
+        validated_queries.add(q)
         return {
             "valid": True,
             "keyword_count": len(terms),
@@ -298,13 +340,21 @@ def _parse_search_strategy(content: str) -> list[str]:
         if not match:
             raise StructuredOutputError("环3 Agent输出无有效JSON")
         data = _json.loads(match.group())
+    if not isinstance(data, dict):
+        raise StructuredOutputError("环3 Agent输出必须是JSON对象")
     queries_raw = data.get("queries", [])
     if not isinstance(queries_raw, list):
         raise StructuredOutputError("环3 Agent输出queries必须是列表")
-    queries = [str(q).strip() for q in queries_raw if str(q).strip()]
-    if not queries:
-        raise StructuredOutputError("环3 Agent输出queries列表为空")
-    return queries[:5]
+    if any(not isinstance(query, str) for query in queries_raw):
+        raise StructuredOutputError("环3 Agent输出queries只能包含字符串")
+    queries = [query.strip() for query in queries_raw if query.strip()]
+    if len(queries) < 3:
+        raise StructuredOutputError("环3 Agent至少需要返回3条检索词")
+    if len(queries) > 5:
+        raise StructuredOutputError("环3 Agent最多只能返回5条检索词")
+    if len(set(queries)) != len(queries):
+        raise StructuredOutputError("环3 Agent输出包含重复检索词")
+    return queries
 
 
 def _build_search_strategy(
@@ -325,6 +375,8 @@ def _build_search_strategy(
         "degree_label": ctx.degree.label if hasattr(ctx.degree, "label") else str(ctx.degree),
         "memory_status": memory_note,
     })
+    context_reads: set[str] = set()
+    validated_queries: set[str] = set()
     loop = BoundedToolLoop(
         get_llm_client().complete_with_tools,
         settings,
@@ -333,38 +385,34 @@ def _build_search_strategy(
         outcome = loop.run(
             system=tpl["system"],
             prompt=tpl["prompt"],
-            tools=_literature_tools(ctx, theme),
+            tools=_literature_tools(
+                ctx,
+                theme,
+                context_reads=context_reads,
+                validated_queries=validated_queries,
+            ),
             require_tool_call=True,
         )
     except ToolLoopError as exc:
         raise StructuredOutputError(f"环3检索策略Agent失败: {exc}") from exc
     queries = _parse_search_strategy(outcome.content)
+    if "approved_topic" not in context_reads:
+        raise StructuredOutputError("环3检索策略Agent未读取已批准选题")
+    if project_memory and "project_memory" not in context_reads:
+        raise StructuredOutputError("环3检索策略Agent未读取已批准项目记忆")
+    unvalidated = [query for query in queries if query not in validated_queries]
+    if unvalidated:
+        raise StructuredOutputError(
+            f"环3检索策略Agent存在未校验检索词: {unvalidated}"
+        )
     return {
         "queries": queries,
         "agent_trace": outcome.trace,
         "agent_turns": outcome.turns,
         "agent_tool_calls": outcome.tool_call_count,
+        "agent_context_reads": sorted(context_reads),
+        "agent_validated_queries": list(queries),
     }
-    from pydantic import BaseModel as BM
-
-    class QueryOut(BM):
-        queries: list[str]
-
-    try:
-        tpl = prompt_repo.render("ring3_queries", {
-            "subject_field": subject_field,
-            "theme": theme,
-        })
-        out = get_llm_client().generate_json(
-            system=tpl["system"],
-            prompt=tpl["prompt"],
-            model_cls=QueryOut,
-            temperature=0.3,
-        )
-        return [q for q in out.queries if q.strip()][:3]
-    except (LLMError, StructuredOutputError) as exc:
-        logger.info("环3 LLM 检索词扩展不可用（%s），用基础检索词", exc)
-        return []
 
 
 def _to_lit_item(it: LitItem) -> LiteratureItem:
@@ -436,29 +484,10 @@ class Ring3LiteratureReviewExecutor(RingExecutor):
         if not ctx.subject_field.strip():
             raise ValueError("subject_field 不能为空")
 
-        svc: LiteratureService = get_lit_service()
         agent_loop_enabled = bool(getattr(ctx, "agent_loop_enabled", False))
         agent_result: dict | None = None
-        if agent_loop_enabled:
-            settings = get_llm_settings()
-            if settings.enabled and settings.api_key:
-                try:
-                    agent_result = _build_search_strategy(
-                        ctx, theme, AgentLoopSettings(),
-                    )
-                    queries = agent_result["queries"]
-                except (LLMError, StructuredOutputError) as exc:
-                    logger.warning("环3 Agent Loop不可用（%s），回退基础检索词", exc)
-                    queries = []
-            else:
-                logger.info("环3 Agent Loop需要LLM配置，回退基础检索词")
-                queries = []
-        else:
-            queries = _llm_expand_queries(ctx.subject_field, theme)
-        if not queries:
-            queries = [theme, ctx.subject_field, f"{ctx.subject_field} {theme}"]
 
-        # 环境开关：离线/测试直接返回空池（不阻塞闭环）
+        # 离线/测试开关必须在任何LLM或文献源调用之前生效。
         if not _LIT_ENABLED:
             result = LiteraturePoolResult(
                 theme=theme, subject_field=ctx.subject_field, degree=ctx.degree,
@@ -468,10 +497,34 @@ class Ring3LiteratureReviewExecutor(RingExecutor):
             return ExecResult(
                 output=result.model_dump_json(indent=2),
                 accept=True, fallbackTo=None, issues=["文献检索禁用，池空"],
-                evidence={"sources": [], "fetched": 0, "note": "THESIS_LIT_ENABLED=false"},
+                evidence={
+                    "sources": [],
+                    "fetched": 0,
+                    "note": "THESIS_LIT_ENABLED=false",
+                    "agent_loop": {
+                        "enabled": agent_loop_enabled,
+                        "status": "skipped_literature_disabled",
+                        "turns": 0,
+                        "tool_calls": 0,
+                    },
+                },
             )
 
+        if agent_loop_enabled:
+            settings = get_llm_settings()
+            if not (settings.enabled and settings.api_key):
+                raise LLMError("环3 Agent Loop已启用，但DeepSeek不可用")
+            agent_result = _build_search_strategy(
+                ctx, theme, AgentLoopSettings(),
+            )
+            queries = agent_result["queries"]
+        else:
+            queries = _llm_expand_queries(ctx.subject_field, theme)
+        if not queries:
+            queries = [theme, ctx.subject_field, f"{ctx.subject_field} {theme}"]
+
         # 逐检索词真实检索（按 scope 路由标准通道；去重合并）
+        svc: LiteratureService = get_lit_service()
         scope = (getattr(ctx, "scope", "") or "all")
         seen_doi: set[str] = set()
         items: List[LiteratureItem] = []
@@ -535,8 +588,15 @@ class Ring3LiteratureReviewExecutor(RingExecutor):
             "note": "文献来源真实 API，严禁编造；中文条目待人工复核",
             "agent_loop": {
                 "enabled": agent_loop_enabled,
+                "status": "completed" if agent_loop_enabled else "disabled",
                 "turns": int((agent_result or {}).get("agent_turns", 0)),
                 "tool_calls": int((agent_result or {}).get("agent_tool_calls", 0)),
+                "context_reads": list(
+                    (agent_result or {}).get("agent_context_reads", [])
+                ),
+                "validated_queries": list(
+                    (agent_result or {}).get("agent_validated_queries", [])
+                ),
             },
         }
 

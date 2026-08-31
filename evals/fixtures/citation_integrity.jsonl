@@ -1,0 +1,11 @@
+{"case_id": "ci-001", "description": "正例：结构、元数据、证据三层全通过", "structure_status": "PASSED", "metadata_status": "PASSED", "evidence_status": "PASSED", "expected_tier": "EVIDENCE", "expected_warning": false}
+{"case_id": "ci-002", "description": "正例：结构和元数据通过，证据未评估", "structure_status": "PASSED", "metadata_status": "PASSED", "evidence_status": "NOT_ASSESSED", "expected_tier": "METADATA", "expected_warning": true}
+{"case_id": "ci-003", "description": "正例：仅结构通过", "structure_status": "PASSED", "metadata_status": "NOT_ASSESSED", "evidence_status": "NOT_ASSESSED", "expected_tier": "STRUCTURE", "expected_warning": true}
+{"case_id": "ci-004", "description": "反例：三层全部未评估", "structure_status": "NOT_ASSESSED", "metadata_status": "NOT_ASSESSED", "evidence_status": "NOT_ASSESSED", "expected_tier": "NONE", "expected_warning": true}
+{"case_id": "ci-005", "description": "反例：元数据通过但结构未通过应报错", "structure_status": "NOT_ASSESSED", "metadata_status": "PASSED", "evidence_status": "NOT_ASSESSED", "expected_error": true}
+{"case_id": "ci-006", "description": "反例：证据通过但结构未通过应报错", "structure_status": "NOT_ASSESSED", "metadata_status": "NOT_ASSESSED", "evidence_status": "PASSED", "expected_error": true}
+{"case_id": "ci-007", "description": "反例：证据通过但元数据未通过应报错", "structure_status": "PASSED", "metadata_status": "NOT_ASSESSED", "evidence_status": "PASSED", "expected_error": true}
+{"case_id": "ci-008", "description": "边界例：结构部分通过不算通过", "structure_status": "PARTIAL", "metadata_status": "PASSED", "evidence_status": "NOT_ASSESSED", "expected_error": true}
+{"case_id": "ci-009", "description": "正例：带摘要信息的完整评估", "structure_status": "PASSED", "metadata_status": "PASSED", "evidence_status": "PASSED", "expected_tier": "EVIDENCE", "expected_warning": false, "summaries": {"structure": "引用结构完整", "metadata": "DOI与题录匹配", "evidence": "正文引用与原文一致"}}
+{"case_id": "ci-010", "description": "正例：作者审批后状态更新", "structure_status": "PASSED", "metadata_status": "PASSED", "evidence_status": "PASSED", "expected_tier": "EVIDENCE", "expected_warning": false, "author_approved": true, "expected_author_status": "APPROVED"}
+{"case_id": "ci-011", "description": "正例：作者驳回后状态更新", "structure_status": "PASSED", "metadata_status": "PASSED", "evidence_status": "PASSED", "expected_tier": "EVIDENCE", "expected_warning": false, "author_approved": false, "expected_author_status": "REJECTED"}

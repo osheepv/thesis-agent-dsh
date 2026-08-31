@@ -28,6 +28,12 @@ from common.citation import format_gbt7714
 from common.lit import LiteratureService, LitItem, get_lit_service
 from common.llm import LLMError, StructuredOutputError, get_llm_client, get_llm_settings
 from common import prompt_repo
+from common.agent_loop import (
+    AgentLoopSettings,
+    BoundedToolLoop,
+    ReadOnlyTool,
+    ToolLoopError,
+)
 from executor.base import (
     ExecContext,
     ExecResult,
@@ -186,6 +192,159 @@ def _llm_expand_queries(subject_field: str, theme: str) -> list[str]:
     settings = get_llm_settings()
     if not (settings.enabled and settings.api_key):
         return []
+
+
+def _literature_tools(ctx: ExecContext, theme: str) -> list[ReadOnlyTool]:
+    """环3 Agent Loop 只读工具集。"""
+    obj = {"type": "object", "additionalProperties": False}
+    project_memory = dict(getattr(ctx, "project_memory", {}) or {})
+
+    def read_approved_topic(args: dict) -> dict:
+        return {
+            "theme": theme,
+            "subject_field": ctx.subject_field,
+            "degree": ctx.degree.value if hasattr(ctx.degree, "value") else str(ctx.degree),
+        }
+
+    def read_project_memory(args: dict) -> dict:
+        if not project_memory:
+            return {"status": "empty", "message": "当前无已批准项目记忆。"}
+        return {
+            "status": "found",
+            "research_questions": project_memory.get("research_questions", []),
+            "key_terms": project_memory.get("key_terms", []),
+            "scope_notes": project_memory.get("scope_notes", ""),
+        }
+
+    def check_relevance(args: dict) -> dict:
+        title = str(args.get("title", ""))
+        if not title:
+            return {"error": "title不能为空"}
+        from executor.ring3 import _lexical_terms, _rank_by_relevance
+        from executor.ring3 import LiteratureItem as _LI
+        probe = _LI(title=title)
+        scored = _rank_by_relevance([probe], theme, ctx.subject_field)
+        return {
+            "title": title,
+            "relevance_score": scored[0].relevance_score,
+            "matched_terms": scored[0].relevance_terms[:5],
+        }
+
+    def validate_query(args: dict) -> dict:
+        q = str(args.get("query", "")).strip()
+        if not q:
+            return {"valid": False, "reason": "检索词不能为空"}
+        if len(q) > 200:
+            return {"valid": False, "reason": "检索词过长（>200字符）"}
+        terms = _lexical_terms(q)
+        if not terms:
+            return {"valid": False, "reason": "检索词全是通用词，无有效关键词"}
+        return {
+            "valid": True,
+            "keyword_count": len(terms),
+            "keywords": sorted(terms)[:8],
+        }
+
+    return [
+        ReadOnlyTool(
+            name="read_approved_topic",
+            description="读取当前论文选题、学科和学位，只读。",
+            parameters={
+                **obj,
+                "properties": {},
+            },
+            handler=read_approved_topic,
+        ),
+        ReadOnlyTool(
+            name="read_project_memory",
+            description="读取已批准的项目记忆（研究问题、关键词、范围），只读。",
+            parameters={
+                **obj,
+                "properties": {},
+            },
+            handler=read_project_memory,
+        ),
+        ReadOnlyTool(
+            name="check_relevance",
+            description="按选题词法检查一条候选文献标题与当前选题的相关度。",
+            parameters={
+                **obj,
+                "properties": {"title": {"type": "string"}},
+                "required": ["title"],
+            },
+            handler=check_relevance,
+        ),
+        ReadOnlyTool(
+            name="validate_query",
+            description="校验一个检索词是否有效（非空、长度合理、含有效关键词）。",
+            parameters={
+                **obj,
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
+            handler=validate_query,
+        ),
+    ]
+
+
+def _parse_search_strategy(content: str) -> list[str]:
+    """解析Agent输出中的精化检索词列表。"""
+    import json as _json
+    try:
+        data = _json.loads(content)
+    except (ValueError, TypeError):
+        # 尝试从文本中提取JSON块
+        match = re.search(r"\{[^{}]*\"queries\"\s*:\s*\[[^\]]*\][^{}]*\}", content, re.DOTALL)
+        if not match:
+            raise StructuredOutputError("环3 Agent输出无有效JSON")
+        data = _json.loads(match.group())
+    queries_raw = data.get("queries", [])
+    if not isinstance(queries_raw, list):
+        raise StructuredOutputError("环3 Agent输出queries必须是列表")
+    queries = [str(q).strip() for q in queries_raw if str(q).strip()]
+    if not queries:
+        raise StructuredOutputError("环3 Agent输出queries列表为空")
+    return queries[:5]
+
+
+def _build_search_strategy(
+    ctx: ExecContext,
+    theme: str,
+    settings: AgentLoopSettings,
+) -> dict:
+    """运行有界Agent Loop生成精化检索策略。"""
+    project_memory = dict(getattr(ctx, "project_memory", {}) or {})
+    memory_note = (
+        "存在已批准项目记忆，必须先调用read_project_memory获取研究问题。"
+        if project_memory
+        else "当前无已批准项目记忆。"
+    )
+    tpl = prompt_repo.render("ring3_agent", {
+        "theme": theme,
+        "subject_field": ctx.subject_field,
+        "degree_label": ctx.degree.label if hasattr(ctx.degree, "label") else str(ctx.degree),
+        "memory_status": memory_note,
+    })
+    loop = BoundedToolLoop(
+        get_llm_client().complete_with_tools,
+        settings,
+    )
+    try:
+        outcome = loop.run(
+            system=tpl["system"],
+            prompt=tpl["prompt"],
+            tools=_literature_tools(ctx, theme),
+            require_tool_call=True,
+        )
+    except ToolLoopError as exc:
+        raise StructuredOutputError(f"环3检索策略Agent失败: {exc}") from exc
+    queries = _parse_search_strategy(outcome.content)
+    return {
+        "queries": queries,
+        "agent_trace": outcome.trace,
+        "agent_turns": outcome.turns,
+        "agent_tool_calls": outcome.tool_call_count,
+    }
     from pydantic import BaseModel as BM
 
     class QueryOut(BM):
@@ -278,7 +437,24 @@ class Ring3LiteratureReviewExecutor(RingExecutor):
             raise ValueError("subject_field 不能为空")
 
         svc: LiteratureService = get_lit_service()
-        queries = _llm_expand_queries(ctx.subject_field, theme)
+        agent_loop_enabled = bool(getattr(ctx, "agent_loop_enabled", False))
+        agent_result: dict | None = None
+        if agent_loop_enabled:
+            settings = get_llm_settings()
+            if settings.enabled and settings.api_key:
+                try:
+                    agent_result = _build_search_strategy(
+                        ctx, theme, AgentLoopSettings(),
+                    )
+                    queries = agent_result["queries"]
+                except (LLMError, StructuredOutputError) as exc:
+                    logger.warning("环3 Agent Loop不可用（%s），回退基础检索词", exc)
+                    queries = []
+            else:
+                logger.info("环3 Agent Loop需要LLM配置，回退基础检索词")
+                queries = []
+        else:
+            queries = _llm_expand_queries(ctx.subject_field, theme)
         if not queries:
             queries = [theme, ctx.subject_field, f"{ctx.subject_field} {theme}"]
 
@@ -357,6 +533,11 @@ class Ring3LiteratureReviewExecutor(RingExecutor):
             "target": target,
             "reliability": {"verified": verified, "uncertain": uncertain_cn},
             "note": "文献来源真实 API，严禁编造；中文条目待人工复核",
+            "agent_loop": {
+                "enabled": agent_loop_enabled,
+                "turns": int((agent_result or {}).get("agent_turns", 0)),
+                "tool_calls": int((agent_result or {}).get("agent_tool_calls", 0)),
+            },
         }
 
         return ExecResult(

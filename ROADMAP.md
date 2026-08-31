@@ -57,6 +57,7 @@
 - [x] PDF/DOCX/TXT/Markdown解析与向量+BM25混合检索；无嵌入模型时关键词降级。
 - [x] 知识库文件按`kind`隔离；非文献材料不进文献池，上传不自动升级为`verified`。
 - [x] 学术质量评测集（H4-003）：`evals/run_academic_eval.py` + 3个fixture套件共31条case，覆盖文献相关度、论断-证据匹配和引用完整性分层；CI离线自动运行。
+- [x] 环3 Agent Loop（H4-R3AL）：有界只读工具循环生成精化检索词；4个工具（read_approved_topic/read_project_memory/check_relevance/validate_query）；默认关闭，`THESIS_AGENT_LOOP_ENABLED`显式开启。
 - [ ] 核心/背景/方法文献分类及纳入、排除理由。
 - [ ] 论断到原文摘录、页码、文献和人工复核状态的稳定绑定。
 - [ ] 伪引、错引、缺引、引用越界和元数据不一致检查。

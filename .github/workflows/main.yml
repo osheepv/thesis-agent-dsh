@@ -27,3 +27,6 @@ jobs:
       # 测试零外网依赖：conftest 已禁 LLM / 任务存内存 / RAG 不下载模型
       - name: Run tests
         run: pytest tests/ -q
+
+      - name: Run academic quality evaluation
+        run: python evals/run_academic_eval.py --suite all

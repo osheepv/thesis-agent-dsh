@@ -423,11 +423,15 @@ async def list_artifacts(task_id: str, session_id: str = "",
 
 
 @router.post("/tasks/{task_id}/memory", response_model=None)
-async def create_project_memory(task_id: str, req: Dict[str, Any], session_id: str = "",
+async def create_project_memory(request: Request, task_id: str, req: Dict[str, Any],
+                                session_id: str = "",
                                 orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
     try:
         orchestration.assert_session(task_id, session_id)
-        return orchestration.create_project_memory(task_id, req)
+        tenant_id, author_id = _author_identity(request)
+        return orchestration.create_project_memory(
+            task_id, req, tenant_id=tenant_id, author_id=author_id
+        )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -678,11 +682,15 @@ async def assemble_section_drafts(task_id: str, session_id: str = "",
 # 研究协议、实验运行与结果血缘
 # ---------------------------------------------------------------------
 @router.post("/tasks/{task_id}/research/argument-maps", response_model=None)
-async def create_argument_map(task_id: str, req: Dict[str, Any], session_id: str = "",
+async def create_argument_map(request: Request, task_id: str, req: Dict[str, Any],
+                              session_id: str = "",
                               orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
     try:
         orchestration.assert_session(task_id, session_id)
-        return orchestration.create_argument_map(task_id, req)
+        tenant_id, author_id = _author_identity(request)
+        return orchestration.create_argument_map(
+            task_id, req, tenant_id=tenant_id, author_id=author_id
+        )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -715,11 +723,15 @@ async def review_argument_map(task_id: str, artifact_id: str, req: Dict[str, Any
 
 
 @router.post("/tasks/{task_id}/research/protocols", response_model=None)
-async def create_research_protocol(task_id: str, req: Dict[str, Any], session_id: str = "",
+async def create_research_protocol(request: Request, task_id: str, req: Dict[str, Any],
+                                   session_id: str = "",
                                    orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
     try:
         orchestration.assert_session(task_id, session_id)
-        return orchestration.create_research_protocol(task_id, req)
+        tenant_id, author_id = _author_identity(request)
+        return orchestration.create_research_protocol(
+            task_id, req, tenant_id=tenant_id, author_id=author_id
+        )
     except Exception as exc:  # noqa: BLE001
         return _err(exc)
 
@@ -968,8 +980,21 @@ async def task_progress(task_id: str, session_id: str = "",
 def _err(exc: Exception) -> Result[Any]:
     """把 BizException / 通用异常转 Result.fail（供同步编排缺陷快速返回）。"""
     from common.aicoding.exception.biz_exception import BizException
+    from common.aicoding.exception.error_code import ErrorCode
+    from writing import AutosaveDraftRevisionConflict
 
     if isinstance(exc, BizException):
         code = int(exc.code) if exc.code.isdigit() else 0
         return Result.fail(code=code, msg=exc.msg, data={"detail": exc.detail})
+    if isinstance(exc, AutosaveDraftRevisionConflict):
+        return Result.fail(
+            code=ErrorCode.STATE_CONFLICT.value,
+            msg=str(exc),
+            data={
+                "conflict": True,
+                "current_revision": exc.current_revision,
+                "incoming_revision": exc.incoming_revision,
+                "remote": exc.remote.metadata(),
+            },
+        )
     return Result.fail(code=1, msg=str(exc))

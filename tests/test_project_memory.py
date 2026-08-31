@@ -108,6 +108,67 @@ def test_project_memory_console_api(monkeypatch):
     assert listed["data"][0]["payload"]["version_note"] == "v1"
 
 
+def test_project_memory_form_autosave_submits_only_matching_revision():
+    orchestration = MainOrchestration(artifact_registry=ArtifactRegistry())
+    task_id = orchestration.create_task(
+        "项目记忆自动草稿", Degree.MASTER, "人工智能", session_id="memory-autosave"
+    ).data["task_id"]
+    key = "project-memory:new"
+    payload = _payload("autosave")
+    orchestration.save_autosave_draft(
+        task_id,
+        key,
+        {
+            "object_type": "PROJECT_MEMORY_FORM",
+            "stage_no": 0,
+            "revision": 1,
+            "content": payload,
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
+    created = orchestration.create_project_memory(
+        task_id,
+        {
+            **payload,
+            "autosave_draft_key": key,
+            "autosave_revision": 1,
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
+    assert created.is_ok
+    assert created.data["autosave_draft"]["status"] == "SUBMITTED"
+    assert created.data["autosave_draft"]["revision"] == 2
+
+    orchestration.save_autosave_draft(
+        task_id,
+        key,
+        {
+            "object_type": "PROJECT_MEMORY_FORM",
+            "stage_no": 0,
+            "revision": 3,
+            "content": _payload("new-edit"),
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
+    with pytest.raises(ValueError, match="内容与指定自动草稿"):
+        orchestration.create_project_memory(
+            task_id,
+            {
+                **_payload("different"),
+                "autosave_draft_key": key,
+                "autosave_revision": 3,
+            },
+            tenant_id="default",
+            author_id="author-a",
+        )
+    assert orchestration._drafts.get(  # noqa: SLF001
+        task_id, "author-a", key
+    ).status == "ACTIVE"
+
+
 def test_ring6_agent_must_read_approved_project_memory(monkeypatch):
     turns = iter([
         ModelTurn(tool_calls=(ModelToolCall(

@@ -576,7 +576,7 @@ class MainOrchestration:
     """
 
     # 自动草稿能力声明：只有后端、API与至少四个真实编辑面全部可用时才置为 True。
-    DRAFT_AUTOSAVE_CAPABLE = False
+    DRAFT_AUTOSAVE_CAPABLE = True
 
     _JOB_OPERATIONS = {
         "ring.execute", "section.generate", "sections.generate_all", "docx.generate"
@@ -856,6 +856,23 @@ class MainOrchestration:
         )
 
         ring_no = int(progress.get("current_ring_no", 1) or 1)
+        draft_author = author_id or "default"
+        self._refresh_autosave_staleness(task_id, draft_author)
+        autosave_records = self._drafts.list_task(task_id, draft_author)
+        autosaved_drafts = [draft.metadata() for draft in autosave_records]
+        resumable_draft = next(
+            (
+                draft for draft in autosave_records
+                if draft.status == "ACTIVE"
+                and draft.stage_no == ring_no
+                and draft.object_type in {
+                    "SECTION_REVISION",
+                    "RESEARCH_PROTOCOL_FORM",
+                    "ARGUMENT_MAP_FORM",
+                }
+            ),
+            None,
+        )
         if consistency_status != "CONSISTENT":
             action = {
                 "type": "REPAIR_REQUIRED",
@@ -882,6 +899,15 @@ class MainOrchestration:
                     "label": f"审阅并确认环{ring_no}产物",
                     "ring_no": ring_no,
                 }
+        elif resumable_draft is not None:
+            action = {
+                "type": "RESUME_DRAFT",
+                "label": "继续编辑未提交草稿",
+                "ring_no": ring_no,
+                "draft_key": resumable_draft.draft_key,
+                "object_type": resumable_draft.object_type,
+                "object_id": resumable_draft.object_id,
+            }
         elif progress.get("phase_state") == PhaseState.FALLBACK.value:
             action = {
                 "type": "RECOVER_STAGE",
@@ -923,18 +949,14 @@ class MainOrchestration:
             "active_jobs": active_jobs,
             "recoverable_jobs": recoverable_jobs,
             # 只返回草稿元数据，绝不返回 content_json、正文片段或表单全文。
-            "autosaved_drafts": [
-                draft.metadata()
-                for draft in self._drafts.list_task(task_id, author_id or "default")
-            ],
+            "autosaved_drafts": autosaved_drafts,
             "consistency_status": consistency_status,
             "consistency_issues": list(progress.get("artifact_projection_issues", []) or []),
             "next_safe_action": action,
             "capabilities": {
                 "workspace_restore": True,
                 "formal_artifact_restore": True,
-                # 只有后端、API与至少四个真实编辑面全部可用时才允许 True；
-                # M1 仅落地后端与API，因此仍如实声明为 False（禁止只建表就标 true）。
+                # 后端、API与四个真实编辑面均已接入。
                 "draft_autosave": self.DRAFT_AUTOSAVE_CAPABLE,
             },
         }, msg="任务恢复摘要")
@@ -982,6 +1004,9 @@ class MainOrchestration:
         rec = self._require(task_id)
         if tenant_id and rec.tenant_id != tenant_id:
             raise PermissionError("无权查看其他租户的草稿")
+        self._refresh_autosave_staleness(
+            task_id, author_id or "default"
+        )
         drafts = self._drafts.list_task(
             task_id, author_id or "default", include_submitted=True
         )
@@ -997,6 +1022,9 @@ class MainOrchestration:
         rec = self._require(task_id)
         if tenant_id and rec.tenant_id != tenant_id:
             raise PermissionError("无权查看其他租户的草稿")
+        self._refresh_autosave_staleness(
+            task_id, author_id or "default"
+        )
         draft = self._drafts.get(task_id, author_id or "default", draft_key)
         if draft is None:
             return Result.ok(data=None, msg="草稿不存在")
@@ -1127,6 +1155,54 @@ class MainOrchestration:
             revision=draft.revision,
         )
 
+    @staticmethod
+    def _without_autosave_controls(value: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(value)
+        payload.pop("autosave_draft_key", None)
+        payload.pop("autosave_revision", None)
+        return payload
+
+    @staticmethod
+    def _assert_autosave_content_matches(draft, payload: Dict[str, Any]) -> None:
+        if draft is not None and draft.content_json != payload:
+            raise AutosaveDraftError(
+                "正式提交内容与指定自动草稿revision不一致"
+            )
+
+    def _refresh_autosave_staleness(self, task_id: str, author_id: str) -> None:
+        """按当前正式基线标记作者草稿过期；保留内容，不静默重放。"""
+        state = self._fsm.get_task(task_id)
+        section_drafts = self._sections.list_task(task_id)
+        latest_by_section: Dict[str, Any] = {}
+        for section in section_drafts:
+            current = latest_by_section.get(section.section_id)
+            if current is None or section.version > current.version:
+                latest_by_section[section.section_id] = section
+        for draft in self._drafts.list_task(task_id, author_id):
+            if draft.status != "ACTIVE":
+                continue
+            if draft.object_type == "SECTION_REVISION":
+                latest = latest_by_section.get(draft.object_id)
+                if latest is None or latest.section_draft_id != draft.base_artifact_id:
+                    self._drafts.mark_stale(
+                        task_id,
+                        author_id,
+                        draft.draft_key,
+                        reason="分节正式基线已变化，请基于最新版本重新修订",
+                    )
+            elif (
+                draft.object_type in {
+                    "RESEARCH_PROTOCOL_FORM", "ARGUMENT_MAP_FORM"
+                }
+                and state.current_ring_no != 5
+            ):
+                self._drafts.mark_stale(
+                    task_id,
+                    author_id,
+                    draft.draft_key,
+                    reason="论文已离开环5研究设计阶段，请回到允许环节后复核",
+                )
+
     def get_workspace_state(
         self,
         workspace_key: str,
@@ -1167,10 +1243,25 @@ class MainOrchestration:
     # 论文级项目记忆（版本化 + 作者审批）
     # ------------------------------------------------------------------
     def create_project_memory(
-        self, task_id: str, value: Dict[str, Any]
+        self,
+        task_id: str,
+        value: Dict[str, Any],
+        *,
+        tenant_id: str = "",
+        author_id: str = "",
     ) -> Result[Dict[str, Any]]:
         self._require(task_id)
-        memory = validate_project_memory(value)
+        payload = self._without_autosave_controls(value)
+        autosave = self._autosave_submission_draft(
+            task_id,
+            value,
+            object_type="PROJECT_MEMORY_FORM",
+            object_id="new",
+            tenant_id=tenant_id,
+            author_id=author_id,
+        )
+        self._assert_autosave_content_matches(autosave, payload)
+        memory = validate_project_memory(payload)
         topic = self._artifacts.get_active(
             task_id=task_id,
             stage_no=1,
@@ -1201,8 +1292,14 @@ class MainOrchestration:
                 "requires_author_approval": True,
             },
         )
+        data = self._artifact_dict(artifact)
+        submitted_draft = self._complete_autosave_submission(
+            autosave, artifact.artifact_id
+        )
+        if submitted_draft is not None:
+            data["autosave_draft"] = submitted_draft.metadata()
         return Result.ok(
-            data=self._artifact_dict(artifact),
+            data=data,
             msg="项目记忆新版本已生成，等待作者审批",
         )
 
@@ -3667,9 +3764,24 @@ class MainOrchestration:
     # 研究协议、实验运行与结果账本
     # ------------------------------------------------------------------
     def create_argument_map(
-        self, task_id: str, value: Dict[str, Any]
+        self,
+        task_id: str,
+        value: Dict[str, Any],
+        *,
+        tenant_id: str = "",
+        author_id: str = "",
     ) -> Result[Dict[str, Any]]:
         self._require(task_id)
+        payload = self._without_autosave_controls(value)
+        autosave = self._autosave_submission_draft(
+            task_id,
+            value,
+            object_type="ARGUMENT_MAP_FORM",
+            object_id="new",
+            tenant_id=tenant_id,
+            author_id=author_id,
+        )
+        self._assert_autosave_content_matches(autosave, payload)
         state = self._fsm.get_task(task_id)
         if state.current_ring_no != 5:
             raise BizException(
@@ -3677,7 +3789,7 @@ class MainOrchestration:
                 msg="论证图只能在环5设计和审批",
             )
         claims: list[ArgumentClaimSpec] = []
-        for raw in value.get("claims", ()) or ():
+        for raw in payload.get("claims", ()) or ():
             if not isinstance(raw, dict):
                 raise ResearchRegistryError("论证图 claims 条目必须是对象")
             try:
@@ -3699,8 +3811,8 @@ class MainOrchestration:
                 )
             )
         argument_map = ArgumentMap(
-            title=str(value.get("title", "")),
-            research_questions=tuple(value.get("research_questions", ()) or ()),
+            title=str(payload.get("title", "")),
+            research_questions=tuple(payload.get("research_questions", ()) or ()),
             claims=tuple(claims),
         )
         ring4 = self._artifacts.get_active(
@@ -3738,7 +3850,13 @@ class MainOrchestration:
             passed=True,
             report={"graph_validation": "passed", "claim_count": len(claims)},
         )
-        return Result.ok(data=self._artifact_dict(artifact), msg="论证图已生成，等待作者审批")
+        data = self._artifact_dict(artifact)
+        submitted_draft = self._complete_autosave_submission(
+            autosave, artifact.artifact_id
+        )
+        if submitted_draft is not None:
+            data["autosave_draft"] = submitted_draft.metadata()
+        return Result.ok(data=data, msg="论证图已生成，等待作者审批")
 
     def review_argument_map(
         self, task_id: str, artifact_id: str, *, approved: bool,
@@ -3784,32 +3902,47 @@ class MainOrchestration:
             )
 
     def create_research_protocol(
-        self, task_id: str, value: Dict[str, Any]
+        self,
+        task_id: str,
+        value: Dict[str, Any],
+        *,
+        tenant_id: str = "",
+        author_id: str = "",
     ) -> Result[Dict[str, Any]]:
         self._require(task_id)
+        payload = self._without_autosave_controls(value)
+        autosave = self._autosave_submission_draft(
+            task_id,
+            value,
+            object_type="RESEARCH_PROTOCOL_FORM",
+            object_id="new",
+            tenant_id=tenant_id,
+            author_id=author_id,
+        )
+        self._assert_autosave_content_matches(autosave, payload)
         state = self._fsm.get_task(task_id)
         if state.current_ring_no != 5:
             raise BizException(
                 ErrorCode.FSM_INVALID_TRANSITION,
                 msg="研究协议只能在环5设计和审批",
             )
-        method_value = str(value.get("method", ""))
+        method_value = str(payload.get("method", ""))
         try:
             method = ResearchMethod(method_value)
         except ValueError as exc:
             raise ResearchRegistryError(f"非法研究方法: {method_value}") from exc
         protocol = ResearchProtocol(
-            title=str(value.get("title", "")),
+            title=str(payload.get("title", "")),
             method=method,
-            research_questions=tuple(value.get("research_questions", ()) or ()),
-            procedure_steps=tuple(value.get("procedure_steps", ()) or ()),
-            analysis_plan=tuple(value.get("analysis_plan", ()) or ()),
-            required_outputs=tuple(value.get("required_outputs", ()) or ()),
-            hypotheses=tuple(value.get("hypotheses", ()) or ()),
-            variables=dict(value.get("variables", {}) or {}),
-            materials=tuple(value.get("materials", ()) or ()),
-            ethics_requirements=tuple(value.get("ethics_requirements", ()) or ()),
-            risks=tuple(value.get("risks", ()) or ()),
+            research_questions=tuple(payload.get("research_questions", ()) or ()),
+            procedure_steps=tuple(payload.get("procedure_steps", ()) or ()),
+            analysis_plan=tuple(payload.get("analysis_plan", ()) or ()),
+            required_outputs=tuple(payload.get("required_outputs", ()) or ()),
+            hypotheses=tuple(payload.get("hypotheses", ()) or ()),
+            variables=dict(payload.get("variables", {}) or {}),
+            materials=tuple(payload.get("materials", ()) or ()),
+            ethics_requirements=tuple(payload.get("ethics_requirements", ()) or ()),
+            risks=tuple(payload.get("risks", ()) or ()),
         )
         ring4 = self._artifacts.get_active(
             task_id=task_id,
@@ -3835,7 +3968,13 @@ class MainOrchestration:
             passed=True,
             report={"schema_validation": "passed", "requires_author_approval": True},
         )
-        return Result.ok(data=self._artifact_dict(artifact), msg="研究协议已生成，等待作者审批")
+        data = self._artifact_dict(artifact)
+        submitted_draft = self._complete_autosave_submission(
+            autosave, artifact.artifact_id
+        )
+        if submitted_draft is not None:
+            data["autosave_draft"] = submitted_draft.metadata()
+        return Result.ok(data=data, msg="研究协议已生成，等待作者审批")
 
     def review_research_protocol(
         self, task_id: str, artifact_id: str, *, approved: bool,

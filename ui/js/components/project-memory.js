@@ -12,13 +12,50 @@ async function apiReviewProjectMemory(taskId, artifactId, approved, reason = '')
 }
 
 let memoryRevisionBase = null;
+const PROJECT_MEMORY_DRAFT_KEY = 'project-memory:new';
+
+async function ensureProjectMemoryAutosave() {
+  if (!currentSession || !window.ThesisAutosave?.registerDraftSurface) return null;
+  const existing = window.ThesisAutosave.surfaces.get(PROJECT_MEMORY_DRAFT_KEY);
+  if (existing?.taskId === currentSession) return existing;
+  const form = document.getElementById('memory-form');
+  const surface = window.ThesisAutosave.registerDraftSurface({
+    draftKey: PROJECT_MEMORY_DRAFT_KEY,
+    taskId: currentSession,
+    objectType: 'PROJECT_MEMORY_FORM',
+    objectId: 'new',
+    stageNo: 0,
+    label: '项目记忆',
+    statusEl: document.getElementById('memory-autosave-status'),
+    conflictHost: document.getElementById('memory-autosave-conflict'),
+    serialize: () => buildProjectMemoryPayload(),
+    hydrate: payload => fillProjectMemoryForm(payload || {}, '', '', { focus: false }),
+    reset: () => {
+      memoryRevisionBase = null;
+      form?.reset();
+      document.getElementById('memory-submit').textContent = '生成待审批版本';
+    },
+  });
+  if (form && !form.dataset.autosaveBound) {
+    form.dataset.autosaveBound = '1';
+    const schedule = () => {
+      window.ThesisAutosave.scheduleDraftSave(PROJECT_MEMORY_DRAFT_KEY);
+    };
+    form.addEventListener('input', schedule);
+    form.addEventListener('change', schedule);
+  }
+  await window.ThesisAutosave.loadDraft(PROJECT_MEMORY_DRAFT_KEY);
+  return surface;
+}
 
 function splitMemoryDecision(line) {
   const parts = String(line || '').split('|');
   return { text: (parts.shift() || '').trim(), rationale: parts.join('|').trim() };
 }
 
-function fillProjectMemoryForm(memory, version = '') {
+function fillProjectMemoryForm(
+  memory, version = '', artifactId = '', options = { focus: true },
+) {
   const style = memory?.writing_style || {};
   memoryRevisionBase = memory || null;
   document.getElementById('memory-questions').value = (memory?.research_questions || []).join('\n');
@@ -40,7 +77,12 @@ function fillProjectMemoryForm(memory, version = '') {
   document.getElementById('memory-questions').removeAttribute('aria-invalid');
   const builder = document.getElementById('memory-builder');
   builder.open = true;
-  document.getElementById('memory-questions').focus();
+  const surface = window.ThesisAutosave?.surfaces?.get(PROJECT_MEMORY_DRAFT_KEY);
+  if (surface && artifactId) {
+    surface.baseArtifactId = artifactId;
+    surface.baseVersion = Number(version) || 0;
+  }
+  if (options.focus !== false) document.getElementById('memory-questions').focus();
 }
 
 function buildProjectMemoryPayload() {
@@ -132,6 +174,8 @@ async function loadProjectMemoryPanel(announce = true) {
     return;
   }
   const taskId = currentSession;
+  await ensureProjectMemoryAutosave();
+  if (taskId !== currentSession) return;
   box.setAttribute('aria-busy', 'true');
   const response = await apiProjectMemories(taskId);
   if (taskId !== currentSession) return;
@@ -170,13 +214,41 @@ async function submitProjectMemoryForm(event) {
   error.textContent = '';
   const submit = document.getElementById('memory-submit');
   submit.disabled = true;
-  const response = await apiCreateProjectMemory(currentSession, buildProjectMemoryPayload());
+  const surface = await ensureProjectMemoryAutosave();
+  if (surface) {
+    await window.ThesisAutosave.flushDraft(PROJECT_MEMORY_DRAFT_KEY);
+    if (['conflict', 'stale', 'failed', 'saving', 'dirty'].includes(surface.status)) {
+      error.textContent = '自动草稿尚未安全保存或需要处理冲突。';
+      submit.disabled = false;
+      return;
+    }
+  }
+  const payload = buildProjectMemoryPayload();
+  if (surface && surface.revision > 0) {
+    payload.autosave_draft_key = PROJECT_MEMORY_DRAFT_KEY;
+    payload.autosave_revision = surface.revision;
+  }
+  const response = await apiCreateProjectMemory(currentSession, payload);
   submit.disabled = false;
+  if (response?.data?.conflict && surface) {
+    window.ThesisAutosave.reportDraftConflict(
+      PROJECT_MEMORY_DRAFT_KEY, response,
+    );
+    error.textContent = '正式提交基于旧草稿，请先处理冲突。';
+    return;
+  }
   if (response.code !== 0) {
     error.textContent = response.msg || '生成项目记忆版本失败。';
     return;
   }
   toast(response.msg);
+  if (response.data?.autosave_draft) {
+    window.ThesisAutosave.markDraftSubmitted(
+      PROJECT_MEMORY_DRAFT_KEY, response.data.autosave_draft,
+    );
+    surface.baseArtifactId = response.data.artifact_id || '';
+    surface.baseVersion = Number(response.data.version) || 0;
+  }
   memoryRevisionBase = null;
   form.reset();
   submit.textContent = '生成待审批版本';
@@ -199,7 +271,9 @@ async function handleProjectMemoryAction(event) {
     return;
   }
   if (action === 'revise') {
-    fillProjectMemoryForm(item.payload || {}, item.version);
+    fillProjectMemoryForm(
+      item.payload || {}, item.version, item.artifact_id,
+    );
     return;
   }
   let reason = '';

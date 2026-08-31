@@ -301,3 +301,25 @@ def test_section_surface_wiring_loads_and_submits_real_autosave():
     assert "autosave_revision" in source
     assert "markDraftSubmitted" in source
     assert "restoreEditorAnchor" in source
+
+
+def test_important_forms_use_shared_autosave_runtime_and_formal_controls():
+    app = APP_JS.read_text(encoding="utf-8")
+    memory = (
+        ROOT / "ui" / "js" / "components" / "project-memory.js"
+    ).read_text(encoding="utf-8")
+    html = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
+
+    for key in ("research-protocol:new", "argument-map:new"):
+        assert key in app
+    assert "ensureResearchAutosaves" in app
+    assert "buildProtocolPayload" in app
+    assert "buildArgumentPayload" in app
+    assert "autosave_draft_key" in app
+    assert "autosave_revision" in app
+    assert "PROJECT_MEMORY_DRAFT_KEY" in memory
+    assert "ensureProjectMemoryAutosave" in memory
+    assert "flushDraft(PROJECT_MEMORY_DRAFT_KEY)" in memory
+    assert "memory-autosave-status" in html
+    assert "protocol-autosave-status" in html
+    assert "argument-autosave-status" in html

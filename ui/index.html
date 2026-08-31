@@ -228,6 +228,8 @@
               <div class="wb-field"><label for="memory-citation-style">引用样式</label><input id="memory-citation-style" maxlength="120" value="GB/T 7714-2015"></div>
               <div class="wb-field"><label for="memory-constraints">其他写作约束（每行一条）</label><textarea id="memory-constraints" maxlength="15000"></textarea></div>
               <div class="wb-field"><label for="memory-version-note">版本说明</label><input id="memory-version-note" maxlength="500" placeholder="例：纳入导师第二轮意见"></div>
+              <div class="autosave-status" id="memory-autosave-status" role="status" aria-live="polite"></div>
+              <div class="autosave-conflict" id="memory-autosave-conflict" hidden></div>
               <div id="memory-error" class="wb-card-meta" style="color:var(--error)" role="alert" aria-live="assertive"></div>
               <button class="btn btn-primary btn-sm" id="memory-submit" type="submit">生成待审批版本</button>
             </form>
@@ -267,6 +269,8 @@
               <div class="wb-field"><label for="protocol-outputs">必须产物（每行一个）</label><textarea id="protocol-outputs" required></textarea></div>
               <div class="wb-field"><label for="protocol-hypotheses">假设（可选，每行一个）</label><textarea id="protocol-hypotheses"></textarea></div>
               <div class="wb-field"><label for="protocol-materials">材料与伦理要求（每行一个）</label><textarea id="protocol-materials"></textarea></div>
+              <div class="autosave-status" id="protocol-autosave-status" role="status" aria-live="polite"></div>
+              <div class="autosave-conflict" id="protocol-autosave-conflict" hidden></div>
               <div id="protocol-error" class="wb-card-meta" style="color:var(--error)" role="alert"></div>
               <button class="btn btn-primary btn-sm" type="submit">生成协议版本</button>
             </form>
@@ -280,6 +284,8 @@
               <div class="wb-field"><label for="argument-rq">研究问题（每行一个）</label><textarea id="argument-rq" required></textarea></div>
               <div id="argument-claim-rows"></div>
               <button class="btn btn-secondary btn-sm" type="button" id="argument-add-claim">添加论断</button>
+              <div class="autosave-status" id="argument-autosave-status" role="status" aria-live="polite"></div>
+              <div class="autosave-conflict" id="argument-autosave-conflict" hidden></div>
               <div id="argument-error" class="wb-card-meta" style="color:var(--error)" role="alert"></div>
               <button class="btn btn-primary btn-sm" type="submit">生成论证图版本</button>
             </form>

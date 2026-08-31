@@ -276,16 +276,24 @@ state.gateWaiters = [];
 state.fetches = [];
 
 const elements = new Map();
+class FakeDetails {}
+global.HTMLDetailsElement = FakeDetails;
 function element(id) {
   if (!elements.has(id)) {
-    elements.set(id, {
+    const value = {
       id, hidden: false, disabled: false, textContent: '', value: '',
-      dataset: {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+      dataset: {}, open: false, _handlers: {},
+      classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
       focus() { state.focused = id; },
-      removeAttribute() {}, setAttribute() {}, addEventListener() {},
+      removeAttribute() {}, setAttribute() {},
+      addEventListener(name, fn) { this._handlers[name] = fn; },
       querySelector() { return null; }, querySelectorAll() { return []; },
       scrollIntoView() {}, closest() { return null; },
-    });
+    };
+    if (['memory-builder', 'protocol-builder', 'argument-builder', 'template-mapping-panel'].includes(id)) {
+      Object.setPrototypeOf(value, FakeDetails.prototype);
+    }
+    elements.set(id, value);
   }
   return elements.get(id);
 }
@@ -637,6 +645,21 @@ def test_continue_action_only_navigates_and_focuses():
   assert(state.focused === 'jobs-refresh',
     'MONITOR_JOB必须聚焦稳定的刷新按钮，避免列表重绘后焦点掉回body');
 
+  state.focused = null;
+  renderResumeBanner({
+    task_id: 'T1', title: '论文一', current_ring_no: 5, complete_percent: 40,
+    pending_approvals: [], active_jobs: [],
+    autosaved_drafts: [{ draft_key: 'research-protocol:new', status: 'ACTIVE' }],
+    next_safe_action: {
+      type: 'RESUME_DRAFT', label: '继续编辑未提交草稿',
+      draft_key: 'research-protocol:new', object_type: 'RESEARCH_PROTOCOL_FORM',
+    },
+  });
+  await continueLastThesis();
+  assert(state.activeTabs.includes('research'), '研究协议草稿必须打开研究页签');
+  assert(state.focused === 'protocol-title', '研究协议草稿必须聚焦稳定的标题输入');
+  assert(element('protocol-builder').open === true, '草稿恢复必须展开对应表单');
+
   // 被阻断的恢复不得把焦点带向执行按钮。
   state.focused = null;
   state.saves.length = 0;
@@ -690,6 +713,30 @@ def test_workspace_snapshot_rejects_unknown_tabs_and_oversized_fields():
   const snapshot = workspaceSnapshot();
   assert(Object.keys(snapshot).sort().join(',') === 'active_tab,editor_anchor,expanded_items,last_task_id',
     '快照字段必须与后端契约一致');
+""")
+
+
+def test_expanded_items_are_collected_and_restored_from_stable_details_ids():
+    _run_workspace_harness(r"""
+  workspaceState = {
+    last_task_id: 'T1',
+    active_tab: 'memory',
+    expanded_items: ['memory-builder', 'protocol-builder'],
+    editor_anchor: '',
+  };
+  bindWorkspaceExpandedItems();
+  applyWorkspaceExpandedItems();
+  assert(element('memory-builder').open === true, '记忆表单应按工作区状态展开');
+  assert(element('protocol-builder').open === true, '研究协议应按工作区状态展开');
+  assert(element('argument-builder').open === false, '未保存的表单不应被展开');
+
+  element('protocol-builder').open = false;
+  element('argument-builder').open = true;
+  element('argument-builder')._handlers.toggle();
+  assert(workspaceState.expanded_items.includes('argument-builder'),
+    '展开操作必须写入稳定ID');
+  assert(!workspaceState.expanded_items.includes('protocol-builder'),
+    '关闭操作必须从工作区状态移除');
 """)
 
 

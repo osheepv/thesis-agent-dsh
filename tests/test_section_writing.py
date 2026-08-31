@@ -317,6 +317,11 @@ def test_section_revision_submits_matching_autosave_only_after_formal_success(mo
         author_id="author-a",
     ).data
     assert saved["status"] == "ACTIVE"
+    resume = orchestration.get_resume_summary(
+        task_id, author_id="author-a"
+    ).data
+    assert resume["next_safe_action"]["type"] == "RESUME_DRAFT"
+    assert resume["next_safe_action"]["draft_key"] == key
 
     revised = orchestration.revise_section_draft(
         task_id,
@@ -339,6 +344,36 @@ def test_section_revision_submits_matching_autosave_only_after_formal_success(mo
     assert orchestration.get_resume_summary(
         task_id, author_id="author-a"
     ).data["autosaved_drafts"] == []
+
+    next_content = revised.data["content"] + "\n\n尚未提交的下一轮修改。"
+    orchestration.save_autosave_draft(
+        task_id,
+        key,
+        {
+            "object_type": "SECTION_REVISION",
+            "stage_no": 6,
+            "base_artifact_id": revised.data["section_draft_id"],
+            "base_version": revised.data["version"],
+            "revision": 3,
+            "content": {
+                "content": next_content,
+                "section_id": "1.2",
+                "base_section_draft_id": revised.data["section_draft_id"],
+            },
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
+    orchestration.revise_section_draft(
+        task_id,
+        revised.data["section_draft_id"],
+        {"content": revised.data["content"] + "\n\n另一页面的正式修改。"},
+    )
+    listed_after_change = orchestration.list_autosave_drafts(
+        task_id, tenant_id="default", author_id="author-a"
+    ).data["items"]
+    current = next(item for item in listed_after_change if item["draft_key"] == key)
+    assert current["status"] == "STALE"
 
 
 def test_section_writing_endpoints_are_available(monkeypatch):

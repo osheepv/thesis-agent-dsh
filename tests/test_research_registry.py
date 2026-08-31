@@ -210,6 +210,106 @@ def _protocol_payload() -> dict:
     }
 
 
+def test_research_forms_autosave_submit_protocol_and_argument_map(monkeypatch):
+    orchestration = _orchestration(monkeypatch)
+    task_id = _advance_to_ring5(orchestration)
+    orchestration.run_ring5(task_id)
+    protocol_payload = _protocol_payload()
+    protocol_key = "research-protocol:new"
+    orchestration.save_autosave_draft(
+        task_id,
+        protocol_key,
+        {
+            "object_type": "RESEARCH_PROTOCOL_FORM",
+            "stage_no": 5,
+            "revision": 1,
+            "content": protocol_payload,
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
+    protocol = orchestration.create_research_protocol(
+        task_id,
+        {
+            **protocol_payload,
+            "autosave_draft_key": protocol_key,
+            "autosave_revision": 1,
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
+    assert protocol.is_ok
+    assert protocol.data["autosave_draft"]["status"] == "SUBMITTED"
+    orchestration.review_research_protocol(
+        task_id, protocol.data["artifact_id"], approved=True
+    )
+
+    argument_payload = {
+        "title": "自动草稿论证图",
+        "research_questions": ["证据链是否可追溯？"],
+        "claims": [{
+            "claim_key": "ROOT",
+            "text": "证据链必须可追溯",
+            "section_id": "1.1",
+            "claim_type": "FACTUAL",
+            "role": "THESIS",
+            "parent_keys": [],
+            "evidence_requirements": ["原文摘录"],
+        }],
+    }
+    argument_key = "argument-map:new"
+    orchestration.save_autosave_draft(
+        task_id,
+        argument_key,
+        {
+            "object_type": "ARGUMENT_MAP_FORM",
+            "stage_no": 5,
+            "revision": 1,
+            "content": argument_payload,
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
+    argument = orchestration.create_argument_map(
+        task_id,
+        {
+            **argument_payload,
+            "autosave_draft_key": argument_key,
+            "autosave_revision": 1,
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
+    assert argument.is_ok
+    assert argument.data["autosave_draft"]["status"] == "SUBMITTED"
+
+    # 环5离开后仍未提交的研究表单必须保留内容并标记STALE。
+    orchestration.save_autosave_draft(
+        task_id,
+        protocol_key,
+        {
+            "object_type": "RESEARCH_PROTOCOL_FORM",
+            "stage_no": 5,
+            "revision": 3,
+            "content": {**protocol_payload, "title": "尚未提交的新协议"},
+        },
+        tenant_id="default",
+        author_id="author-a",
+    )
+    orchestration.review_argument_map(
+        task_id, argument.data["artifact_id"], approved=True
+    )
+    orchestration.confirm_ring(task_id, 5)
+    listed = orchestration.list_autosave_drafts(
+        task_id, tenant_id="default", author_id="author-a"
+    ).data["items"]
+    active_protocol = next(
+        item for item in listed if item["draft_key"] == protocol_key
+    )
+    assert active_protocol["status"] == "STALE"
+    assert active_protocol["stale_reason"]
+
+
 def test_empirical_protocol_and_result_ledger_gate_ring6(monkeypatch):
     orchestration = _orchestration(monkeypatch)
     task_id = _advance_to_ring5(orchestration)

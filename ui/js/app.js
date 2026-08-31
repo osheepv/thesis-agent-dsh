@@ -434,24 +434,26 @@ function activateWorkbenchTab(target) {
     pane.hidden = !active;
   });
   const sid = currentKnowledgeSession || currentSession || 'default';
+  let loading = Promise.resolve();
   if (target === 'refs') {
-    if (currentSession) loadKbPanel(sid);
+    if (currentSession) loading = Promise.resolve(loadKbPanel(sid));
     else {
       const empty = document.getElementById('kb-refs-empty');
       if (empty) empty.style.display = '';
     }
   }
-  if (target === 'notes') loadNotes(sid);
-  if (target === 'graph') renderGraph(sid);
-  if (target === 'memory') window.ThesisProjectMemory.loadPanel();
-  if (target === 'evidence') window.ThesisEvidence.loadPanel();
-  if (target === 'research') loadResearchPanel();
-  if (target === 'writing') loadSectionsPanel();
-  if (target === 'jobs') loadJobsPanel();
+  if (target === 'notes') loading = Promise.resolve(loadNotes(sid));
+  if (target === 'graph') loading = Promise.resolve(renderGraph(sid));
+  if (target === 'memory') loading = Promise.resolve(window.ThesisProjectMemory.loadPanel());
+  if (target === 'evidence') loading = Promise.resolve(window.ThesisEvidence.loadPanel());
+  if (target === 'research') loading = Promise.resolve(loadResearchPanel());
+  if (target === 'writing') loading = Promise.resolve(loadSectionsPanel());
+  if (target === 'jobs') loading = Promise.resolve(loadJobsPanel());
   scheduleWorkspaceSave({
     active_tab: target,
     last_task_id: currentSession || workspaceState.last_task_id || '',
   });
+  return loading;
 }
 
 /* —— 折叠知识库面板 —— */
@@ -503,6 +505,7 @@ document.getElementById('del-confirm').addEventListener('click', async () => {
         currentKnowledgeSession = '';
       }
       workspaceState = { ...workspaceState, expanded_items: [], editor_anchor: '' };
+      applyWorkspaceExpandedItems();
       hideResumeBanner();
       const result = await loadSessions();
       // 只有列表请求明确成功时，才把实际回退选中的任务写回；请求失败则保留服务端旧指针。
@@ -1731,6 +1734,9 @@ let sessionSearchTimer = null;
 const WORKSPACE_TABS = new Set([
   'refs', 'memory', 'evidence', 'research', 'writing', 'jobs', 'notes', 'graph',
 ]);
+const WORKSPACE_EXPANDABLE_IDS = [
+  'memory-builder', 'protocol-builder', 'argument-builder', 'template-mapping-panel',
+];
 let workspaceState = defaultWorkspaceState();
 let workspacePersistenceReady = false;
 let workspaceSaveTimer = null;
@@ -1791,6 +1797,28 @@ function normalizeWorkspaceState(raw) {
 
 function workspaceSnapshot() {
   return normalizeWorkspaceState(workspaceState);
+}
+
+function applyWorkspaceExpandedItems() {
+  const expanded = new Set(workspaceState.expanded_items || []);
+  WORKSPACE_EXPANDABLE_IDS.forEach(id => {
+    const element = document.getElementById(id);
+    if (element instanceof HTMLDetailsElement) element.open = expanded.has(id);
+  });
+}
+
+function bindWorkspaceExpandedItems() {
+  WORKSPACE_EXPANDABLE_IDS.forEach(id => {
+    const element = document.getElementById(id);
+    if (!(element instanceof HTMLDetailsElement) || element.dataset.workspaceBound) return;
+    element.dataset.workspaceBound = '1';
+    element.addEventListener('toggle', () => {
+      const items = WORKSPACE_EXPANDABLE_IDS.filter(itemId => (
+        document.getElementById(itemId)?.open
+      ));
+      scheduleWorkspaceSave({ expanded_items: items });
+    });
+  });
 }
 
 function sameWorkspaceContent(left, right) {
@@ -1923,11 +1951,14 @@ function renderResumeBanner(resume) {
   resumeSummaryCache = resume;
   const pendingCount = (resume.pending_approvals || []).length;
   const activeJobCount = (resume.active_jobs || []).length;
-  summary.textContent = `${resume.title || '当前论文'} · 环${resume.current_ring_no} ${RING_NAMES[resume.current_ring_no] || ''} · 完成 ${resume.complete_percent || 0}% · 待审批 ${pendingCount} · 运行中作业 ${activeJobCount}`;
+  const draftCount = (resume.autosaved_drafts || []).length;
+  summary.textContent = `${resume.title || '当前论文'} · 环${resume.current_ring_no} ${RING_NAMES[resume.current_ring_no] || ''} · 完成 ${resume.complete_percent || 0}% · 待审批 ${pendingCount} · 运行中作业 ${activeJobCount} · 未提交草稿 ${draftCount}`;
   next.textContent = `下一步：${resume.next_safe_action?.label || '查看当前任务'}`;
   button.dataset.taskId = resume.task_id;
   button.textContent = resume.next_safe_action?.type === 'REVIEW_DELIVERY'
     ? '查看交付结果'
+    : resume.next_safe_action?.type === 'RESUME_DRAFT'
+    ? '继续编辑草稿'
     : '继续写作';
   banner.hidden = false;
 }
@@ -2000,6 +2031,29 @@ function resumeFocusTarget(resume) {
     }
     return document.getElementById('run-cur-ring');
   }
+  if (type === 'RESUME_DRAFT') {
+    const draftKey = resume.next_safe_action?.draft_key || '';
+    const objectType = resume.next_safe_action?.object_type;
+    if (objectType === 'SECTION_REVISION') {
+      const surface = window.ThesisAutosave?.surfaces?.get(draftKey);
+      const editor = surface?.editor;
+      const area = editor?.closest('.section-edit-area');
+      if (area) area.hidden = false;
+      activeSectionDraftKey = draftKey;
+      restoreEditorAnchor(draftKey, editor);
+      return editor || document.getElementById('sections-refresh');
+    }
+    if (objectType === 'RESEARCH_PROTOCOL_FORM') {
+      document.getElementById('protocol-builder').open = true;
+      return document.getElementById('protocol-title');
+    }
+    if (objectType === 'ARGUMENT_MAP_FORM') {
+      document.getElementById('argument-builder').open = true;
+      return document.getElementById('argument-title');
+    }
+    document.getElementById('memory-builder').open = true;
+    return document.getElementById('memory-questions');
+  }
   if (type === 'RECOVER_STAGE') {
     const retry = document.querySelector('[data-job-id] [data-job-action="retry"]');
     return retry || document.getElementById('run-cur-ring');
@@ -2017,6 +2071,11 @@ function resumeTargetTab(resume, fallbackTab) {
   const type = resume.next_safe_action?.type;
   if (type === 'MONITOR_JOB') return 'jobs';
   if (type === 'RECOVER_STAGE' && (resume.recoverable_jobs || []).length) return 'jobs';
+  if (type === 'RESUME_DRAFT') {
+    if (resume.next_safe_action?.object_type === 'SECTION_REVISION') return 'writing';
+    if (resume.next_safe_action?.object_type === 'PROJECT_MEMORY_FORM') return 'memory';
+    return 'research';
+  }
   return fallbackTab || 'refs';
 }
 
@@ -2034,10 +2093,11 @@ async function continueLastThesis() {
   currentSession = selected.task_id;
   currentSessionTitle = selected.title || '';
   workspaceState = { ...workspaceState, expanded_items: [], editor_anchor: '' };
+  applyWorkspaceExpandedItems();
   renderSessionList();
   await loadSessionDetail(currentSession);
   const targetTab = resumeTargetTab(resume, workspaceState.active_tab);
-  activateWorkbenchTab(targetTab);
+  await activateWorkbenchTab(targetTab);
   hideResumeBanner();
   scheduleWorkspaceSave({
     last_task_id: currentSession,
@@ -2073,6 +2133,7 @@ async function selectSession(taskId) {
   currentSessionTitle = selected.title || '';
   // 展开项和编辑锚点属于上一任务，切换任务时必须清空。
   workspaceState = { ...workspaceState, expanded_items: [], editor_anchor: '' };
+  applyWorkspaceExpandedItems();
   renderSessionList();
   hideResumeBanner();
   await loadSessionDetail(currentSession);
@@ -2090,12 +2151,13 @@ async function switchWorkspaceIdentity() {
   currentSession = null;
   currentSessionTitle = '';
   const restored = await loadWorkspaceState();
+  applyWorkspaceExpandedItems();
   currentSession = restored.last_task_id || null;
   const result = await loadSessionsWithWorkspaceFallback({
     preferredTaskId: restored.last_task_id,
     forceDetail: true,
   });
-  activateWorkbenchTab(workspaceState.active_tab || 'refs');
+  await activateWorkbenchTab(workspaceState.active_tab || 'refs');
   renderResumeBanner(await resolveResumeForSelected(currentSession, resumeSummaryCache));
   workspacePersistenceReady = true;
   return result;
@@ -2571,6 +2633,7 @@ async function submitNewSession() {
     const createdTaskId = r.data?.task_id || '';
     window.ThesisAutosave?.resetAutosaveIdentity?.();
     workspaceState = { ...workspaceState, expanded_items: [], editor_anchor: '' };
+    applyWorkspaceExpandedItems();
     hideResumeBanner();
     // 用创建响应中的 task_id 锁定当前任务，列表刷新后不能跳回旧任务。
     const result = await loadSessions({
@@ -3064,12 +3127,132 @@ let researchFiles = [];
 let researchRuns = [];
 let researchResults = [];
 let claimRowCounter = 0;
+const PROTOCOL_DRAFT_KEY = 'research-protocol:new';
+const ARGUMENT_DRAFT_KEY = 'argument-map:new';
 
 function valueLines(id) {
   return (document.getElementById(id)?.value || '').split(/\r?\n/).map(value => value.trim()).filter(Boolean);
 }
 
-function addArgumentClaimRow(seed = {}) {
+function buildProtocolPayload() {
+  return {
+    title: document.getElementById('protocol-title').value.trim(),
+    method: document.getElementById('protocol-method').value,
+    research_questions: valueLines('protocol-rq'),
+    procedure_steps: valueLines('protocol-steps'),
+    analysis_plan: valueLines('protocol-analysis'),
+    required_outputs: valueLines('protocol-outputs'),
+    hypotheses: valueLines('protocol-hypotheses'),
+    materials: valueLines('protocol-materials'),
+    ethics_requirements: ['作者确认实验材料真实、合法且符合所在机构伦理要求'],
+  };
+}
+
+function hydrateProtocolPayload(payload = {}) {
+  document.getElementById('protocol-title').value = payload.title || '';
+  document.getElementById('protocol-method').value = payload.method || 'QUANTITATIVE';
+  document.getElementById('protocol-rq').value = (payload.research_questions || []).join('\n');
+  document.getElementById('protocol-steps').value = (payload.procedure_steps || []).join('\n');
+  document.getElementById('protocol-analysis').value = (payload.analysis_plan || []).join('\n');
+  document.getElementById('protocol-outputs').value = (payload.required_outputs || []).join('\n');
+  document.getElementById('protocol-hypotheses').value = (payload.hypotheses || []).join('\n');
+  document.getElementById('protocol-materials').value = (payload.materials || []).join('\n');
+  document.getElementById('protocol-builder').open = true;
+}
+
+function buildArgumentPayload() {
+  const claims = [...document.querySelectorAll('[data-claim-row]')].map(row => ({
+    claim_key: row.querySelector('[data-claim="key"]').value.trim(),
+    section_id: row.querySelector('[data-claim="section"]').value.trim(),
+    role: row.querySelector('[data-claim="role"]').value,
+    claim_type: row.querySelector('[data-claim="type"]').value,
+    parent_keys: row.querySelector('[data-claim="parents"]').value
+      .split(',').map(value => value.trim()).filter(Boolean),
+    text: row.querySelector('[data-claim="text"]').value.trim(),
+    evidence_requirements: row.querySelector('[data-claim="evidence"]').value
+      .split(',').map(value => value.trim()).filter(Boolean),
+  }));
+  return {
+    title: document.getElementById('argument-title').value.trim(),
+    research_questions: valueLines('argument-rq'),
+    claims,
+  };
+}
+
+function hydrateArgumentPayload(payload = {}) {
+  document.getElementById('argument-title').value = payload.title || '';
+  document.getElementById('argument-rq').value = (payload.research_questions || []).join('\n');
+  const host = document.getElementById('argument-claim-rows');
+  host.replaceChildren();
+  claimRowCounter = 0;
+  const claims = payload.claims?.length ? payload.claims : [{}];
+  claims.forEach(claim => addArgumentClaimRow(claim, { schedule: false }));
+  document.getElementById('argument-builder').open = true;
+}
+
+function scheduleArgumentAutosave() {
+  window.ThesisAutosave?.scheduleDraftSave?.(ARGUMENT_DRAFT_KEY);
+}
+
+async function ensureResearchAutosaves() {
+  if (!currentSession || !window.ThesisAutosave?.registerDraftSurface) return;
+  const taskId = currentSession;
+  const protocolForm = document.getElementById('protocol-form');
+  const argumentForm = document.getElementById('argument-form');
+
+  if (window.ThesisAutosave.surfaces.get(PROTOCOL_DRAFT_KEY)?.taskId !== taskId) {
+    window.ThesisAutosave.registerDraftSurface({
+      draftKey: PROTOCOL_DRAFT_KEY,
+      taskId,
+      objectType: 'RESEARCH_PROTOCOL_FORM',
+      objectId: 'new',
+      stageNo: 5,
+      label: '研究协议',
+      statusEl: document.getElementById('protocol-autosave-status'),
+      conflictHost: document.getElementById('protocol-autosave-conflict'),
+      serialize: buildProtocolPayload,
+      hydrate: hydrateProtocolPayload,
+      reset: () => protocolForm?.reset(),
+    });
+    await window.ThesisAutosave.loadDraft(PROTOCOL_DRAFT_KEY);
+  }
+
+  if (window.ThesisAutosave.surfaces.get(ARGUMENT_DRAFT_KEY)?.taskId !== taskId) {
+    window.ThesisAutosave.registerDraftSurface({
+      draftKey: ARGUMENT_DRAFT_KEY,
+      taskId,
+      objectType: 'ARGUMENT_MAP_FORM',
+      objectId: 'new',
+      stageNo: 5,
+      label: '论证图',
+      statusEl: document.getElementById('argument-autosave-status'),
+      conflictHost: document.getElementById('argument-autosave-conflict'),
+      serialize: buildArgumentPayload,
+      hydrate: hydrateArgumentPayload,
+      reset: () => {
+        argumentForm?.reset();
+        document.getElementById('argument-claim-rows')?.replaceChildren();
+        claimRowCounter = 0;
+        addArgumentClaimRow({}, { schedule: false });
+      },
+    });
+    await window.ThesisAutosave.loadDraft(ARGUMENT_DRAFT_KEY);
+  }
+
+  if (protocolForm && !protocolForm.dataset.autosaveBound) {
+    protocolForm.dataset.autosaveBound = '1';
+    const schedule = () => window.ThesisAutosave.scheduleDraftSave(PROTOCOL_DRAFT_KEY);
+    protocolForm.addEventListener('input', schedule);
+    protocolForm.addEventListener('change', schedule);
+  }
+  if (argumentForm && !argumentForm.dataset.autosaveBound) {
+    argumentForm.dataset.autosaveBound = '1';
+    argumentForm.addEventListener('input', scheduleArgumentAutosave);
+    argumentForm.addEventListener('change', scheduleArgumentAutosave);
+  }
+}
+
+function addArgumentClaimRow(seed = {}, options = { schedule: true }) {
   const host = document.getElementById('argument-claim-rows');
   if (!host) return;
   const rowId = `claim-row-${++claimRowCounter}`;
@@ -3093,8 +3276,10 @@ function addArgumentClaimRow(seed = {}) {
       return;
     }
     row.remove();
+    scheduleArgumentAutosave();
   });
   host.appendChild(row);
+  if (options.schedule !== false) scheduleArgumentAutosave();
 }
 
 function researchFileLabel(fileId) {
@@ -3129,6 +3314,8 @@ async function loadResearchPanel() {
     return;
   }
   const taskId = currentSession;
+  await ensureResearchAutosaves();
+  if (taskId !== currentSession) return;
   auditBox.setAttribute('aria-busy', 'true');
   const [protocolResponse, mapResponse, runResponse, resultResponse, auditResponse, artifactResponse, progress, files] = await Promise.all([
     apiResearchProtocols(taskId), apiArgumentMaps(taskId), apiResearchRuns(taskId),
@@ -3291,27 +3478,41 @@ async function submitProtocolForm(event) {
   const form = event.currentTarget;
   const submit = form.querySelector('button[type="submit"]');
   const error = document.getElementById('protocol-error');
-  const payload = {
-    title: document.getElementById('protocol-title').value.trim(),
-    method: document.getElementById('protocol-method').value,
-    research_questions: valueLines('protocol-rq'),
-    procedure_steps: valueLines('protocol-steps'),
-    analysis_plan: valueLines('protocol-analysis'),
-    required_outputs: valueLines('protocol-outputs'),
-    hypotheses: valueLines('protocol-hypotheses'),
-    materials: valueLines('protocol-materials'),
-    ethics_requirements: ['作者确认实验材料真实、合法且符合所在机构伦理要求'],
-  };
+  const payload = buildProtocolPayload();
   const missing = !payload.title || !payload.research_questions.length || !payload.procedure_steps.length || !payload.analysis_plan.length || !payload.required_outputs.length;
   if (missing) { error.textContent = '请填写协议名称、研究问题、实施步骤、分析计划和必须产物。'; return; }
   error.textContent = '';
   submit.disabled = true;
+  const surface = window.ThesisAutosave?.surfaces?.get(PROTOCOL_DRAFT_KEY);
+  if (surface) {
+    await window.ThesisAutosave.flushDraft(PROTOCOL_DRAFT_KEY);
+    if (['conflict', 'stale', 'failed', 'saving', 'dirty'].includes(surface.status)) {
+      error.textContent = '自动草稿尚未安全保存或需要处理冲突。';
+      submit.disabled = false;
+      return;
+    }
+    if (surface.revision > 0) {
+      payload.autosave_draft_key = PROTOCOL_DRAFT_KEY;
+      payload.autosave_revision = surface.revision;
+    }
+  }
   const response = await apiCreateProtocol(currentSession, payload);
+  if (response?.data?.conflict && surface) {
+    window.ThesisAutosave.reportDraftConflict(PROTOCOL_DRAFT_KEY, response);
+    error.textContent = '正式提交基于旧草稿，请先处理冲突。';
+    submit.disabled = false;
+    return;
+  }
   if (response.code !== 0) {
     error.textContent = response.msg;
     submit.disabled = false;
   } else {
     toast(response.msg);
+    if (response.data?.autosave_draft) {
+      window.ThesisAutosave.markDraftSubmitted(
+        PROTOCOL_DRAFT_KEY, response.data.autosave_draft,
+      );
+    }
     form.reset();
     document.getElementById('protocol-builder').open = false;
     await loadResearchPanel();
@@ -3321,29 +3522,50 @@ async function submitProtocolForm(event) {
 
 async function submitArgumentForm(event) {
   event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector('button[type="submit"]');
   const error = document.getElementById('argument-error');
-  const claims = [...document.querySelectorAll('[data-claim-row]')].map(row => ({
-    claim_key: row.querySelector('[data-claim="key"]').value.trim(),
-    section_id: row.querySelector('[data-claim="section"]').value.trim(),
-    role: row.querySelector('[data-claim="role"]').value,
-    claim_type: row.querySelector('[data-claim="type"]').value,
-    parent_keys: row.querySelector('[data-claim="parents"]').value.split(',').map(value => value.trim()).filter(Boolean),
-    text: row.querySelector('[data-claim="text"]').value.trim(),
-    evidence_requirements: row.querySelector('[data-claim="evidence"]').value.split(',').map(value => value.trim()).filter(Boolean),
-  }));
-  const payload = {
-    title: document.getElementById('argument-title').value.trim(),
-    research_questions: valueLines('argument-rq'),
-    claims,
-  };
+  const payload = buildArgumentPayload();
+  const claims = payload.claims;
   if (!payload.title || !payload.research_questions.length || claims.some(claim => !claim.claim_key || !claim.section_id || !claim.text) || !claims.some(claim => claim.role === 'THESIS')) {
     error.textContent = '请填写名称、研究问题和全部论断字段，并至少保留一个核心论断。';
     return;
   }
   error.textContent = '';
+  submit.disabled = true;
+  const surface = window.ThesisAutosave?.surfaces?.get(ARGUMENT_DRAFT_KEY);
+  if (surface) {
+    await window.ThesisAutosave.flushDraft(ARGUMENT_DRAFT_KEY);
+    if (['conflict', 'stale', 'failed', 'saving', 'dirty'].includes(surface.status)) {
+      error.textContent = '自动草稿尚未安全保存或需要处理冲突。';
+      submit.disabled = false;
+      return;
+    }
+    if (surface.revision > 0) {
+      payload.autosave_draft_key = ARGUMENT_DRAFT_KEY;
+      payload.autosave_revision = surface.revision;
+    }
+  }
   const response = await apiCreateArgumentMap(currentSession, payload);
+  submit.disabled = false;
+  if (response?.data?.conflict && surface) {
+    window.ThesisAutosave.reportDraftConflict(ARGUMENT_DRAFT_KEY, response);
+    error.textContent = '正式提交基于旧草稿，请先处理冲突。';
+    return;
+  }
   if (response.code !== 0) error.textContent = response.msg;
-  else { toast(response.msg); document.getElementById('argument-builder').open = false; await loadResearchPanel(); await refreshVisibleResumeSummary(); }
+  else {
+    toast(response.msg);
+    if (response.data?.autosave_draft) {
+      window.ThesisAutosave.markDraftSubmitted(
+        ARGUMENT_DRAFT_KEY, response.data.autosave_draft,
+      );
+      surface.reset?.();
+    }
+    document.getElementById('argument-builder').open = false;
+    await loadResearchPanel();
+    await refreshVisibleResumeSummary();
+  }
 }
 
 async function uploadResearchFiles(files) {
@@ -4140,10 +4362,12 @@ async function kbUpload(files) {
 async function initApp() {
   restoreJobBudget();
   bindSessionSearch();
+  bindWorkspaceExpandedItems();
   // 1. 恢复完成前必须保持持久化关闭，禁止把本地默认值回写到服务端。
   pauseWorkspacePersistence();
   // 2. 先读取服务端工作区；失败时保留安全本地默认值。
   const restoredWorkspace = await loadWorkspaceState();
+  applyWorkspaceExpandedItems();
   currentSession = restoredWorkspace.last_task_id || null;
   // 3. 加载任务列表，优先选择服务端的最后活动任务。
   const sessionResult = await loadSessionsWithWorkspaceFallback({
@@ -4258,7 +4482,7 @@ async function initApp() {
     });
   }
   // 使用服务端保存的页签，不能用 HTML 里的默认选中项覆盖恢复页签。
-  activateWorkbenchTab(restoredTab);
+  await activateWorkbenchTab(restoredTab);
   // 横幅只展示当前选中任务的摘要，避免显示已失效的恢复信息。
   renderResumeBanner(await resolveResumeForSelected(currentSession, resumeSummaryCache));
   const continueButton = document.getElementById('resume-continue');

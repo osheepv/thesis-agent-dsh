@@ -234,7 +234,7 @@ def test_resume_summary_exposes_only_next_safe_action(monkeypatch):
     ready = orchestration.get_resume_summary(task_id).data
     assert ready["next_safe_action"]["type"] == "CONFIRM_RING"
     assert ready["autosaved_drafts"] == []
-    assert ready["capabilities"]["draft_autosave"] is False
+    assert ready["capabilities"]["draft_autosave"] is True
 
 
 def test_workspace_console_api_returns_resume_summary(monkeypatch):

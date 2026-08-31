@@ -581,8 +581,7 @@ def test_resume_summary_returns_draft_metadata_only(monkeypatch, tmp_path):
 
     serialized = json.dumps(summary, ensure_ascii=False)
     assert "绝不外泄的正文内容" not in serialized
-    # 能力声明在只有后端时仍如实为 False（M3 接入真实表面后翻正）
-    assert summary["data"]["capabilities"]["draft_autosave"] is False
+    assert summary["data"]["capabilities"]["draft_autosave"] is True
 
 
 def test_workspace_response_never_contains_draft_content(monkeypatch, tmp_path):

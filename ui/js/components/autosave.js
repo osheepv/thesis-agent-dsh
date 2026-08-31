@@ -53,6 +53,11 @@ function autosaveElement(tag, className, text) {
   return node;
 }
 
+function refreshResumeAfterDraftChange() {
+  if (typeof refreshVisibleResumeSummary !== 'function') return;
+  Promise.resolve(refreshVisibleResumeSummary()).catch(() => {});
+}
+
 function setDraftStatus(surface, status, detail, retryable = false) {
   surface.status = status;
   surface.statusDetail = detail || '';
@@ -103,6 +108,7 @@ function registerDraftSurface(config) {
     generation: autosaveNewGeneration(),
     remote: null,
     conflictLocal: null,
+    editSequence: 0,
   };
   autosaveSurfaces.set(config.draftKey, surface);
   setDraftStatus(surface, AUTOSAVE_STATUSES.IDLE, '');
@@ -123,6 +129,7 @@ async function loadDraft(draftKey) {
   const surface = autosaveSurfaces.get(draftKey);
   if (!surface || !surface.taskId) return null;
   const generation = surface.generation;
+  const editSequence = surface.editSequence;
   const taskId = surface.taskId;
   const response = await apiGetAutosaveDraft(taskId, draftKey);
   if (
@@ -131,7 +138,12 @@ async function loadDraft(draftKey) {
     || taskId !== surface.taskId
   ) return null;
   if (!response || response.code !== 0 || !response.data) {
-    setDraftStatus(surface, AUTOSAVE_STATUSES.IDLE, '');
+    // A missing draft is still a loaded baseline. Without this snapshot,
+    // pagehide would persist untouched default form values as a phantom draft.
+    if (surface.editSequence === editSequence) {
+      surface.generation.lastSnapshot = surface.serialize();
+      setDraftStatus(surface, AUTOSAVE_STATUSES.IDLE, '');
+    }
     return null;
   }
   const draft = response.data;
@@ -140,6 +152,12 @@ async function loadDraft(draftKey) {
   surface.conflictLocal = null;
   surface.generation = autosaveNewGeneration();
   if (draft.status === 'DISCARDED' || draft.status === 'SUBMITTED') {
+    if (surface.editSequence !== editSequence) {
+      // The author started a new edit while the tombstone was loading.
+      // Keep that local edit and let its already-scheduled save reopen ACTIVE.
+      setDraftStatus(surface, AUTOSAVE_STATUSES.DIRTY, '');
+      return draft;
+    }
     // 生命周期墓碑不恢复旧正文；保留revision，界面回到当前正式内容。
     if (surface.reset) surface.reset();
     surface.generation.lastSnapshot = surface.serialize();
@@ -155,6 +173,11 @@ async function loadDraft(draftKey) {
   }
   surface.baseArtifactId = draft.base_artifact_id || '';
   surface.baseVersion = draft.base_version || 0;
+  if (surface.editSequence !== editSequence) {
+    // Never overwrite text entered while the GET was in flight.
+    handleDraftConflict(surface, surface.serialize(), { data: { remote: draft } });
+    return draft;
+  }
   // ACTIVE/STALE内容是本世代基线；恢复后无修改不得伪造一次用户编辑。
   if (typeof surface.hydrate === 'function') surface.hydrate(draft.content_json || {});
   surface.generation.lastSnapshot = surface.serialize();
@@ -171,6 +194,7 @@ function scheduleDraftSave(draftKey) {
   if (!surface) return;
   // 冲突后停止自动保存，避免循环覆盖。
   if (surface.status === AUTOSAVE_STATUSES.CONFLICT) return;
+  surface.editSequence += 1;
   clearTimeout(surface.timer);
   setDraftStatus(surface, AUTOSAVE_STATUSES.DIRTY, '');
   surface.timer = setTimeout(() => { runDraftSave(draftKey); }, AUTOSAVE_DEBOUNCE_MS);
@@ -201,6 +225,16 @@ async function runDraftSave(draftKey, options = {}) {
   if (!options.force && generation.lastSnapshot
       && sameDraftContent(generation.lastSnapshot, snapshot)) {
     // 无真实变化，不得伪造一次用户编辑，也不得递增 revision。
+    // Text controls may emit a final change event on blur immediately before
+    // submit. Normalize that redundant DIRTY state so formal submission is
+    // not blocked even though the persisted snapshot is already identical.
+    if (surface.status === AUTOSAVE_STATUSES.DIRTY) {
+      if (surface.revision > 0) {
+        setDraftStatus(surface, AUTOSAVE_STATUSES.SAVED, 'v' + surface.revision);
+      } else {
+        setDraftStatus(surface, AUTOSAVE_STATUSES.IDLE, '');
+      }
+    }
     return;
   }
   generation.inFlight = true;
@@ -233,6 +267,7 @@ async function runDraftSave(draftKey, options = {}) {
         AUTOSAVE_STATUSES.SAVED,
         'v' + surface.revision + ' · ' + new Date().toLocaleTimeString(),
       );
+      refreshResumeAfterDraftChange();
       return response;
     } catch (error) {
       if (generation !== surface.generation) return null;
@@ -485,7 +520,9 @@ async function discardDraft(draftKey) {
     surface.generation = autosaveNewGeneration();
     hideDraftConflict(surface);
     if (surface.reset) surface.reset();
+    surface.generation.lastSnapshot = surface.serialize();
     setDraftStatus(surface, AUTOSAVE_STATUSES.IDLE, '');
+    refreshResumeAfterDraftChange();
   } else if (response?.data?.conflict) {
     handleDraftConflict(surface, surface.serialize(), response);
   } else if (response) {
@@ -510,6 +547,9 @@ function markDraftSubmitted(draftKey, submitted) {
     surface.revision = submittedRevision;
   }
   clearTimeout(surface.timer);
+  // A successful formal submit ends this work copy. Establish the reset form
+  // as the new local baseline so pagehide cannot reopen it as an empty draft.
+  if (surface.reset) surface.reset();
   surface.generation.lastSnapshot = surface.serialize();
   surface.conflictLocal = null;
   hideDraftConflict(surface);
@@ -517,6 +557,7 @@ function markDraftSubmitted(draftKey, submitted) {
     surface, AUTOSAVE_STATUSES.SUBMITTED,
     submittedToId ? '已提交为 ' + submittedToId : '',
   );
+  refreshResumeAfterDraftChange();
 }
 
 /* 身份切换：为每个草稿面创建新世代，

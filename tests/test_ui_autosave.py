@@ -286,9 +286,102 @@ def test_discard_uses_revision_tombstone_and_conflict_copy_key_is_valid():
   assert.equal(surface.revision, 2);
   assert.equal(resetCalled, 1);
   assert.equal(state.server.get('TASK-A|section-revision:1.2').status, 'DISCARDED');
+  listeners.pagehide();
+  await new Promise(resolve => nativeSetImmediate(resolve));
+  assert.equal(state.server.get('TASK-A|section-revision:1.2').status, 'DISCARDED');
+  assert.equal(state.server.get('TASK-A|section-revision:1.2').revision, 2);
   const copyKey = conflictCopyKey('section-revision:1.2');
   assert.match(copyKey, /^section-revision:[A-Za-z0-9_.-]+$/);
   assert.equal(copyKey.includes('#'), false);
+})().catch(error => { console.error(error); process.exit(1); });
+""")
+
+
+def test_untouched_missing_surface_does_not_create_phantom_draft_on_pagehide():
+    _run_node(r"""
+(async () => {
+  let content = { title: '', claims: [{ claim_key: 'ROOT', text: '' }] };
+  const surface = window.ThesisAutosave.registerDraftSurface({
+    draftKey: 'argument-map:new',
+    taskId: 'TASK-A',
+    objectType: 'ARGUMENT_MAP_FORM',
+    objectId: 'new',
+    stageNo: 5,
+    serialize: () => JSON.parse(JSON.stringify(content)),
+    hydrate: value => { content = JSON.parse(JSON.stringify(value)); },
+  });
+  await window.ThesisAutosave.loadDraft(surface.draftKey);
+  listeners.pagehide();
+  await new Promise(resolve => nativeSetImmediate(resolve));
+  assert.equal(state.server.has('TASK-A|argument-map:new'), false);
+
+  content.title = '用户真实输入';
+  window.ThesisAutosave.scheduleDraftSave(surface.draftKey);
+  await drainTimers();
+  assert.equal(state.server.get('TASK-A|argument-map:new').revision, 1);
+  assert.equal(state.server.get('TASK-A|argument-map:new').content_json.title, '用户真实输入');
+})().catch(error => { console.error(error); process.exit(1); });
+""")
+
+
+def test_redundant_blur_change_normalizes_dirty_without_new_revision():
+    _run_node(r"""
+(async () => {
+  let content = { text: '已保存' };
+  const surface = window.ThesisAutosave.registerDraftSurface({
+    draftKey: 'research-protocol:new',
+    taskId: 'TASK-A',
+    objectType: 'RESEARCH_PROTOCOL_FORM',
+    objectId: 'new',
+    stageNo: 5,
+    serialize: () => ({ ...content }),
+    hydrate: value => { content = { ...value }; },
+  });
+  await window.ThesisAutosave.runDraftSave(surface.draftKey);
+  assert.equal(surface.revision, 1);
+  assert.equal(state.posts.length, 1);
+
+  // Browsers emit change on blur even when the latest input snapshot was
+  // already persisted. A formal-submit flush must clear this false DIRTY state.
+  window.ThesisAutosave.scheduleDraftSave(surface.draftKey);
+  assert.equal(surface.status, 'dirty');
+  await window.ThesisAutosave.flushDraft(surface.draftKey);
+  assert.equal(surface.status, 'saved');
+  assert.equal(surface.revision, 1);
+  assert.equal(state.posts.length, 1);
+})().catch(error => { console.error(error); process.exit(1); });
+""")
+
+
+def test_submitted_surface_resets_baseline_and_pagehide_cannot_reopen_it():
+    _run_node(r"""
+(async () => {
+  let content = { text: '待提交内容' };
+  let resetCalled = 0;
+  const surface = window.ThesisAutosave.registerDraftSurface({
+    draftKey: 'project-memory:new',
+    taskId: 'TASK-A',
+    objectType: 'PROJECT_MEMORY_FORM',
+    objectId: 'new',
+    stageNo: 0,
+    serialize: () => ({ ...content }),
+    hydrate: value => { content = { ...value }; },
+    reset: () => { resetCalled += 1; content = { text: '' }; },
+  });
+  await window.ThesisAutosave.runDraftSave(surface.draftKey);
+  const record = state.server.get('TASK-A|project-memory:new');
+  record.status = 'SUBMITTED';
+  record.revision = 2;
+  window.ThesisAutosave.markDraftSubmitted(surface.draftKey, {
+    revision: 2,
+    submitted_to_id: 'ART-1',
+  });
+  assert.equal(resetCalled, 1);
+  assert.deepEqual(content, { text: '' });
+  listeners.pagehide();
+  await new Promise(resolve => nativeSetImmediate(resolve));
+  assert.equal(record.status, 'SUBMITTED');
+  assert.equal(record.revision, 2);
 })().catch(error => { console.error(error); process.exit(1); });
 """)
 

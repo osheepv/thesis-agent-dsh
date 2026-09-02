@@ -16,6 +16,9 @@ import pytest
 
 UI_PATH = Path(__file__).resolve().parents[1] / "ui" / "index.html"
 CYTOSCAPE_PATH = UI_PATH.parent / "vendor" / "cytoscape.min.js"
+LUCIDE_PATH = UI_PATH.parent / "vendor" / "lucide.min.js"
+OPEN_PROPS_EASINGS_PATH = UI_PATH.parent / "vendor" / "open-props-easings.min.css"
+OPEN_PROPS_SHADOW_PATH = UI_PATH.parent / "vendor" / "open-props-shadow.min.css"
 STYLE_PATH = UI_PATH.parent / "styles" / "app.css"
 APP_JS_PATH = UI_PATH.parent / "js" / "app.js"
 MEMORY_JS_PATH = UI_PATH.parent / "js" / "components" / "project-memory.js"
@@ -60,11 +63,35 @@ def test_cytoscape_is_vendored_locally():
     assert CYTOSCAPE_PATH.stat().st_size > 300_000
 
 
+def test_visual_dependencies_are_vendored_and_declared():
+    assert LUCIDE_PATH.is_file()
+    assert LUCIDE_PATH.stat().st_size > 300_000
+    assert "lucide v0.469.0 - ISC" in LUCIDE_PATH.read_text(
+        encoding="utf-8", errors="ignore"
+    )[:500]
+    for path in (OPEN_PROPS_EASINGS_PATH, OPEN_PROPS_SHADOW_PATH):
+        assert path.is_file()
+        assert path.stat().st_size > 1_000
+    notices = (UI_PATH.parents[1] / "THIRD_PARTY_NOTICES.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Lucide 0.469.0" in notices
+    assert "Open Props" in notices
+
+
 def test_ui_assets_are_split_and_referenced_locally():
     html = UI_PATH.read_text(encoding="utf-8")
-    assert '<link rel="stylesheet" href="./styles/app.css">' in html
+    style_sources = [
+        './vendor/open-props-shadow.min.css',
+        './vendor/open-props-easings.min.css',
+        './styles/app.css',
+    ]
+    style_positions = [html.index(f'<link rel="stylesheet" href="{source}">')
+                       for source in style_sources]
+    assert style_positions == sorted(style_positions)
     script_sources = [
         './vendor/cytoscape.min.js',
+        './vendor/lucide.min.js',
         './js/components/project-memory.js',
         './js/components/evidence.js',
         './js/components/autosave.js',
@@ -74,7 +101,7 @@ def test_ui_assets_are_split_and_referenced_locally():
     assert positions == sorted(positions)
     assert "<style>" not in html
     assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", html)
-    for source in ('./styles/app.css', *script_sources):
+    for source in (*style_sources, *script_sources):
         target = (UI_PATH.parent / source.removeprefix('./')).resolve()
         assert target.is_relative_to(UI_PATH.parent.resolve())
         assert target.is_file()
@@ -112,6 +139,9 @@ def test_split_ui_assets_are_served_with_expected_content_types():
             "/js/components/evidence.js": {"text/javascript", "application/javascript"},
             "/js/components/autosave.js": {"text/javascript", "application/javascript"},
             "/vendor/cytoscape.min.js": {"text/javascript", "application/javascript"},
+            "/vendor/lucide.min.js": {"text/javascript", "application/javascript"},
+            "/vendor/open-props-easings.min.css": {"text/css"},
+            "/vendor/open-props-shadow.min.css": {"text/css"},
         }
         for path, content_types in expected.items():
             with urllib.request.urlopen(base + path, timeout=5) as response:
@@ -180,6 +210,9 @@ def test_trust_workbench_is_wired_to_real_endpoints_and_accessible_states():
         'window.ThesisTrustUI = Object.freeze',
         'trust-assessment',
         'done-limited',
+        "s.state === 'done-limited' ? 'triangle-alert'",
+        "'aria-hidden': 'true'",
+        "icon.removeAttribute('data-lucide')",
         '结构/题录通过不代表正文证据通过',
     ):
         assert fragment in javascript

@@ -365,17 +365,34 @@ if (sbFallback) sbFallback.remove();
 
 /* —— 阶段进度条构建 —— */
 const STAGES = [
-  { name: '选题', state: 'todo' },
-  { name: '开题', state: 'todo' },
-  { name: '文献', state: 'todo' },
-  { name: '综述', state: 'todo' },
-  { name: '大纲', state: 'todo' },
-  { name: '撰写', state: 'todo' },
-  { name: '润色', state: 'todo' },
-  { name: '引用', state: 'todo' },
-  { name: '排版', state: 'todo' },
-  { name: '定稿', state: 'todo' },
+  { name: '选题', state: 'todo', icon: 'crosshair' },
+  { name: '开题', state: 'todo', icon: 'clipboard-check' },
+  { name: '文献', state: 'todo', icon: 'book-open' },
+  { name: '综述', state: 'todo', icon: 'layers' },
+  { name: '大纲', state: 'todo', icon: 'list-tree' },
+  { name: '撰写', state: 'todo', icon: 'pen-line' },
+  { name: '润色', state: 'todo', icon: 'sparkles' },
+  { name: '引用', state: 'todo', icon: 'quote' },
+  { name: '排版', state: 'todo', icon: 'layout-template' },
+  { name: '定稿', state: 'todo', icon: 'badge-check' },
 ];
+
+function renderLucideIcons() {
+  if (window.lucide && typeof window.lucide.createIcons === 'function') {
+    try {
+      window.lucide.createIcons({
+        attrs: { 'aria-hidden': 'true', focusable: 'false' },
+        nameAttr: 'data-lucide',
+      });
+      // Lucide按[data-lucide]扫描整页；移除已渲染SVG的扫描标记，
+      // 后续新消息只处理新增图标，不反复替换旧节点。
+      document.querySelectorAll('svg[data-lucide]').forEach((icon) => {
+        icon.removeAttribute('data-lucide');
+      });
+    }
+    catch { /* 图标渲染失败不阻塞业务 */ }
+  }
+}
 
 const stageBar = document.getElementById('stage-bar');
 function renderEmptyStages() {
@@ -383,7 +400,10 @@ function renderEmptyStages() {
   STAGES.forEach((s, i) => {
     const node = document.createElement('div');
     node.className = 'stage-node';
-    node.innerHTML = `<div class="stage-dot"></div><div class="stage-label">${i+1}. ${s.name}</div>`;
+    node.innerHTML = (
+      `<div class="stage-dot"><i data-lucide="${s.icon}" class="stage-icon"></i></div>`
+      + `<div class="stage-label">${s.name}</div>`
+    );
     node.title = `${i+1}. ${s.name} · 未开始`;
     stageBar.appendChild(node);
     if (i < STAGES.length - 1) {
@@ -394,6 +414,7 @@ function renderEmptyStages() {
   });
 }
 renderEmptyStages();
+renderLucideIcons();
 
 /* —— 工具卡展开 —— */
 document.querySelectorAll('.tool-card-head').forEach(head => {
@@ -543,7 +564,11 @@ document.querySelectorAll('[data-gate]').forEach(btn => {
     if (cur) {
       cur.classList.remove('current');
       cur.classList.add('done');
-      cur.querySelector('.stage-dot').textContent = '✓';
+      const doneDot = cur.querySelector('.stage-dot');
+      if (doneDot) {
+        doneDot.innerHTML = '<i data-lucide="check" class="stage-icon"></i>';
+        renderLucideIcons();
+      }
       // 前一条线
       const prevLine = cur.previousElementSibling;
       if (prevLine && prevLine.classList.contains('stage-line')) prevLine.classList.add('done');
@@ -687,6 +712,7 @@ function appendAIMsg(html, metaText) {
   msg.className = 'msg ai';
   msg.innerHTML = `<div class="bubble">${html}</div>${metaText ? `<div class="msg-meta"><span>${metaText}</span></div>` : ''}`;
   inner.appendChild(msg);
+  renderLucideIcons();
   flow.scrollTop = flow.scrollHeight;
   return msg;
 }
@@ -731,7 +757,7 @@ function renderTrustAssessment(assessment, compact = false) {
     <div class="trust-assessment-head">最高可声明层级：<strong>${escapeHtml2(assessment.highest_tier_label || assessment.highest_tier || '未评估')}</strong></div>
     <div class="trust-dimensions">${dimensions}</div>
     <div class="trust-author-review"><span>${escapeHtml2(review.label || '作者复核')}</span><span class="wb-status ${trustStatusClass(reviewStatus)}">${escapeHtml2(TRUST_STATUS_LABELS[reviewStatus] || reviewStatus)}</span></div>
-    ${assessment.warning ? `<p class="trust-warning">⚠ ${escapeHtml2(assessment.warning)}</p>` : ''}
+    ${assessment.warning ? `<p class="trust-warning"><i data-lucide="alert-triangle" class="icon-xs"></i> ${escapeHtml2(assessment.warning)}</p>` : ''}
   </section>`;
 }
 
@@ -857,7 +883,7 @@ function renderRingResult(ringNo, data) {
     const chapters = (data && data.chapters) || [];
     const levels = chapters.filter(c => c.level === 1);
     appendAIMsg(`<p><strong>环5 大纲完成</strong>，共 <strong>${levels.length}</strong> 章：</p>` +
-      levels.map(ch => `<p style="margin:5px 0;font-size:13px;">📄 ${escapeHtml2(ch.number || '')} ${escapeHtml2(ch.title)}</p>`).join(''),
+      levels.map(ch => `<p style="margin:5px 0;font-size:13px;"><i data-lucide="file-text" class="icon-xs" style="vertical-align:-2px"></i> ${escapeHtml2(ch.number || '')} ${escapeHtml2(ch.title)}</p>`).join(''),
       `${name} · 已完成`);
   } else if (ringNo === 6) {
     // 撰写卡
@@ -2343,7 +2369,16 @@ async function clearSessionContext() {
   if (inner) {
     inner.removeAttribute('data-history-task');
     inner.removeAttribute('data-history-built');
-    inner.innerHTML = '<div class="msg ai"><div class="bubble"><p>欢迎！请点击「新建对话」创建论文任务。执行每个环节后，产物与确认闸门会显示在这里。</p></div></div>';
+    inner.innerHTML = `
+      <div class="chat-empty">
+        <span class="chat-empty-icon"><i data-lucide="graduation-cap"></i></span>
+        <h2>开始你的论文之旅</h2>
+        <p>从选题到定稿共十环：每环产物经自动验收后，由你确认再进入下一环。任务、产物与进度全程持久化，随时中断随时恢复。</p>
+        <div class="chat-empty-actions">
+          <button class="btn btn-primary" onclick="document.querySelector('.new-chat-btn')?.click()">新建论文任务</button>
+        </div>
+      </div>`;
+    renderLucideIcons();
   }
   await loadActiveWorkbenchPane();
 }
@@ -2435,7 +2470,7 @@ function buildHistoryFromProgress(prog) {
     const trust = r.ring_no === 8 ? prog.trust_assessments?.['8'] : null;
     const evidencePassed = trust?.highest_tier === 'EVIDENCE';
     const statusText = trust && !evidencePassed
-      ? `⚠ 流程已确认 · ${escapeHtml2(trust.highest_tier_label || '证据未通过')}`
+      ? `<i data-lucide="alert-triangle" class="icon-xs" style="vertical-align:-2px"></i> 流程已确认 · ${escapeHtml2(trust.highest_tier_label || '证据未通过')}`
       : '✓ 已通过';
     const statusColor = trust && !evidencePassed ? 'var(--warning)' : 'var(--success)';
     appendAIMsg(`<p><strong>环${r.ring_no} ${name}</strong> <span style="color:${statusColor}">${statusText}</span></p>` +
@@ -2489,8 +2524,14 @@ function renderStagesFromProgress(prog) {
     states.forEach((s, i) => {
       const node = document.createElement('div');
       node.className = 'stage-node ' + s.state;
-      const dotText = s.state === 'done' ? '✓' : s.state === 'done-limited' ? '!' : '';
-      node.innerHTML = `<div class="stage-dot">${dotText}</div><div class="stage-label">${i+1}. ${s.name}</div>`;
+      const meta = STAGES.find(item => item.name === s.name);
+      const icon = s.state === 'done' ? 'check'
+        : s.state === 'done-limited' ? 'triangle-alert'
+        : (meta?.icon || 'circle');
+      node.innerHTML = (
+        `<div class="stage-dot"><i data-lucide="${icon}" class="stage-icon"></i></div>`
+        + `<div class="stage-label">${s.name}</div>`
+      );
       node.title = `${i+1}. ${s.name}${s.trustLabel ? ` · ${s.trustLabel}` : ''}`;
       bar.appendChild(node);
       if (i < states.length - 1) {
@@ -2501,6 +2542,7 @@ function renderStagesFromProgress(prog) {
         bar.appendChild(line);
       }
     });
+    renderLucideIcons();
   }
 }
 

@@ -1,0 +1,3 @@
+# Keep vendored asset hashes stable across Windows/macOS/Linux checkouts.
+ui/vendor/lucide.min.js text eol=lf
+ui/vendor/open-props-*.css text eol=lf

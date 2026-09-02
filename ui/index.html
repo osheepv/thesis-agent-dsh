@@ -5,8 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>论文写作 Agent — 设计原型</title>
 <link rel="icon" href="data:,">
+<link rel="stylesheet" href="./vendor/open-props-shadow.min.css">
+<link rel="stylesheet" href="./vendor/open-props-easings.min.css">
 <link rel="stylesheet" href="./styles/app.css">
 <script src="./vendor/cytoscape.min.js"></script>
+<script src="./vendor/lucide.min.js"></script>
 </head>
 <body>
 
@@ -57,7 +60,8 @@
           <span class="kbd">⌘N</span>
         </button>
         <div class="tasks-dropdown">
-          <span>📋 All tasks</span>
+          <i data-lucide="list-filter" class="icon-sm"></i>
+          <span>All tasks</span>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
         </div>
         <div class="sidebar-search">
@@ -108,9 +112,14 @@
       <!-- 对话流 -->
       <div class="chat-flow" id="chat-flow">
         <div class="chat-inner">
-          <!-- 欢迎消息（第一条） -->
-          <div class="msg ai">
-            <div class="bubble"><p>欢迎！选择左侧会话，或点击「新建对话」开始论文写作。执行每个环节后结果会显示在这里。</p></div>
+          <!-- 空状态（JS 加载后会被替换为带图标的引导卡片） -->
+          <div class="chat-empty">
+            <span class="chat-empty-icon"><i data-lucide="graduation-cap"></i></span>
+            <h2>开始你的论文之旅</h2>
+            <p>从选题到定稿共十环：每环产物经自动验收后，由你确认再进入下一环。任务、产物与进度全程持久化，随时中断随时恢复。</p>
+            <div class="chat-empty-actions">
+              <button class="btn btn-primary" onclick="document.querySelector('.new-chat-btn')?.click()">新建论文任务</button>
+            </div>
           </div>
 
         </div>

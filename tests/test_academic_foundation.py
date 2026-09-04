@@ -1,129 +1,318 @@
-"""NAT-001：研究事实、边界与智能体停止规则契约。"""
+"""M2 学术基础只读投影与证据表契约测试。"""
 
 from __future__ import annotations
 
-import json
-
-import pytest
-
+from artifacts import ArtifactKind, ArtifactRegistry
 from application.service.uc_main_orchestration import MainOrchestration
 from common.aicoding.enums import Degree
-from common.project_memory import (
-    evaluate_revision_stopping,
-    project_memory_prompt_block,
-    validate_project_memory,
+from evidence import (
+    ClaimType,
+    EvidenceLedger,
+    EvidenceRelation,
+    SourceVerificationStatus,
 )
+from research import ResearchExecutionRegistry
 
 
-def _foundation_payload() -> dict:
-    return {
-        "research_questions": ["自动草稿如何避免旧请求覆盖新版本？"],
-        "scope_boundaries": [
-            "当前阶段只支持 DeepSeek 接口",
-            "研究事实只能来自批准的证据或用户核验结果投影",
-        ],
-        "forbidden_claims": ["系统能够替代作者承担学术责任"],
-        "unresolved_claims": ["断电瞬间未送达服务端的草稿能否恢复"],
-        "stopping_policy": {
-            "max_revision_rounds": 3,
-            "plateau_rounds": 2,
-            "min_score_improvement": 0.5,
-        },
-        "version_note": "NAT-001 foundation",
-    }
+def _orchestration() -> MainOrchestration:
+    return MainOrchestration(
+        artifact_registry=ArtifactRegistry(),
+        evidence_ledger=EvidenceLedger(),
+        research_registry=ResearchExecutionRegistry(),
+    )
 
 
-def test_foundation_schema_accepts_legacy_and_rejects_duplicate_contract_items():
-    legacy = validate_project_memory({
-        "research_questions": ["旧客户端仍可创建项目记忆吗？"],
-    })
-    assert legacy.scope_boundaries == []
-    assert legacy.stopping_policy.max_revision_rounds == 3
-
-    duplicate = _foundation_payload()
-    duplicate["forbidden_claims"].append(duplicate["forbidden_claims"][0])
-    with pytest.raises(ValueError, match="禁写主张不得重复"):
-        validate_project_memory(duplicate)
-    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
-        validate_project_memory({
-            "research_questions": ["不能绕过证据账本吗？"],
-            "canonical_facts": ["未经证据核验的自由文本事实"],
-        })
-
-
-def test_foundation_fields_are_versioned_approved_and_prompt_visible():
-    orchestration = MainOrchestration()
-    task_id = orchestration.create_task(
-        "NAT-001 原生学术契约", Degree.MASTER, "软件工程",
-        session_id="nat-foundation",
+def _task(orchestration: MainOrchestration, suffix: str = "m2") -> str:
+    return orchestration.create_task(
+        f"学术基础-{suffix}", Degree.MASTER, "计算机科学", session_id=f"{suffix}-session"
     ).data["task_id"]
 
-    created = orchestration.create_project_memory(task_id, _foundation_payload()).data
-    assert created["status"] == "WAITING_APPROVAL"
-    assert created["gate_report"]["scope_boundary_count"] == 2
-    assert created["gate_report"]["forbidden_claim_count"] == 1
-    assert created["gate_report"]["unresolved_claim_count"] == 1
-    assert created["gate_report"]["stopping_policy"]["max_revision_rounds"] == 3
-    stored = orchestration._artifacts.get(created["artifact_id"])  # noqa: SLF001
-    assert stored.context_manifest.prompt_version == "v2"
-    orchestration.review_project_memory(task_id, created["artifact_id"], approved=True)
-    active = orchestration._active_project_memory(task_id)  # noqa: SLF001
 
-    assert active is not None
-    assert active.payload["scope_boundaries"][0].startswith("当前阶段")
-    assert active.payload["stopping_policy"]["max_revision_rounds"] == 3
-    prompt = project_memory_prompt_block(active.payload, max_chars=10_000)
-    assert "研究事实只能来自批准的证据" in prompt
-    assert "系统能够替代作者承担学术责任" in prompt
-    assert "断电瞬间未送达服务端" in prompt
-
-
-def test_project_memory_prompt_truncation_remains_valid_json():
-    payload = _foundation_payload()
-    payload["scope_boundaries"] = [f"边界-{index}-" + ("长文本" * 30) for index in range(20)]
-    block = project_memory_prompt_block(payload, max_chars=420)
-    serialized = block.split("\n", 1)[1]
-    parsed = json.loads(serialized)
-    assert len(serialized) <= 420
-    assert parsed["_truncated"] is True
-    assert all("边界-" in item for item in parsed.get("scope_boundaries", []))
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "reason"),
-    [
-        ({"target_reached": True}, "TARGET_REACHED"),
-        ({"evidence_gaps": ["核心结论缺少批准证据"]}, "EVIDENCE_GAP"),
-        ({"specialist_conflicts": ["统计与领域专家结论冲突"]}, "SPECIALIST_CONFLICT"),
-        ({"completed_rounds": 3}, "MAX_ROUNDS"),
-        ({"score_history": [6.0, 6.2, 6.4]}, "SCORE_PLATEAU"),
-    ],
-)
-def test_revision_stopping_policy_returns_auditable_stop_reason(kwargs, reason):
-    decision = evaluate_revision_stopping(_foundation_payload()["stopping_policy"], **kwargs)
-    assert decision["should_stop"] is True
-    assert decision["reason"] == reason
-    assert decision["next_action"]
-
-
-def test_revision_stopping_policy_allows_meaningful_progress():
-    decision = evaluate_revision_stopping(
-        _foundation_payload()["stopping_policy"],
-        completed_rounds=2,
-        score_history=[5.0, 5.8, 6.5],
+def _approve_artifact(
+    orchestration: MainOrchestration,
+    task_id: str,
+    kind: ArtifactKind,
+    stage_no: int,
+    payload: dict,
+):
+    artifact = orchestration._artifacts.create_version(
+        task_id=task_id,
+        stage_no=stage_no,
+        kind=kind,
+        payload=payload,
     )
-    assert decision == {
-        "should_stop": False,
-        "reason": "CONTINUE",
-        "next_action": "继续当前有界修订",
-    }
+    artifact = orchestration._artifacts.submit_auto_gate(artifact.artifact_id, passed=True)
+    return orchestration._artifacts.decide(artifact.artifact_id, approved=True)
 
 
-def test_hard_evidence_gap_precedes_target_reached():
-    decision = evaluate_revision_stopping(
-        _foundation_payload()["stopping_policy"],
-        target_reached=True,
-        evidence_gaps=["核心事实仍无批准证据"],
-        specialist_conflicts=["专家意见仍冲突"],
+def _foundation_task(orchestration: MainOrchestration) -> tuple[str, dict, str]:
+    task_id = _task(orchestration)
+    _approve_artifact(
+        orchestration,
+        task_id,
+        ArtifactKind.PROJECT_MEMORY,
+        1,
+        {
+            "research_questions": ["证据投影是否降低引用错误？"],
+            "scope_boundaries": ["只讨论可复核的论文写作流程"],
+            "forbidden_claims": ["不得声称自动替代作者判断"],
+            "unresolved_claims": ["尚未完成跨学科复现"],
+        },
     )
-    assert decision["reason"] == "EVIDENCE_GAP"
+    _approve_artifact(
+        orchestration,
+        task_id,
+        ArtifactKind.RESEARCH_PROTOCOL,
+        5,
+        {"title": "M2 protocol", "method": "SYSTEM_BUILD"},
+    )
+    argument = _approve_artifact(
+        orchestration,
+        task_id,
+        ArtifactKind.ARGUMENT_MAP,
+        5,
+        {
+            "title": "M2 argument map",
+            "research_questions": ["证据投影是否降低引用错误？"],
+            "claims": [
+                {
+                    "claim_key": "ROOT",
+                    "text": "可定位证据有助于降低引用错误",
+                    "section_id": "1.2",
+                    "claim_type": "CONTRIBUTION",
+                    "role": "THESIS",
+                    "epistemic_intent": "ASSERTION",
+                    "parent_keys": [],
+                    "evidence_requirements": ["引用错误率"],
+                },
+                {
+                    "claim_key": "H1",
+                    "text": "该结论仍需跨学科复现",
+                    "section_id": "5.3",
+                    "claim_type": "INTERPRETIVE",
+                    "role": "LIMITATION",
+                    "epistemic_intent": "HYPOTHESIS",
+                    "parent_keys": ["ROOT"],
+                    "evidence_requirements": [],
+                },
+            ],
+        },
+    )
+    _approve_artifact(
+        orchestration,
+        task_id,
+        ArtifactKind.RESULT_LEDGER,
+        6,
+        {
+            "results": [
+                {
+                    "result_id": "RES-SECRET",
+                    "metric": "错误率",
+                    "value": "0.12",
+                    "raw_result_text": "must never appear in the canon snapshot",
+                }
+            ]
+        },
+    )
+    orchestration._sync_argument_map_claims(task_id, argument)
+    root_claim = orchestration._evidence.list_claims(task_id, artifact_id=argument.artifact_id)[0]
+    return task_id, argument.payload, root_claim.claim_id
+
+
+def _register_evidence(
+    orchestration: MainOrchestration,
+    task_id: str,
+    *,
+    status: SourceVerificationStatus,
+    quote: str | None = None,
+    relation: EvidenceRelation = EvidenceRelation.SUPPORTS,
+):
+    source = orchestration._evidence.register_source(
+        task_id=task_id,
+        title="source",
+        doi=f"10.1000/{source_id_suffix(status)}",
+        verification_status=status,
+    )
+    if quote is None:
+        return source, None
+    excerpt = orchestration._evidence.add_excerpt(
+        task_id=task_id,
+        source_id=source.source_id,
+        quote=quote,
+        page_start=1,
+    )
+    orchestration._evidence.review_excerpt(task_id, excerpt.evidence_id, approved=True)
+    return source, (excerpt, relation)
+
+
+def source_id_suffix(status: SourceVerificationStatus) -> str:
+    return status.value.lower().replace("_", "-")
+
+
+def test_academic_foundation_is_read_only_and_does_not_leak_payload_bodies():
+    orchestration = _orchestration()
+    task_id, argument_payload, root_claim_id = _foundation_task(orchestration)
+    source, evidence = _register_evidence(
+        orchestration,
+        task_id,
+        status=SourceVerificationStatus.METADATA_VERIFIED,
+        quote="A located excerpt approved by the author.",
+    )
+    excerpt, relation = evidence
+    orchestration._evidence.link_evidence(
+        task_id=task_id,
+        claim_id=root_claim_id,
+        evidence_id=excerpt.evidence_id,
+        relation=relation,
+    )
+
+    before = len(orchestration._artifacts.list_task(task_id))
+    before_sources = len(orchestration._evidence.list_sources(task_id))
+    result = orchestration.get_academic_foundation(task_id)
+    after = len(orchestration._artifacts.list_task(task_id))
+    after_sources = len(orchestration._evidence.list_sources(task_id))
+
+    assert before == after
+    assert before_sources == after_sources
+    data = result.data
+    assert data["task_id"] == task_id
+    assert data["schema_version"] == "m2"
+    assert data["source_refs"][0]["source_id"] == source.source_id
+    root = next(row for row in data["evidence_table"] if row["claim_key"] == "ROOT")
+    assert root["epistemic_intent"] == "ASSERTION"
+    assert root["evidence_state"] == "SUPPORTED"
+    assert root["verification_strength"] == "LOCATED_APPROVED"
+    serialized = str(data)
+    assert "A located excerpt" not in serialized
+    assert "must never appear in the canon snapshot" not in serialized
+    assert "raw_result_text" not in serialized
+    assert "payload" not in data
+    assert root_claim_id not in data["blocking_claim_ids"]
+
+
+def test_metadata_only_source_without_excerpt_is_not_evidence_backed():
+    orchestration = _orchestration()
+    task_id, _, _ = _foundation_task(orchestration)
+    _register_evidence(
+        orchestration,
+        task_id,
+        status=SourceVerificationStatus.METADATA_VERIFIED,
+        quote=None,
+    )
+
+    data = orchestration.get_academic_foundation(task_id).data
+    root = next(row for row in data["evidence_table"] if row["claim_key"] == "ROOT")
+    assert root["evidence_state"] == "UNSUPPORTED"
+    assert root["verification_strength"] == "UNVERIFIED"
+    assert root["risk_level"] == "HIGH"
+    assert root["claim_id"] in data["blocking_claim_ids"]
+
+
+def test_content_verified_support_gets_stronger_verification_and_contradiction_blocks():
+    orchestration = _orchestration()
+    task_id, _, root_claim_id = _foundation_task(orchestration)
+    source, evidence = _register_evidence(
+        orchestration,
+        task_id,
+        status=SourceVerificationStatus.CONTENT_VERIFIED,
+        quote="Verified support.",
+    )
+    excerpt, _ = evidence
+    orchestration._evidence.link_evidence(
+        task_id=task_id,
+        claim_id=root_claim_id,
+        evidence_id=excerpt.evidence_id,
+        relation=EvidenceRelation.SUPPORTS,
+    )
+    _, contradiction = _register_evidence(
+        orchestration,
+        task_id,
+        status=SourceVerificationStatus.CONTENT_VERIFIED,
+        quote="Verified contradiction.",
+        relation=EvidenceRelation.CONTRADICTS,
+    )
+    contradiction_excerpt, _ = contradiction
+    orchestration._evidence.link_evidence(
+        task_id=task_id,
+        claim_id=root_claim_id,
+        evidence_id=contradiction_excerpt.evidence_id,
+        relation=EvidenceRelation.CONTRADICTS,
+    )
+
+    data = orchestration.get_academic_foundation(task_id).data
+    root = next(row for row in data["evidence_table"] if row["claim_key"] == "ROOT")
+    assert root["evidence_state"] == "DISPUTED"
+    assert root["verification_strength"] == "CONTENT_VERIFIED"
+    assert root["risk_level"] == "HIGH"
+    assert root["claim_id"] in data["blocking_claim_ids"]
+    assert source.source_id in root["source_ids"]
+
+
+def test_retracted_or_excluded_sources_cannot_support_a_claim():
+    orchestration = _orchestration()
+    task_id, _, root_claim_id = _foundation_task(orchestration)
+    source, evidence = _register_evidence(
+        orchestration,
+        task_id,
+        status=SourceVerificationStatus.EXCLUDED,
+        quote="Excluded support.",
+    )
+    excerpt, _ = evidence
+    orchestration._evidence.link_evidence(
+        task_id=task_id,
+        claim_id=root_claim_id,
+        evidence_id=excerpt.evidence_id,
+        relation=EvidenceRelation.SUPPORTS,
+    )
+
+    data = orchestration.get_academic_foundation(task_id).data
+    root = next(row for row in data["evidence_table"] if row["claim_key"] == "ROOT")
+    assert root["evidence_state"] == "INVALID_SOURCE"
+    assert root["verification_strength"] == "UNVERIFIED"
+    assert root["risk_level"] == "HIGH"
+    assert root["invalid_source_ids"] == [source.source_id]
+
+
+def test_academic_foundation_only_uses_current_approved_versions_and_is_task_isolated():
+    orchestration = _orchestration()
+    task_id, _, _ = _foundation_task(orchestration)
+    other_task = _task(orchestration, "other")
+    other_source, _ = _register_evidence(
+        orchestration,
+        other_task,
+        status=SourceVerificationStatus.CONTENT_VERIFIED,
+        quote="other task",
+    )
+
+    data = orchestration.get_academic_foundation(task_id).data
+    refs = {item["source_id"] for item in data["source_refs"]}
+    assert other_source.source_id not in refs
+    assert all(item["status"] == "APPROVED" for item in data["artifact_refs"])
+    assert data["missing_artifacts"] == []
+
+
+def test_academic_foundation_console_endpoint_is_read_only():
+    from application.main import build_app
+    from fastapi.testclient import TestClient
+
+    orchestration = _orchestration()
+    app = build_app(orchestration=orchestration)
+    client = TestClient(app)
+    created = client.post(
+        "/api/v1/console/tasks",
+        json={
+            "title": "学术基础接口",
+            "degree": "MASTER",
+            "subject_field": "计算机科学",
+            "session_id": "academic-foundation-api",
+        },
+    ).json()
+    task_id = created["data"]["task_id"]
+    response = client.get(
+        f"/api/v1/console/tasks/{task_id}/academic-foundation",
+        params={"session_id": "academic-foundation-api", "evidence_backed": "true"},
+    )
+    assert response.status_code == 200
+    assert response.json()["code"] == 0
+    assert response.json()["data"]["evidence_table"] == []
+    assert "evidence_backed" not in response.json()["data"]

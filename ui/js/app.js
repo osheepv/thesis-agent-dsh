@@ -2821,6 +2821,9 @@ async function apiGenerateDocx(taskId) {
 async function apiTaskClaims(taskId) {
   return apiGet(`/api/v1/console/tasks/${taskId}/claims`);
 }
+async function apiAcademicFoundation(taskId) {
+  return apiGet(`/api/v1/console/tasks/${taskId}/academic-foundation`);
+}
 async function apiArgumentMaps(taskId) {
   return apiGet(`/api/v1/console/tasks/${taskId}/research/argument-maps`);
 }
@@ -2988,7 +2991,7 @@ const JOB_STATUS_LABEL = {
 
 function wbStatusClass(status) {
   if (['SUCCEEDED', 'APPROVED', 'SUPPORTED'].includes(status)) return 'ok';
-  if (['FAILED', 'CANCELLED', 'REJECTED', 'AUTO_REJECTED', 'STALE', 'DISPUTED'].includes(status)) return 'bad';
+  if (['FAILED', 'CANCELLED', 'REJECTED', 'AUTO_REJECTED', 'STALE', 'DISPUTED', 'UNSUPPORTED', 'INVALID_SOURCE'].includes(status)) return 'bad';
   return 'warn';
 }
 
@@ -3207,6 +3210,7 @@ function buildArgumentPayload() {
     claim_key: row.querySelector('[data-claim="key"]').value.trim(),
     section_id: row.querySelector('[data-claim="section"]').value.trim(),
     role: row.querySelector('[data-claim="role"]').value,
+    epistemic_intent: row.querySelector('[data-claim="intent"]').value,
     claim_type: row.querySelector('[data-claim="type"]').value,
     parent_keys: row.querySelector('[data-claim="parents"]').value
       .split(',').map(value => value.trim()).filter(Boolean),
@@ -3305,12 +3309,14 @@ function addArgumentClaimRow(seed = {}, options = { schedule: true }) {
     <div class="wb-field"><label for="${rowId}-key">键</label><input id="${rowId}-key" data-claim="key" maxlength="40" value="${escapeHtml2(seed.claim_key || (claimRowCounter === 1 ? 'ROOT' : `C${claimRowCounter - 1}`))}" required></div>
     <div class="wb-field"><label for="${rowId}-section">章节</label><input id="${rowId}-section" data-claim="section" maxlength="40" value="${escapeHtml2(seed.section_id || '1.1')}" required></div>
     <div class="wb-field"><label for="${rowId}-role">角色</label><select id="${rowId}-role" data-claim="role"><option value="THESIS">核心论断</option><option value="CLAIM">子论断</option><option value="COUNTERCLAIM">反论断</option><option value="LIMITATION">局限</option></select></div>
+    <div class="wb-field"><label for="${rowId}-intent">认识论意图</label><select id="${rowId}-intent" data-claim="intent"><option value="ASSERTION">明确断言</option><option value="INFERENCE">推论</option><option value="HYPOTHESIS">假设</option></select></div>
     <div class="wb-field"><label for="${rowId}-type">类型</label><select id="${rowId}-type" data-claim="type"><option value="FACTUAL">事实</option><option value="NUMERIC">数字</option><option value="METHOD">方法</option><option value="INTERPRETIVE">解释</option><option value="CONTRIBUTION">贡献</option></select></div>
     <div class="wb-field"><label for="${rowId}-parents">父论断键（逗号分隔）</label><input id="${rowId}-parents" data-claim="parents" value="${escapeHtml2((seed.parent_keys || []).join(','))}"></div>
     <div class="wb-field"><span class="wb-card-meta">操作</span><button id="${rowId}-remove" aria-label="删除论断 ${claimRowCounter}" class="btn btn-secondary btn-sm" type="button" data-remove-claim>删除</button></div>
     <div class="wb-field claim-text"><label for="${rowId}-text">论断文本</label><textarea id="${rowId}-text" data-claim="text" required>${escapeHtml2(seed.text || '')}</textarea></div>
     <div class="wb-field claim-evidence"><label for="${rowId}-evidence">证据需求（逗号分隔）</label><input id="${rowId}-evidence" data-claim="evidence" value="${escapeHtml2((seed.evidence_requirements || []).join(','))}"></div>`;
   row.querySelector('[data-claim="role"]').value = seed.role || (claimRowCounter === 1 ? 'THESIS' : 'CLAIM');
+  row.querySelector('[data-claim="intent"]').value = seed.epistemic_intent || 'ASSERTION';
   row.querySelector('[data-claim="type"]').value = seed.claim_type || 'FACTUAL';
   row.querySelector('[data-remove-claim]').addEventListener('click', () => {
     if (host.querySelectorAll('[data-claim-row]').length <= 1) {

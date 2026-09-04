@@ -586,6 +586,16 @@ async def audit_evidence(task_id: str, session_id: str = "", artifact_id: str = 
         return _err(exc)
 
 
+@router.get("/tasks/{task_id}/academic-foundation", response_model=None)
+async def academic_foundation(task_id: str, session_id: str = "",
+                              orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.get_academic_foundation(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 # ---------------------------------------------------------------------
 # 分节写作、逐节审批与环6汇编
 # ---------------------------------------------------------------------

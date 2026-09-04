@@ -2969,6 +2969,27 @@ input[type="number"], input[type="email"], textarea, select {
 .wb-status.ok { color: var(--success); background: var(--success-soft); }
 .wb-status.warn { color: var(--warning); background: var(--warning-soft); }
 .wb-status.bad { color: var(--error); background: var(--error-soft); }
+.academic-foundation-table-wrap { overflow-x: auto; }
+.academic-foundation-table {
+  width: 100%;
+  min-width: 680px;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.academic-foundation-table th,
+.academic-foundation-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border-divider);
+  text-align: start;
+  vertical-align: top;
+}
+.academic-foundation-table thead th {
+  color: var(--text-subtle);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.academic-foundation-table tbody th { font-weight: 600; white-space: nowrap; }
 .trust-assessment {
   margin: 8px 0;
   padding: 9px;

@@ -16,6 +16,7 @@ from research import (
     ArgumentClaimSpec,
     ArgumentMap,
     ArgumentRole,
+    EpistemicIntent,
     ExperimentStatus,
     ResearchExecutionRegistry,
     ResearchMethod,
@@ -61,6 +62,9 @@ class ResearchServiceMixin:
             try:
                 claim_type = ClaimType(str(raw.get("claim_type", "FACTUAL")))
                 role = ArgumentRole(str(raw.get("role", "CLAIM")))
+                epistemic_intent = EpistemicIntent(
+                    str(raw.get("epistemic_intent", EpistemicIntent.ASSERTION.value))
+                )
             except ValueError as exc:
                 raise ResearchRegistryError(f"非法论断类型或角色: {raw}") from exc
             claims.append(
@@ -70,6 +74,7 @@ class ResearchServiceMixin:
                     section_id=str(raw.get("section_id", "")),
                     claim_type=claim_type,
                     role=role,
+                    epistemic_intent=epistemic_intent,
                     parent_keys=tuple(raw.get("parent_keys", ()) or ()),
                     evidence_requirements=tuple(
                         raw.get("evidence_requirements", ()) or ()

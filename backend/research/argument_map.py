@@ -16,6 +16,14 @@ class ArgumentRole(str, Enum):
     LIMITATION = "LIMITATION"
 
 
+class EpistemicIntent(str, Enum):
+    """论断在论文中的认识论意图。"""
+
+    ASSERTION = "ASSERTION"
+    INFERENCE = "INFERENCE"
+    HYPOTHESIS = "HYPOTHESIS"
+
+
 @dataclass(frozen=True)
 class ArgumentClaimSpec:
     claim_key: str
@@ -23,6 +31,7 @@ class ArgumentClaimSpec:
     section_id: str
     claim_type: ClaimType
     role: ArgumentRole
+    epistemic_intent: EpistemicIntent = EpistemicIntent.ASSERTION
     parent_keys: tuple[str, ...] = ()
     evidence_requirements: tuple[str, ...] = ()
 

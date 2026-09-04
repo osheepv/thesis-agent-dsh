@@ -8,7 +8,7 @@ from .models import (
     ResultRecord,
 )
 from .registry import ResearchExecutionRegistry, ResearchRegistryError
-from .argument_map import ArgumentClaimSpec, ArgumentMap, ArgumentRole
+from .argument_map import ArgumentClaimSpec, ArgumentMap, ArgumentRole, EpistemicIntent
 
 __all__ = [
     "ExperimentRun",
@@ -16,6 +16,7 @@ __all__ = [
     "ArgumentClaimSpec",
     "ArgumentMap",
     "ArgumentRole",
+    "EpistemicIntent",
     "ResearchMethod",
     "ResearchProtocol",
     "ResearchExecutionRegistry",

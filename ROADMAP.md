@@ -49,7 +49,7 @@
 - [x] 真实DeepSeek V4 Flash验收通过：6轮/11次工具内收敛，池内引文仍必须实际调用`check_citation`。
 - [ ] 将有界微循环扩展到选题、文献综述、大纲、修订和验收环节，补齐证据摘录/字数工具。
 - [x] 建立论文级项目记忆：研究问题、范围边界、禁写/未决主张、作者决定、导师意见、术语、写作风格与自动修订停止预算的不可变版本、审批和环6消费；NAT-001 M1 已把证据缺口/专家冲突设为不可关闭的硬停止条件。
-- [ ] NAT-001 后续：由批准产物组合只读 Research Canon / Evidence Table 投影，再把 Section Contract 嵌入版本化大纲并建立 `PROJECT_MEMORY → OUTLINE → SECTION_DRAFT` 失效链。
+- [x] NAT-001 M2：由批准产物组合只读 Research Canon / Evidence Table 投影；服务端重算证据状态并分离认识论意图、核验强度与风险等级。下一步把 Section Contract 嵌入版本化大纲并建立 `PROJECT_MEMORY → OUTLINE → SECTION_DRAFT` 失效链。
 - [ ] 将已批准项目记忆扩展到选题、综述、大纲、修订和验收环节。
 - [ ] 增加SSE进度事件与环7变更级diff确认，禁止无上限自主循环。
 

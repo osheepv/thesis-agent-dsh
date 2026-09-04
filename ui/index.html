@@ -215,6 +215,18 @@
                 <textarea id="memory-questions" maxlength="20000" required aria-describedby="memory-help memory-error"></textarea>
               </div>
               <div class="wb-field">
+                <label for="memory-scope-boundaries">研究范围与硬边界（每行一条）</label>
+                <textarea id="memory-scope-boundaries" maxlength="30000" aria-describedby="memory-help memory-error"></textarea>
+              </div>
+              <div class="wb-field">
+                <label for="memory-forbidden-claims">禁止智能体写入的主张（每行一条）</label>
+                <textarea id="memory-forbidden-claims" maxlength="30000" aria-describedby="memory-help memory-error"></textarea>
+              </div>
+              <div class="wb-field">
+                <label for="memory-unresolved-claims">待补证据或未解决主张（每行一条）</label>
+                <textarea id="memory-unresolved-claims" maxlength="30000" aria-describedby="memory-help memory-error"></textarea>
+              </div>
+              <div class="wb-field">
                 <label for="memory-decisions">作者决定（每行一个，可写“决定 | 理由”）</label>
                 <textarea id="memory-decisions" maxlength="50000"></textarea>
               </div>
@@ -236,6 +248,15 @@
               </div>
               <div class="wb-field"><label for="memory-citation-style">引用样式</label><input id="memory-citation-style" maxlength="120" value="GB/T 7714-2015"></div>
               <div class="wb-field"><label for="memory-constraints">其他写作约束（每行一条）</label><textarea id="memory-constraints" maxlength="15000"></textarea></div>
+              <fieldset class="wb-card" id="memory-stopping-policy">
+                <legend class="wb-card-title">智能体自动修订停止规则</legend>
+                <p class="wb-card-meta" id="memory-stopping-help">只限制自动修订，不限制作者手工修改；证据缺口和专家冲突优先停止。</p>
+                <div class="wb-form-row">
+                  <div class="wb-field"><label for="memory-max-rounds">最大自动修订轮数</label><input id="memory-max-rounds" type="number" min="1" max="10" value="3" aria-describedby="memory-stopping-help memory-error"></div>
+                  <div class="wb-field"><label for="memory-plateau-rounds">连续低收益轮数</label><input id="memory-plateau-rounds" type="number" min="1" max="5" value="2" aria-describedby="memory-stopping-help memory-error"></div>
+                </div>
+                <div class="wb-field"><label for="memory-min-improvement">最低有效增分</label><input id="memory-min-improvement" type="number" min="0" max="10" step="0.1" value="0.5" aria-describedby="memory-stopping-help memory-error"></div>
+              </fieldset>
               <div class="wb-field"><label for="memory-version-note">版本说明</label><input id="memory-version-note" maxlength="500" placeholder="例：纳入导师第二轮意见"></div>
               <div class="autosave-status" id="memory-autosave-status" role="status" aria-live="polite"></div>
               <div class="autosave-conflict" id="memory-autosave-conflict" hidden></div>

@@ -13,6 +13,10 @@ async function apiReviewProjectMemory(taskId, artifactId, approved, reason = '')
 
 let memoryRevisionBase = null;
 const PROJECT_MEMORY_DRAFT_KEY = 'project-memory:new';
+const STOPPING_POLICY_ERROR = '请按字段范围填写自动修订停止规则。';
+const STOPPING_POLICY_FIELDS = [
+  'memory-max-rounds', 'memory-plateau-rounds', 'memory-min-improvement',
+];
 
 async function ensureProjectMemoryAutosave() {
   if (!currentSession || !window.ThesisAutosave?.registerDraftSurface) return null;
@@ -44,6 +48,21 @@ async function ensureProjectMemoryAutosave() {
     form.addEventListener('input', schedule);
     form.addEventListener('change', schedule);
   }
+  STOPPING_POLICY_FIELDS.forEach((id) => {
+    const input = document.getElementById(id);
+    if (!input || input.dataset.validationBound) return;
+    input.dataset.validationBound = '1';
+    input.addEventListener('input', () => {
+      if (input.checkValidity()) input.removeAttribute('aria-invalid');
+      const error = document.getElementById('memory-error');
+      const allValid = STOPPING_POLICY_FIELDS.every(
+        fieldId => document.getElementById(fieldId).checkValidity(),
+      );
+      if (allValid && error.textContent === STOPPING_POLICY_ERROR) {
+        error.textContent = '';
+      }
+    });
+  });
   await window.ThesisAutosave.loadDraft(PROJECT_MEMORY_DRAFT_KEY);
   return surface;
 }
@@ -57,8 +76,12 @@ function fillProjectMemoryForm(
   memory, version = '', artifactId = '', options = { focus: true },
 ) {
   const style = memory?.writing_style || {};
+  const stopping = memory?.stopping_policy || {};
   memoryRevisionBase = memory || null;
   document.getElementById('memory-questions').value = (memory?.research_questions || []).join('\n');
+  document.getElementById('memory-scope-boundaries').value = (memory?.scope_boundaries || []).join('\n');
+  document.getElementById('memory-forbidden-claims').value = (memory?.forbidden_claims || []).join('\n');
+  document.getElementById('memory-unresolved-claims').value = (memory?.unresolved_claims || []).join('\n');
   document.getElementById('memory-decisions').value = (memory?.decisions || [])
     .map(item => item.rationale ? `${item.text} | ${item.rationale}` : item.text).join('\n');
   document.getElementById('memory-feedback').value = (memory?.supervisor_feedback || [])
@@ -71,6 +94,9 @@ function fillProjectMemoryForm(
   document.getElementById('memory-tense').value = style.tense || '按学科惯例使用';
   document.getElementById('memory-citation-style').value = style.citation_style || 'GB/T 7714-2015';
   document.getElementById('memory-constraints').value = (style.constraints || []).join('\n');
+  document.getElementById('memory-max-rounds').value = stopping.max_revision_rounds ?? 3;
+  document.getElementById('memory-plateau-rounds').value = stopping.plateau_rounds ?? 2;
+  document.getElementById('memory-min-improvement').value = stopping.min_score_improvement ?? 0.5;
   document.getElementById('memory-version-note').value = version ? `基于v${version}修订` : (memory?.version_note || '');
   document.getElementById('memory-submit').textContent = version ? '生成修订版本' : '生成待审批版本';
   document.getElementById('memory-error').textContent = '';
@@ -113,6 +139,9 @@ function buildProjectMemoryPayload() {
   }).filter(item => item.term);
   return {
     research_questions: questions,
+    scope_boundaries: valueLines('memory-scope-boundaries'),
+    forbidden_claims: valueLines('memory-forbidden-claims'),
+    unresolved_claims: valueLines('memory-unresolved-claims'),
     decisions,
     supervisor_feedback: supervisorFeedback,
     terminology,
@@ -123,6 +152,11 @@ function buildProjectMemoryPayload() {
       tense: document.getElementById('memory-tense').value.trim(),
       citation_style: document.getElementById('memory-citation-style').value.trim(),
       constraints: valueLines('memory-constraints'),
+    },
+    stopping_policy: {
+      max_revision_rounds: Number(document.getElementById('memory-max-rounds').value || 3),
+      plateau_rounds: Number(document.getElementById('memory-plateau-rounds').value || 2),
+      min_score_improvement: Number(document.getElementById('memory-min-improvement').value || 0.5),
     },
     version_note: document.getElementById('memory-version-note').value.trim(),
   };
@@ -138,6 +172,9 @@ function renderProjectMemoryVersions(items) {
     const memory = item.payload || {};
     const style = memory.writing_style || {};
     const questions = memory.research_questions || [];
+    const boundaries = memory.scope_boundaries || [];
+    const forbidden = memory.forbidden_claims || [];
+    const unresolved = memory.unresolved_claims || [];
     const decisions = memory.decisions || [];
     const feedback = memory.supervisor_feedback || [];
     const terms = memory.terminology || [];
@@ -148,11 +185,15 @@ function renderProjectMemoryVersions(items) {
         <div class="wb-card-title">项目记忆 v${item.version}</div>
         <span class="wb-status ${wbStatusClass(item.status)}">${escapeHtml2(item.status)}</span>
       </div>
-      <div class="wb-card-meta">研究问题 ${questions.length} · 决定 ${decisions.length} · 导师意见 ${feedback.length} · 术语 ${terms.length}</div>
+      <div class="wb-card-meta">研究问题 ${questions.length} · 范围边界 ${boundaries.length} · 禁写 ${forbidden.length} · 待解决 ${unresolved.length}</div>
+      <div class="wb-card-meta">决定 ${decisions.length} · 导师意见 ${feedback.length} · 术语 ${terms.length}</div>
       <div class="wb-card-meta">${escapeHtml2(style.language || '未设定')} · ${escapeHtml2(style.tone || '未设定语气')} · ${escapeHtml2(style.citation_style || '未设定引用样式')}</div>
       ${memory.version_note ? `<div class="wb-card-meta">${escapeHtml2(memory.version_note)}</div>` : ''}
       <details><summary class="wb-card-meta">查看记忆摘要</summary>
         ${questions.length ? `<ol>${questions.map(value => `<li>${escapeHtml2(value)}</li>`).join('')}</ol>` : '<div class="wb-card-meta">未设定研究问题。</div>'}
+        ${boundaries.length ? `<div class="wb-card-meta">范围边界：${boundaries.slice(0, 8).map(escapeHtml2).join('；')}</div>` : ''}
+        ${forbidden.length ? `<div class="wb-card-meta">禁写主张：${forbidden.slice(0, 8).map(escapeHtml2).join('；')}</div>` : ''}
+        ${unresolved.length ? `<div class="wb-card-meta">待解决：${unresolved.slice(0, 8).map(escapeHtml2).join('；')}</div>` : ''}
         ${terms.length ? `<div class="wb-card-meta">术语：${terms.slice(0, 12).map(value => `${escapeHtml2(value.term)}→${escapeHtml2(value.preferred_form)}`).join('、')}</div>` : ''}
       </details>
       <div class="wb-card-actions">
@@ -210,6 +251,16 @@ async function submitProjectMemoryForm(event) {
     questions.focus();
     return;
   }
+  const invalidStoppingField = STOPPING_POLICY_FIELDS
+    .map(id => document.getElementById(id)).find(input => !input.checkValidity());
+  if (invalidStoppingField) {
+    invalidStoppingField.setAttribute('aria-invalid', 'true');
+    error.textContent = STOPPING_POLICY_ERROR;
+    invalidStoppingField.focus();
+    return;
+  }
+  STOPPING_POLICY_FIELDS
+    .forEach(id => document.getElementById(id).removeAttribute('aria-invalid'));
   questions.removeAttribute('aria-invalid');
   error.textContent = '';
   const submit = document.getElementById('memory-submit');

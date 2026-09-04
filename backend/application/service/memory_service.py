@@ -49,7 +49,7 @@ class MemoryServiceMixin:
             dependency_ids=dependencies,
             context_manifest=ContextManifest(
                 prompt_id="project_memory_authoring",
-                prompt_version="v1",
+                prompt_version="v2",
                 input_artifact_ids=dependencies,
             ),
         )
@@ -59,6 +59,10 @@ class MemoryServiceMixin:
             report={
                 "schema_validation": "passed",
                 "research_question_count": len(memory.research_questions),
+                "scope_boundary_count": len(memory.scope_boundaries),
+                "forbidden_claim_count": len(memory.forbidden_claims),
+                "unresolved_claim_count": len(memory.unresolved_claims),
+                "stopping_policy": memory.stopping_policy.model_dump(),
                 "decision_count": len(memory.decisions),
                 "feedback_count": len(memory.supervisor_feedback),
                 "terminology_count": len(memory.terminology),

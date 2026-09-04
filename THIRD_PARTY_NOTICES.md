@@ -69,3 +69,14 @@ Lucide 中的 Feather 派生图标与 Open Props 分别在上述版权归属下�
 ## Python依赖
 
 Python依赖通过`backend/requirements.txt`安装，不作为本项目源码重新授权。重新分发应用或安装包时，发布者应根据锁定版本收集并附带对应的第三方许可证与版权声明。
+
+## Nature Skills（概念级修改实现）
+
+- 上游：`Yuan1z0825/nature-skills`
+- 固定提交：`ebd722e18808442688bd205917a3e774195c258f`
+- 项目：https://github.com/Yuan1z0825/nature-skills
+- 许可证：Apache License 2.0
+- 涉及来源：`skills/nature-proposal-writer/references/foundation-files.md`、`skills/nature-proposal-writer/references/stopping-rules.md`
+- 修改说明：本项目没有复制或安装上游 Skill；仅参考其 foundation/stopping workflow 思想，并将其重写为 Pydantic 契约、作者审批字段、服务端停止原因码和确定性测试。三轮/0.5 只作为可配置默认预算，证据缺口与专家冲突按本项目安全边界重新设计为硬停止条件。
+
+Nature Skills 是社区项目，本项目与 Nature Portfolio 无隶属或官方合作关系；Apache-2.0 不授予 Nature 商标或官方背书权利。期刊政策必须以执行时的官方页面为准。

@@ -58,6 +58,35 @@ def test_ui_has_no_duplicate_static_ids():
     assert duplicates == []
 
 
+def test_project_memory_academic_foundation_controls_are_wired():
+    html = UI_PATH.read_text(encoding="utf-8")
+    memory = MEMORY_JS_PATH.read_text(encoding="utf-8")
+    for field_id in (
+        "memory-scope-boundaries",
+        "memory-forbidden-claims",
+        "memory-unresolved-claims",
+        "memory-max-rounds",
+        "memory-plateau-rounds",
+        "memory-min-improvement",
+    ):
+        assert f'id="{field_id}"' in html
+        assert field_id in memory
+    for payload_key in (
+        "scope_boundaries",
+        "forbidden_claims",
+        "unresolved_claims",
+        "stopping_policy",
+        "max_revision_rounds",
+        "min_score_improvement",
+    ):
+        assert payload_key in memory
+    assert "invalidStoppingField" in memory
+    assert "checkValidity()" in memory
+    assert "STOPPING_POLICY_FIELDS" in memory
+    assert "validationBound" in memory
+    assert 'id="memory-stopping-help"' in html
+
+
 def test_cytoscape_is_vendored_locally():
     assert CYTOSCAPE_PATH.is_file()
     assert CYTOSCAPE_PATH.stat().st_size > 300_000

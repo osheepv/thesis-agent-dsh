@@ -179,7 +179,116 @@ class TestRing6PoolInjected:
         assert "增量补写" in calls[1]
         assert data["chapters"][0]["content"].startswith("短正文 [L1]")
         assert data["total_words"] >= Degree.BACHELOR.min_word_requirement
-        assert len(saved) == 1
+        assert len(saved) == 2
+        assert saved[0][0]["word_count"] < Degree.BACHELOR.min_word_requirement
+        assert saved[0][0]["checkpoint_complete"] is False
+        assert saved[-1][0]["word_count"] >= Degree.BACHELOR.min_word_requirement
+        assert saved[-1][0]["checkpoint_complete"] is True
+
+    def test_ring6_persists_partial_chapter_before_length_failure(self, monkeypatch):
+        from backend.executor import ring6_chapter as r6
+
+        calls = []
+
+        class ShortChunkClient:
+            def generate_json(self, **kwargs):
+                calls.append(kwargs["prompt"])
+                content = f"## 增量分析{len(calls)}\n" + ("增量分析。" * 400)
+                return r6.LLMChapterWriteOut(
+                    theme="T",
+                    degree="BACHELOR",
+                    chapters=[r6.ChapterDraft(
+                        chapter_no=1,
+                        chapter_title="第1章 绪论",
+                        content=content,
+                        word_count=len(content),
+                    )],
+                    total_words=len(content),
+                )
+
+        monkeypatch.setattr(r6, "get_llm_client", lambda: ShortChunkClient())
+        monkeypatch.setattr(
+            r6,
+            "get_llm_settings",
+            lambda: type("S", (), {
+                "enabled": True,
+                "api_key": "x",
+                "fallback_to_mock": False,
+            })(),
+        )
+        ctx = ExecContext(
+            subject_field="AI",
+            degree=Degree.BACHELOR,
+            theme="T",
+            outline=json.dumps({"chapters": [
+                {"level": 1, "number": "第1章", "title": "绪论"},
+            ]}, ensure_ascii=False),
+        )
+        ctx.enforce_chapter_minimum = True
+        saved = []
+        ctx.chapter_checkpoint_callback = saved.append
+
+        with pytest.raises(r6.StructuredOutputError, match="四次有界生成"):
+            get_executor(6).execute(ctx)
+
+        assert len(saved) == 4
+        assert saved[-1][0]["word_count"] > saved[0][0]["word_count"]
+        assert saved[-1][0]["checkpoint_complete"] is False
+
+    def test_ring6_resumes_incomplete_chapter_checkpoint(self, monkeypatch):
+        from backend.executor import ring6_chapter as r6
+
+        prompts = []
+
+        class ContinuationClient:
+            def generate_json(self, **kwargs):
+                prompts.append(kwargs["prompt"])
+                content = "## 新增讨论\n" + ("补充论证。" * 300)
+                return r6.LLMChapterWriteOut(
+                    theme="T",
+                    degree="BACHELOR",
+                    chapters=[r6.ChapterDraft(
+                        chapter_no=1,
+                        chapter_title="第1章 绪论",
+                        content=content,
+                        word_count=len(content),
+                    )],
+                    total_words=len(content),
+                )
+
+        monkeypatch.setattr(r6, "get_llm_client", lambda: ContinuationClient())
+        monkeypatch.setattr(
+            r6,
+            "get_llm_settings",
+            lambda: type("S", (), {
+                "enabled": True,
+                "api_key": "x",
+                "fallback_to_mock": False,
+            })(),
+        )
+        ctx = ExecContext(
+            subject_field="AI",
+            degree=Degree.BACHELOR,
+            theme="T",
+            outline=json.dumps({"chapters": [
+                {"level": 1, "number": "第1章", "title": "绪论"},
+            ]}, ensure_ascii=False),
+        )
+        ctx.enforce_chapter_minimum = True
+        ctx.chapter_checkpoint = [{
+            "chapter_no": 1,
+            "chapter_title": "第1章 绪论",
+            "content": "既有正文。" * 1800,
+            "word_count": 9000,
+        }]
+
+        result = get_executor(6).execute(ctx)
+
+        data = json.loads(result.output)
+        assert len(prompts) == 1
+        assert "增量补写" in prompts[0]
+        assert "既有正文。" in data["chapters"][0]["content"]
+        assert data["total_words"] >= Degree.BACHELOR.min_word_requirement
 
     def test_ring6_dynamic_target_allows_overachieving_prior_chapters(self, monkeypatch):
         from backend.executor import ring6_chapter as r6

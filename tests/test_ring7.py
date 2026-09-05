@@ -67,7 +67,11 @@ class _FakeLLM:
         from backend.executor import ring7 as r7
 
         if self.drop_facts:
-            content = "## 1 引言\n该方法是全新的，与任何事无关。\n## 小结\n完。"
+            content = (
+                "## 1 引言\n该方法是全新的，与任何事无关。\n"
+                + ("补充了不相关说明。" * 4000)
+                + "\n## 小结\n完。"
+            )
         else:
             content = "## 1 引言\n该方法有效，准确率达 95%，详见 [L1]。\n## 小结\n综上所述。"
         return r7.LLMPolishOut(
@@ -102,6 +106,44 @@ class TestRing7Polish:
         data = json.loads(get_executor(7).execute(ctx).output)
         # fake 输出含"有效"，术语表"非常有效→有效"不一定触发；但 applied_terms 字段应存在
         assert "applied_terms" in data
+
+    def test_polish_preserves_original_when_candidate_overcompresses(self, monkeypatch):
+        from backend.executor import ring7
+
+        original = "原始论证内容。" * 1000
+
+        class CompressedLLM:
+            def generate_json(self, **kwargs):
+                return ring7.LLMPolishOut(
+                    chapters=[ring7.PolishedChapter(
+                        chapter_no=1,
+                        chapter_title="第1章 绪论",
+                        content="压缩摘要。" * 20,
+                    )],
+                    notes=["压缩了表达"],
+                )
+
+        monkeypatch.setattr(ring7, "get_llm_client", lambda: CompressedLLM())
+        monkeypatch.setattr(ring7, "get_llm_settings", lambda: _FakeSettings())
+        draft = json.dumps({"chapters": [{
+            "chapter_no": 1,
+            "chapter_title": "第1章 绪论",
+            "content": original,
+        }]}, ensure_ascii=False)
+        ctx = ExecContext(
+            subject_field="AI",
+            degree=Degree.MASTER,
+            theme="T",
+            draft=draft,
+        )
+
+        result = get_executor(7).execute(ctx)
+
+        data = json.loads(result.output)
+        assert result.accept is True
+        assert data["chapters"][0]["content"] == original
+        assert any("长度守护" in note for note in data["issues_found"])
+        assert result.evidence["length_guard_rejections"] == 1
 
     def test_fingerprint_guard_rejects(self, monkeypatch):
         from backend.executor import ring7
@@ -156,3 +198,40 @@ class TestRing7Polish:
         assert llm.calls == 1
         assert len(json.loads(result.output)["chapters"]) == 2
         assert saved == [2]
+
+    def test_polish_sanitizes_short_checkpoint_without_new_model_call(self, monkeypatch):
+        from backend.executor import ring7
+
+        class ForbiddenLLM:
+            def generate_json(self, **kwargs):
+                raise AssertionError("完整检查点不应再次调用模型")
+
+        monkeypatch.setattr(ring7, "get_llm_client", lambda: ForbiddenLLM())
+        monkeypatch.setattr(ring7, "get_llm_settings", lambda: _FakeSettings())
+        first = "第一章原文。" * 1000
+        second = "第二章原文。" * 1000
+        draft = json.dumps({"chapters": [
+            {"chapter_no": 1, "chapter_title": "第1章", "content": first},
+            {"chapter_no": 2, "chapter_title": "第2章", "content": second},
+        ]}, ensure_ascii=False)
+        ctx = ExecContext(
+            subject_field="AI",
+            degree=Degree.MASTER,
+            theme="T",
+            draft=draft,
+        )
+        ctx.polished_checkpoint = [
+            {"chapter_no": 1, "chapter_title": "第1章", "content": "过短。"},
+            {"chapter_no": 2, "chapter_title": "第2章", "content": "仍然过短。"},
+        ]
+        saved = []
+        ctx.checkpoint_callback = lambda chapters, notes: saved.append((chapters, notes))
+
+        result = get_executor(7).execute(ctx)
+
+        data = json.loads(result.output)
+        assert [chapter["content"] for chapter in data["chapters"]] == [first, second]
+        assert result.evidence["source"] == "checkpoint"
+        assert result.evidence["model_calls"] == 0
+        assert len(saved) == 1
+        assert sum("长度守护" in note for note in saved[0][1]) == 2

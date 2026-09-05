@@ -154,6 +154,24 @@ def _count_words(text: str) -> int:
     return len(re.sub(r"[\s#*`-]+", "", text))
 
 
+def _chapter_continuation_prompt(draft: ChapterDraft, target_words: int) -> str:
+    """为未达标章节构造紧凑的增量补写指令，避免把整章再次喂给模型。"""
+    missing_words = max(target_words - _count_words(draft.content), 0)
+    headings = re.findall(r"^#{2,4}\s+.+$", draft.content, flags=re.MULTILINE)
+    heading_block = "\n".join(headings[-20:]) or "（无可识别标题）"
+    tail = draft.content[-1_500:]
+    return (
+        "\n【增量补写】当前完整正文只有 "
+        f"{_count_words(draft.content)} 字，低于最低 {target_words} 字，"
+        f"仍缺至少 {missing_words} 字。不要重写或重复已有段落；"
+        "只在 chapters[0].content 中输出需要追加的新段落，且以新的二级或三级标题开头。"
+        "补充分析、方法细节、证据边界、限制条件与本章小结，并保留合法引用标记。"
+        "不得重复下列既有标题，也不得输出完整章节。"
+        f"\n【既有标题】\n{heading_block}"
+        f"\n【正文末尾，仅供衔接】\n{tail}"
+    )
+
+
 def _parse_writing_plan(content: str) -> WritingPlanOut:
     """容忍模型在JSON前后添加简短说明，但不放宽结构校验。"""
     cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip())
@@ -580,8 +598,12 @@ class Ring6ChapterExecutor(RingExecutor):
                     else "【写作计划Agent】本任务未启用。"
                 ),
             })
-            selected: ChapterDraft | None = None
-            correction = ""
+            selected: ChapterDraft | None = existing
+            correction = (
+                _chapter_continuation_prompt(existing, target_per_chapter)
+                if existing is not None
+                else ""
+            )
             for revision in range(4):
                 raw = get_llm_client().generate_json(
                     system=tpl["system"],
@@ -602,23 +624,31 @@ class Ring6ChapterExecutor(RingExecutor):
                     previous_prefix = re.sub(r"\s+", "", selected.content)[:200]
                     candidate_prefix = re.sub(r"\s+", "", candidate.content)[:1000]
                     if previous_prefix and previous_prefix in candidate_prefix:
-                        selected = candidate
+                        if candidate.word_count > selected.word_count:
+                            selected = candidate
                     else:
                         selected.content = (
                             selected.content.rstrip() + "\n\n" + candidate.content.lstrip()
                         )
                         selected.word_count = _count_words(selected.content)
+                checkpoint_by_no[chapter_no] = selected
+                if callable(checkpoint_callback):
+                    checkpoint_snapshot = []
+                    for number in sorted(checkpoint_by_no):
+                        item = checkpoint_by_no[number].model_dump()
+                        item["checkpoint_complete"] = (
+                            number < chapter_no
+                            or not enforce_chapter_minimum
+                            or (
+                                number == chapter_no
+                                and selected.word_count >= target_per_chapter
+                            )
+                        )
+                        checkpoint_snapshot.append(item)
+                    checkpoint_callback(checkpoint_snapshot)
                 if not enforce_chapter_minimum or selected.word_count >= target_per_chapter:
                     break
-                missing_words = target_per_chapter - selected.word_count
-                correction = (
-                    "\n【增量补写】当前完整正文只有 "
-                    f"{selected.word_count} 字，低于最低 {target_per_chapter} 字，"
-                    f"仍缺至少 {missing_words} 字。不要重写或重复已有段落；"
-                    "只在 chapters[0].content 中输出需要追加的新段落，补充分析、"
-                    "方法细节、证据边界、限制条件与本章小结，并保留合法引用标记。"
-                    f"\n【当前完整正文，仅供衔接】\n{selected.content}"
-                )
+                correction = _chapter_continuation_prompt(selected, target_per_chapter)
             if selected is None or (
                 enforce_chapter_minimum
                 and selected.word_count < target_per_chapter
@@ -629,12 +659,6 @@ class Ring6ChapterExecutor(RingExecutor):
                     f"低于最低 {target_per_chapter} 字"
                 )
             chapters.append(selected)
-            checkpoint_by_no[chapter_no] = selected
-            if callable(checkpoint_callback):
-                checkpoint_callback([
-                    checkpoint_by_no[number].model_dump()
-                    for number in sorted(checkpoint_by_no)
-                ])
 
         _append_verified_results(chapters, verified_results)
         used_refs: list[str] = []

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 from typing import Any, Dict, List
 
@@ -37,6 +38,9 @@ logger = logging.getLogger("thesis.ring7")
 
 #: 事实指纹阈值：润色后保留率低于此值视为"改动事实"，拒绝
 _FINGERPRINT_MIN_RATIO = 0.85
+
+#: 单章润色最多允许压缩原文字数的 10%；同时不得让全文跌破学位最低字数。
+_MIN_POLISH_LENGTH_RATIO = 0.90
 
 #: 术语表（规范用词 → 规范值；LLM 输出后确定性替换兜底）
 _TERMS: list[tuple[str, str]] = [
@@ -80,6 +84,7 @@ class LLMPolishOut(BaseModel):
 
     chapters: list[PolishedChapter] = Field(default_factory=list, description="润色后章节")
     notes: list[str] = Field(default_factory=list, description="润色说明（改了什么）")
+    model_calls: int = Field(default=0, description="本次执行新增模型调用数")
 
 
 def _extract_draft_chapters(ctx: ExecContext) -> list[Dict[str, Any]]:
@@ -143,6 +148,10 @@ def _term_fix(text: str) -> tuple[str, list[str]]:
     return text, applied
 
 
+def _count_words(text: str) -> int:
+    return len(re.sub(r"[\s#*`-]+", "", text))
+
+
 @register_executor
 class Ring7PolishExecutor(RingExecutor):
     """环7 修改润色执行体。
@@ -178,7 +187,7 @@ class Ring7PolishExecutor(RingExecutor):
         if settings.enabled and settings.api_key:
             try:
                 polished = self._llm_polish(ctx, src_chapters)
-                source = "deepseek"
+                source = "deepseek" if polished.model_calls > 0 else "checkpoint"
             except (LLMError, StructuredOutputError) as exc:
                 if settings.fallback_to_mock:
                     logger.warning("环7 LLM 不可用，回退原稿：%s", exc)
@@ -229,6 +238,10 @@ class Ring7PolishExecutor(RingExecutor):
                     "source": source,
                     "fingerprint_ratio": round(ratio, 3),
                     "applied_terms": applied_terms,
+                    "model_calls": polished.model_calls,
+                    "length_guard_rejections": sum(
+                        "长度守护" in note for note in polished.notes
+                    ),
                 },
             )
 
@@ -241,11 +254,51 @@ class Ring7PolishExecutor(RingExecutor):
         """逐章润色，避免整篇长文超过单次上下文或输出上限。"""
         term_hint = "；".join(f"{b}→{g}" for b, g in _TERMS)
         checkpoint = list(getattr(ctx, "polished_checkpoint", []) or [])
-        chapters = [PolishedChapter.model_validate(item) for item in checkpoint]
-        if len(chapters) > len(src_chapters):
-            chapters = []
+        source_word_counts = [
+            _count_words(str(chapter.get("content", ""))) for chapter in src_chapters
+        ]
+        chapters: list[PolishedChapter] = []
         notes: list[str] = list(getattr(ctx, "polish_notes_checkpoint", []) or [])
         checkpoint_callback = getattr(ctx, "checkpoint_callback", None)
+
+        def guarded_chapter(index: int, candidate: PolishedChapter) -> PolishedChapter:
+            source = src_chapters[index]
+            source_words = source_word_counts[index]
+            previous_words = sum(item.word_count for item in chapters)
+            future_source_words = sum(source_word_counts[index + 1:])
+            required_words = max(
+                math.ceil(source_words * _MIN_POLISH_LENGTH_RATIO),
+                ctx.degree.min_word_requirement - previous_words - future_source_words,
+            )
+            actual_words = _count_words(candidate.content)
+            if actual_words >= required_words:
+                candidate.word_count = actual_words
+                return candidate
+            chapter_no = int(source.get("chapter_no", index + 1) or index + 1)
+            notes.append(
+                f"第{chapter_no}章长度守护：润色稿 {actual_words} 字低于安全下限 "
+                f"{required_words} 字，已保留原章"
+            )
+            return PolishedChapter(
+                chapter_no=chapter_no,
+                chapter_title=str(source.get("chapter_title", "")),
+                content=str(source.get("content", "")),
+                word_count=source_words,
+            )
+
+        checkpoint_changed = False
+        model_calls = 0
+        if len(checkpoint) <= len(src_chapters):
+            for index, item in enumerate(checkpoint):
+                candidate = PolishedChapter.model_validate(item)
+                guarded = guarded_chapter(index, candidate)
+                checkpoint_changed = checkpoint_changed or guarded.content != candidate.content
+                chapters.append(guarded)
+        if checkpoint_changed and callable(checkpoint_callback):
+            checkpoint_callback(
+                [item.model_dump() for item in chapters],
+                list(notes),
+            )
         for index, chapter in enumerate(src_chapters[len(chapters):], start=len(chapters) + 1):
             chapters_text = (
                 f"### {chapter.get('chapter_title', chapter.get('chapter_no', ''))}\n"
@@ -264,19 +317,24 @@ class Ring7PolishExecutor(RingExecutor):
                 temperature=0.2,
                 max_output_tokens=8192,
             )
+            model_calls += 1
             if not raw.chapters:
                 raise StructuredOutputError(f"第{index}章润色返回空章节")
             polished = raw.chapters[0]
             polished.chapter_no = int(chapter.get("chapter_no", index) or index)
             polished.chapter_title = polished.chapter_title or str(chapter.get("chapter_title", ""))
-            chapters.append(polished)
             notes.extend(raw.notes)
+            chapters.append(guarded_chapter(index - 1, polished))
             if callable(checkpoint_callback):
                 checkpoint_callback(
                     [item.model_dump() for item in chapters],
                     list(notes),
                 )
-        return LLMPolishOut(chapters=chapters, notes=notes)
+        return LLMPolishOut(
+            chapters=chapters,
+            notes=notes,
+            model_calls=model_calls,
+        )
 
     @staticmethod
     def _fallback_original(src_chapters: List[Dict[str, Any]], issue: str, source: str) -> ExecResult:
@@ -286,7 +344,7 @@ class Ring7PolishExecutor(RingExecutor):
                 chapter_no=ch.get("chapter_no", i + 1),
                 chapter_title=ch.get("chapter_title", ""),
                 content=ch.get("content", ""),
-                word_count=len(re.sub(r"[\s#*`-]+", "", ch.get("content", ""))),
+                word_count=_count_words(ch.get("content", "")),
             )
             for i, ch in enumerate(src_chapters)
         ]

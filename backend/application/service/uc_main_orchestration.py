@@ -1086,7 +1086,11 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
                 **existing,
                 "checkpoint": True,
                 "chapters": chapters,
-                "completed_chapter_count": len(chapters),
+                "completed_chapter_count": sum(
+                    1
+                    for chapter in chapters
+                    if bool(chapter.get("checkpoint_complete", True))
+                ),
             }
             self._store.put(latest)
 
@@ -1251,6 +1255,12 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
                      "used_refs": quality_payload["used_refs"],
                      "used_result_ids": quality_payload["used_result_ids"],
                      "generation_source": str((res.evidence or {}).get("source", "")),
+                     "model_calls": int((res.evidence or {}).get("model_calls", 0) or 0),
+                     "length_guard_rejections": int(
+                         (res.evidence or {}).get("length_guard_rejections", 0) or 0
+                     ),
+                     "issues_found": list(data.get("issues_found", []) or []),
+                     "applied_terms": list(data.get("applied_terms", []) or []),
                      "canon_hash": str(contract_audit.get("canon_hash", "")),
                      "contract_hash": str(contract_audit.get("contract_hash", "")),
                      "contract_audit": {

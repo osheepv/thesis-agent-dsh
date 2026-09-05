@@ -12,6 +12,7 @@ API密钥或完整供应商响应。
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -23,6 +24,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
+ROOT = Path(__file__).resolve().parents[1]
+BACKEND = ROOT / "backend"
+if str(BACKEND) not in sys.path:
+    sys.path.insert(0, str(BACKEND))
+os.chdir(BACKEND)
 
 BASE = os.getenv("THESIS_ACCEPTANCE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 TITLE = os.getenv(
@@ -44,7 +56,7 @@ RUN_ID = os.getenv(
 REPORT_PATH = Path(
     os.getenv(
         "THESIS_ACCEPTANCE_REPORT",
-        f"output/acceptance/{SESSION_ID}.json",
+        str(ROOT / "output" / "acceptance" / f"{SESSION_ID}.json"),
     )
 )
 JOB_TIMEOUT_SECONDS = int(os.getenv("THESIS_ACCEPTANCE_JOB_TIMEOUT", "1800"))
@@ -74,11 +86,49 @@ TOKEN_BUDGETS = {
     9: 5_000,
     10: 5_000,
 }
+DEGREE_WRITING_BUDGETS = {
+    "BACHELOR": {6: 80_000, 7: 80_000},
+    "MASTER": {6: 160_000, 7: 180_000},
+    "PHD": {6: 300_000, 7: 340_000},
+}
 TERMINAL_JOB_STATES = {"SUCCEEDED", "FAILED", "CANCELLED"}
 
 
 class AcceptanceError(RuntimeError):
     """验收被真实业务门禁或运行错误阻断。"""
+
+
+def _safe_runtime_view() -> dict[str, Any]:
+    from common.llm import get_llm_settings
+
+    settings = get_llm_settings()
+    return {
+        "provider": "deepseek",
+        "enabled": settings.enabled,
+        "api_key_configured": bool(settings.api_key),
+        "base_url": settings.base_url,
+        "model": settings.model,
+        "fallback_to_mock": settings.fallback_to_mock,
+        "supports_tools": settings.supports_tools,
+    }
+
+
+def _degree_token_budgets(degree: str) -> dict[int, int]:
+    budgets = dict(TOKEN_BUDGETS)
+    budgets.update(DEGREE_WRITING_BUDGETS[degree])
+    return budgets
+
+
+def _safe_service_view() -> dict[str, Any]:
+    try:
+        data = _require_ok(_get("/healthz"), "读取服务健康状态")
+        return {
+            "available": True,
+            "status": data.get("status", ""),
+            "reconciliation_status": data.get("reconciliation_status", "UNKNOWN"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"available": False, "error": str(exc)[:200]}
 
 
 def _request(method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -286,7 +336,7 @@ def _write_report(report: dict[str, Any]) -> None:
     REPORT_PATH.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def main() -> int:
+def _execute_acceptance() -> int:
     new_report: dict[str, Any] = {
         "schema_version": 1,
         "started_at": datetime.now(timezone.utc).isoformat(),
@@ -358,7 +408,7 @@ def main() -> int:
                 "ring.execute",
                 {"ring_no": ring_no},
                 f"环{ring_no}{RING_LABELS[ring_no]}",
-                token_budget=TOKEN_BUDGETS[ring_no],
+                token_budget=_degree_token_budgets(DEGREE)[ring_no],
             )
             record = _job_record(ring_no, job)
             report["rings"].append(record)
@@ -447,6 +497,48 @@ def main() -> int:
         print(f"验收停止: {exc}", file=sys.stderr)
         print(f"失败报告: {REPORT_PATH}", file=sys.stderr)
         return 1
+
+
+def main() -> int:
+    global DEGREE
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="显式允许执行有硬预算的真实 DeepSeek 十环验收",
+    )
+    parser.add_argument(
+        "--degree",
+        choices=("BACHELOR", "MASTER", "PHD"),
+        default=DEGREE,
+        help="代表任务学位层次",
+    )
+    args = parser.parse_args()
+    DEGREE = args.degree
+    runtime = _safe_runtime_view()
+    service = _safe_service_view()
+    budgets = _degree_token_budgets(DEGREE)
+    preflight = {
+        "mode": "execute" if args.execute else "preflight",
+        "will_call_model": bool(args.execute),
+        "degree": DEGREE,
+        "runtime": runtime,
+        "service": service,
+        "token_budgets": budgets,
+        "max_total_token_budget": sum(budgets.values()),
+    }
+    if not args.execute:
+        print(json.dumps(preflight, ensure_ascii=False))
+        return 0
+    if not runtime["enabled"] or not runtime["api_key_configured"]:
+        raise AcceptanceError("DeepSeek 未启用或未配置 API Key")
+    if runtime["fallback_to_mock"]:
+        raise AcceptanceError("真实验收必须设置 THESIS_DEEPSEEK_FALLBACK_TO_MOCK=false")
+    if not service.get("available") or service.get("status") != "UP":
+        raise AcceptanceError("后端服务不可用，禁止开始产生费用")
+    if service.get("reconciliation_status") == "NEEDS_REPAIR":
+        raise AcceptanceError("后端启动对账未通过，禁止开始真实验收")
+    return _execute_acceptance()
 
 
 if __name__ == "__main__":

@@ -493,10 +493,10 @@ class Ring6ChapterExecutor(RingExecutor):
             if callable(plan_callback):
                 plan_callback(agent_plan)
         ctx.agent_plan_result = agent_plan
-        target_per_chapter = math.ceil(
+        baseline_per_chapter = math.ceil(
             ctx.degree.min_word_requirement / max(len(chapter_meta), 1)
         )
-        target_max_per_chapter = target_per_chapter + max(500, target_per_chapter // 4)
+        minimum_chapter_words = max(1_000, math.ceil(baseline_per_chapter * 0.5))
         # 文献池注入（仅可引用池内条目，防止 AI 编造引文）
         pool_block = lit_pool_block(
             [it if isinstance(it, dict) else it.to_dict() for it in ctx.literature]
@@ -527,11 +527,21 @@ class Ring6ChapterExecutor(RingExecutor):
             getattr(ctx, "enforce_chapter_minimum", False)
         )
         checkpoint_callback = getattr(ctx, "chapter_checkpoint_callback", None)
-        max_output_tokens = min(
-            8192,
-            max(4096, math.ceil(target_max_per_chapter * 1.4)),
-        )
         for chapter_no, (number, title) in enumerate(chapter_meta, start=1):
+            completed_words = sum(_count_words(chapter.content) for chapter in chapters)
+            remaining_chapters = len(chapter_meta) - chapter_no + 1
+            target_per_chapter = max(
+                minimum_chapter_words,
+                math.ceil(
+                    max(ctx.degree.min_word_requirement - completed_words, 0)
+                    / remaining_chapters
+                ),
+            )
+            target_max_per_chapter = target_per_chapter + max(500, target_per_chapter // 4)
+            max_output_tokens = min(
+                8192,
+                max(4096, math.ceil(target_max_per_chapter * 1.4)),
+            )
             existing = checkpoint_by_no.get(chapter_no)
             if existing is not None and (
                 not enforce_chapter_minimum
@@ -572,7 +582,7 @@ class Ring6ChapterExecutor(RingExecutor):
             })
             selected: ChapterDraft | None = None
             correction = ""
-            for revision in range(2):
+            for revision in range(4):
                 raw = get_llm_client().generate_json(
                     system=tpl["system"],
                     prompt=tpl["prompt"] + correction,
@@ -582,18 +592,32 @@ class Ring6ChapterExecutor(RingExecutor):
                 )
                 if not raw.chapters:
                     raise StructuredOutputError(f"第{chapter_no}章返回空章节")
-                selected = raw.chapters[0]
-                selected.chapter_no = chapter_no
-                selected.chapter_title = selected.chapter_title or f"{number} {title}"
-                selected.word_count = _count_words(selected.content)
+                candidate = raw.chapters[0]
+                candidate.chapter_no = chapter_no
+                candidate.chapter_title = candidate.chapter_title or f"{number} {title}"
+                candidate.word_count = _count_words(candidate.content)
+                if selected is None:
+                    selected = candidate
+                else:
+                    previous_prefix = re.sub(r"\s+", "", selected.content)[:200]
+                    candidate_prefix = re.sub(r"\s+", "", candidate.content)[:1000]
+                    if previous_prefix and previous_prefix in candidate_prefix:
+                        selected = candidate
+                    else:
+                        selected.content = (
+                            selected.content.rstrip() + "\n\n" + candidate.content.lstrip()
+                        )
+                        selected.word_count = _count_words(selected.content)
                 if not enforce_chapter_minimum or selected.word_count >= target_per_chapter:
                     break
+                missing_words = target_per_chapter - selected.word_count
                 correction = (
-                    "\n【长度纠偏】上一版正文只有 "
-                    f"{selected.word_count} 字，低于最低 {target_per_chapter} 字。"
-                    "请保留已有事实、引用标记和章节结构，补充分析、方法细节、"
-                    "限制条件与小结后，重新输出完整章节JSON。"
-                    f"\n【上一版正文】\n{selected.content}"
+                    "\n【增量补写】当前完整正文只有 "
+                    f"{selected.word_count} 字，低于最低 {target_per_chapter} 字，"
+                    f"仍缺至少 {missing_words} 字。不要重写或重复已有段落；"
+                    "只在 chapters[0].content 中输出需要追加的新段落，补充分析、"
+                    "方法细节、证据边界、限制条件与本章小结，并保留合法引用标记。"
+                    f"\n【当前完整正文，仅供衔接】\n{selected.content}"
                 )
             if selected is None or (
                 enforce_chapter_minimum
@@ -601,7 +625,7 @@ class Ring6ChapterExecutor(RingExecutor):
             ):
                 actual = selected.word_count if selected is not None else 0
                 raise StructuredOutputError(
-                    f"第{chapter_no}章两次生成后仍仅 {actual} 字，"
+                    f"第{chapter_no}章四次有界生成后仍仅 {actual} 字，"
                     f"低于最低 {target_per_chapter} 字"
                 )
             chapters.append(selected)

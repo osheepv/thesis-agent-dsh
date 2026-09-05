@@ -176,10 +176,71 @@ class TestRing6PoolInjected:
 
         data = json.loads(result.output)
         assert len(calls) == 2
-        assert "长度纠偏" in calls[1]
+        assert "增量补写" in calls[1]
+        assert data["chapters"][0]["content"].startswith("短正文 [L1]")
         assert data["total_words"] >= Degree.BACHELOR.min_word_requirement
         assert len(saved) == 1
 
+    def test_ring6_dynamic_target_allows_overachieving_prior_chapters(self, monkeypatch):
+        from backend.executor import ring6_chapter as r6
+
+        calls = []
+
+        class FinalChapterClient:
+            def generate_json(self, **kwargs):
+                calls.append(kwargs["prompt"])
+                content = "结论分析。" * 600
+                return r6.LLMChapterWriteOut(
+                    theme="T",
+                    degree="MASTER",
+                    chapters=[r6.ChapterDraft(
+                        chapter_no=6,
+                        chapter_title="第6章 结论",
+                        content=content,
+                        word_count=len(content),
+                    )],
+                    total_words=len(content),
+                )
+
+        monkeypatch.setattr(r6, "get_llm_client", lambda: FinalChapterClient())
+        monkeypatch.setattr(
+            r6,
+            "get_llm_settings",
+            lambda: type("S", (), {
+                "enabled": True,
+                "api_key": "x",
+                "fallback_to_mock": False,
+            })(),
+        )
+        outline = {
+            "chapters": [
+                {"level": 1, "number": f"第{number}章", "title": f"章节{number}"}
+                for number in range(1, 7)
+            ]
+        }
+        ctx = ExecContext(
+            subject_field="AI",
+            degree=Degree.MASTER,
+            theme="T",
+            outline=json.dumps(outline, ensure_ascii=False),
+        )
+        ctx.enforce_chapter_minimum = True
+        ctx.chapter_checkpoint = [
+            {
+                "chapter_no": number,
+                "chapter_title": f"第{number}章",
+                "content": "既有章节。" * 1200,
+                "word_count": 6000,
+            }
+            for number in range(1, 6)
+        ]
+
+        result = get_executor(6).execute(ctx)
+
+        data = json.loads(result.output)
+        assert len(calls) == 1
+        assert data["chapters"][-1]["chapter_no"] == 6
+        assert data["total_words"] >= Degree.MASTER.min_word_requirement
     def test_ring6_bounded_agent_plan_uses_tool_and_reaches_chapter_prompt(
         self, monkeypatch
     ):

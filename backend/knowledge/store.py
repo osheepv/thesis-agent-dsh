@@ -55,6 +55,10 @@ class KnowledgeStore:
         self._root = root or _KB_ROOT
         self._root.mkdir(parents=True, exist_ok=True)
 
+    def _session_path(self, session_id: str) -> Path:
+        clean = re.sub(r"[^A-Za-z0-9_\-]", "_", session_id or "default")
+        return self._root / clean
+
     # ------------------------------------------------------------------
     # 文件操作
     # ------------------------------------------------------------------
@@ -68,7 +72,7 @@ class KnowledgeStore:
             content: 文件二进制。
             metadata: 可选题录元数据（title/authors/year 等，覆盖自动提取）。
         """
-        sdir = _session_dir(session_id)
+        sdir = self._session_path(session_id)
         files_dir = sdir / "files"
         files_dir.mkdir(parents=True, exist_ok=True)
 
@@ -116,6 +120,41 @@ class KnowledgeStore:
             for d in index.get("documents", [])
         ]
 
+    def audit_session(self, session_id: str) -> Dict[str, Any]:
+        """只读检查知识库索引与文件血缘，不在损坏时静默重建。"""
+        session_dir = Path(self.session_path(session_id))
+        meta = session_dir / "meta.json"
+        if not meta.exists():
+            return {"consistent": True, "issues": [], "document_count": 0}
+        issues: list[str] = []
+        try:
+            index = json.loads(meta.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return {
+                "consistent": False,
+                "issues": ["KB_INDEX_INVALID"],
+                "document_count": 0,
+            }
+        documents = index.get("documents", []) if isinstance(index, dict) else []
+        if not isinstance(documents, list):
+            return {
+                "consistent": False,
+                "issues": ["KB_DOCUMENT_LIST_INVALID"],
+                "document_count": 0,
+            }
+        for document in documents:
+            if not isinstance(document, dict) or not str(document.get("file_id", "")):
+                issues.append("KB_DOCUMENT_RECORD_INVALID")
+                continue
+            file_path = str(document.get("file_path", ""))
+            if not file_path or not Path(file_path).is_file():
+                issues.append("KB_DOCUMENT_FILE_MISSING")
+        return {
+            "consistent": not issues,
+            "issues": list(dict.fromkeys(issues)),
+            "document_count": len(documents),
+        }
+
     def get_document(self, session_id: str, file_id: str) -> Optional[Dict[str, Any]]:
         """按 file_id 取记录（含 path）。"""
         index = self._load_index(session_id)
@@ -143,7 +182,7 @@ class KnowledgeStore:
 
     def session_path(self, session_id: str) -> str:
         """会话知识库绝对路径（给用户展示用）。"""
-        sdir = _session_dir(session_id)
+        sdir = self._session_path(session_id)
         sdir.mkdir(parents=True, exist_ok=True)
         return str(sdir)
 
@@ -152,7 +191,7 @@ class KnowledgeStore:
     # ------------------------------------------------------------------
     def save_note(self, session_id: str, title: str, content: str) -> Dict[str, Any]:
         """保存用户笔记（markdown 落盘 notes/）。"""
-        sdir = _session_dir(session_id)
+        sdir = self._session_path(session_id)
         notes_dir = sdir / "notes"
         notes_dir.mkdir(parents=True, exist_ok=True)
         safe_title = re.sub(r"[^A-Za-z0-9_\-一-龥]", "_", title)[:40] or "note"
@@ -162,7 +201,7 @@ class KnowledgeStore:
 
     def list_notes(self, session_id: str) -> List[Dict[str, Any]]:
         """列出会话笔记（含内容，供图谱解析双链）。"""
-        notes_dir = _session_dir(session_id) / "notes"
+        notes_dir = self._session_path(session_id) / "notes"
         result = []
         if not notes_dir.exists():
             return result
@@ -242,7 +281,7 @@ class KnowledgeStore:
     # 索引
     # ------------------------------------------------------------------
     def _load_index(self, session_id: str) -> Dict[str, Any]:
-        meta = _session_dir(session_id) / "meta.json"
+        meta = self._session_path(session_id) / "meta.json"
         if meta.exists():
             try:
                 return json.loads(meta.read_text(encoding="utf-8"))
@@ -255,7 +294,7 @@ class KnowledgeStore:
         }
 
     def _save_index(self, session_id: str, index: Dict[str, Any]) -> None:
-        meta = _session_dir(session_id) / "meta.json"
+        meta = self._session_path(session_id) / "meta.json"
         meta.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

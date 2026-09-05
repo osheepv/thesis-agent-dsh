@@ -166,6 +166,26 @@ class JobRegistry:
             ).fetchall()
         return [self._row_to_job(row) for row in rows]
 
+    def list_task_ids(self) -> list[str]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT DISTINCT task_id FROM t_job_run ORDER BY task_id"
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
+    def recover_expired(self) -> int:
+        """启动或巡检时恢复过期 Worker 租约，返回受影响作业数。"""
+        now = _utc_now()
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                recovered = self._recover_expired_locked(now)
+                self._db.commit()
+            except Exception:
+                self._db.rollback()
+                raise
+        return recovered
+
     def claim_next(self, worker_id: str, *, lease_seconds: int = 60) -> JobRun | None:
         if not worker_id.strip():
             raise JobRegistryError("worker_id 不能为空")
@@ -365,7 +385,7 @@ class JobRegistry:
             self._db.commit()
             return int(cur.rowcount)
 
-    def _recover_expired_locked(self, now: str) -> None:
+    def _recover_expired_locked(self, now: str) -> int:
         rows = self._db.execute(
             "SELECT * FROM t_job_run WHERE status IN (?, ?) AND lease_expires_at<>'' "
             "AND lease_expires_at<=?",
@@ -390,6 +410,7 @@ class JobRegistry:
                     else "Worker 租约过期", finished, now, job.job_id,
                 ),
             )
+        return len(rows)
 
     @staticmethod
     def _assert_lease(job: JobRun, worker_id: str) -> None:

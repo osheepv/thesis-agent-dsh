@@ -16,6 +16,7 @@ def test_healthz():
     assert body["code"] == 0
     assert body["data"]["service"] == "deep-thesis"
     assert body["data"]["status"] == "UP"
+    assert body["data"]["reconciliation_status"] in {"CONSISTENT", "NEEDS_REPAIR"}
 
 
 def test_create_task():

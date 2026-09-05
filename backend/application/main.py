@@ -56,6 +56,7 @@ def _default_orchestration() -> MainOrchestration:
     from thesis_docx.repository import DocxRepository
     from thesis_docx.service import DocxService
     from fsm.orchestrator import FsmOrchestrator
+    from knowledge.store import get_kb_store
     from .service.uc_main_orchestration import RealDocxRenderer
 
     # 与 docx 业务路由共享仓储（get_docx_service 优先读 app.state.docx_service）
@@ -70,6 +71,7 @@ def _default_orchestration() -> MainOrchestration:
     orchestration = MainOrchestration(
         fsm=fsm_inst,
         docx_renderer=renderer,
+        knowledge_store=get_kb_store(),
     )
     # 挂到 app.state 供 docx router 依赖注入复用
     orchestration._docx_service = docx_service  # noqa: SLF001
@@ -99,6 +101,7 @@ def build_app(
         security_settings.db_path if security_settings.enabled else ":memory:",
         settings=security_settings,
     )
+    startup_reconciliation = orchestration.reconcile_startup().data
     job_worker = JobWorker(
         orchestration._jobs,  # noqa: SLF001 - 应用生命周期托管同一持久化注册表
         orchestration.job_handlers(),
@@ -179,6 +182,7 @@ def build_app(
 
     # 应用级编排单例
     app.state.orchestration = orchestration
+    app.state.startup_reconciliation = startup_reconciliation
     app.state.security_store = security_store
     # docx 业务路由（/api/v1/docx/files 等）与 console 链路共享同一服务/仓储
     app.state.docx_service = getattr(orchestration, "_docx_service", None) or DocxService()

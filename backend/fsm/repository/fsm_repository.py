@@ -36,6 +36,10 @@ class FsmRepository(Protocol):
         """原子提交：FSM 状态 + 验收 Gate 在同一事务内落库。"""
         ...
 
+    def list_task_ids(self) -> list[str]:
+        """列出全部 FSM 任务 ID，供启动对账使用。"""
+        ...
+
 
 # ============================================================
 # 内存实现（单测/原型）
@@ -67,6 +71,9 @@ class InMemoryFsmRepository:
         if task_id is None:
             return list(self._gates)
         return [g for g in self._gates if g.task_id == task_id]
+
+    def list_task_ids(self) -> list[str]:
+        return sorted(self._states)
 
     def delete(self, task_id: str) -> None:
         """删除任务状态与看门。"""
@@ -145,6 +152,16 @@ class SqlAlchemyFsmRepository:
                 select(FsmStateModel).where(FsmStateModel.task_id == task_id)
             ).scalar_one_or_none()
             return fsm_state_to_domain(row) if row is not None else None
+
+    def list_task_ids(self) -> list[str]:
+        from fsm.state.orm import FsmStateModel
+        from sqlalchemy import select
+
+        with self._new_session() as session:
+            rows = session.execute(
+                select(FsmStateModel.task_id).order_by(FsmStateModel.task_id)
+            ).scalars()
+            return [str(task_id) for task_id in rows]
 
     def save(self, state: FsmState) -> None:
         with self._new_session() as session:

@@ -271,6 +271,19 @@ async def get_resume_summary(
         return _err(exc)
 
 
+@router.get("/tasks/{task_id}/reconciliation", response_model=None)
+async def get_reconciliation_report(
+    task_id: str,
+    session_id: str = "",
+    orchestration: MainOrchestration = Depends(get_orchestration),
+) -> Result[Any]:
+    try:
+        orchestration.assert_session(task_id, session_id)
+        return orchestration.reconcile_task_state(task_id)
+    except Exception as exc:  # noqa: BLE001
+        return _err(exc)
+
+
 @router.post("/tasks/{task_id}/template/mapping", response_model=None)
 async def set_template_mapping(task_id: str, req: Dict[str, Any], session_id: str = "",
                                orchestration: MainOrchestration = Depends(get_orchestration)) -> Result[Any]:

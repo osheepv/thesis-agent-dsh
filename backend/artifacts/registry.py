@@ -333,6 +333,13 @@ class ArtifactRegistry:
             ).fetchall()
         return [self.get(str(row[0])) for row in rows]
 
+    def list_task_ids(self) -> list[str]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT DISTINCT task_id FROM t_artifact ORDER BY task_id"
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def get_by_source_event(self, source_event_id: str) -> Artifact | None:
         if not source_event_id:
             return None

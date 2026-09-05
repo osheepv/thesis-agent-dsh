@@ -123,6 +123,12 @@ class FsmOrchestrator:
             raise BizException(ErrorCode.TASK_NOT_FOUND, f"任务不存在: {task_id}")
         return state
 
+    def list_task_ids(self) -> list[str]:
+        """列出持久化 FSM 任务，供应用启动对账。"""
+        if hasattr(self._repo, "list_task_ids"):
+            return list(self._repo.list_task_ids())
+        return []
+
     # ============================================================
     # 学位路由
     # ============================================================

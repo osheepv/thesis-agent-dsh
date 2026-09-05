@@ -96,6 +96,7 @@ from application.service.section_service import SectionServiceMixin
 from application.service.workspace_service import WorkspaceServiceMixin
 from application.service.memory_service import MemoryServiceMixin
 from application.service.job_service import JobServiceMixin
+from application.service.reconciliation_service import ReconciliationServiceMixin
 from fsm.orchestrator import FsmOrchestrator
 from fsm.repository import InMemoryFsmRepository
 
@@ -105,7 +106,7 @@ from fsm.repository import InMemoryFsmRepository
 # =====================================================================
 # 主编排用例
 # =====================================================================
-class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServiceMixin, SectionServiceMixin, WorkspaceServiceMixin, MemoryServiceMixin, JobServiceMixin):
+class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServiceMixin, SectionServiceMixin, WorkspaceServiceMixin, MemoryServiceMixin, JobServiceMixin, ReconciliationServiceMixin):
     """主编排用例。
 
     Args:
@@ -201,6 +202,8 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
                 job_registry = JobRegistry(job_path)
         self._jobs = job_registry
         self._knowledge_store = knowledge_store
+        self._reconciliation_issues: dict[str, list[dict[str, str]]] = {}
+        self._global_reconciliation_issues: list[dict[str, str]] = []
 
     def delete_task(self, task_id: str) -> Result[Dict[str, Any]]:
         """删除会话（连带知识库）。"""
@@ -391,6 +394,7 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
         consistency_status = (
             "NEEDS_REPAIR"
             if progress.get("artifact_projection_pending")
+            or progress.get("reconciliation_status") == "NEEDS_REPAIR"
             else "CONSISTENT"
         )
 
@@ -413,8 +417,20 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
             None,
         )
         consistency_issues = list(progress.get("artifact_projection_issues", []) or [])
+        consistency_issues.extend(
+            str(issue.get("code", ""))
+            for issue in (progress.get("reconciliation_issues", []) or [])
+            if isinstance(issue, dict)
+            and str(issue.get("code", ""))
+            and str(issue.get("code", "")) != "ARTIFACT_PROJECTION_PENDING"
+        )
+        consistency_issues = list(dict.fromkeys(consistency_issues))
         if consistency_status != "CONSISTENT":
-            reason_code = "ARTIFACT_PROJECTION_PENDING"
+            reason_code = (
+                "ARTIFACT_PROJECTION_PENDING"
+                if progress.get("artifact_projection_pending")
+                else "STARTUP_RECONCILIATION_REQUIRED"
+            )
             blocking_count = max(1, len(consistency_issues))
             action = {
                 "type": "REPAIR_REQUIRED",
@@ -1781,14 +1797,32 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
         """读取任务进度（委托 M1 FSM progress）。"""
         try:
             rec = self._require(task_id)
-            projection_issues = self._project_pending_artifacts(task_id)
-            data = self._fsm.get_progress(task_id)
+            reconciliation = self.reconcile_task_state(task_id).data
+            projection_issues = list(
+                reconciliation.get("artifact_projection_issues", []) or []
+            )
+            try:
+                data = self._fsm.get_progress(task_id)
+            except Exception:  # noqa: BLE001 - 对账页必须能呈现 FSM 缺失
+                data = {
+                    "task_id": task_id,
+                    "current_ring_no": 1,
+                    "current_ring": "RING_1",
+                    "complete_percent": 0,
+                    "phase_state": PhaseState.FALLBACK.value,
+                    "can_execute": False,
+                    "can_confirm": False,
+                    "rings": [],
+                }
             data.update({
                 "title": rec.title,
                 "session_id": rec.session_id,
                 "scope": rec.scope,
                 "artifact_projection_pending": bool(projection_issues),
                 "artifact_projection_issues": projection_issues,
+                "reconciliation_status": reconciliation.get("status", "CONSISTENT"),
+                "reconciliation_issues": list(reconciliation.get("issues", []) or []),
+                "repair_required": reconciliation.get("status") != "CONSISTENT",
                 "trust_assessments": {
                     "8": (rec.ring8 or {}).get("trust_assessment", {})
                 } if isinstance(rec.ring8, dict) and rec.ring8.get("trust_assessment") else {},
@@ -1902,6 +1936,23 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
         reject_reason: str = "",
     ) -> Result[Dict[str, Any]]:
         """确认或拒绝当前环产物；成功确认后才推进到下一环。"""
+        reconciliation = self.reconcile_task_state(task_id).data
+        if reconciliation.get("status") != "CONSISTENT":
+            issue_codes = [
+                str(issue.get("code", ""))
+                for issue in (reconciliation.get("issues", []) or [])
+                if isinstance(issue, dict) and str(issue.get("code", ""))
+            ]
+            raise BizException(
+                ErrorCode.STATE_CONFLICT,
+                msg="任务状态对账未通过，禁止确认当前环节",
+                detail={
+                    "reason_code": "STARTUP_RECONCILIATION_REQUIRED",
+                    "blocking_count": len(issue_codes),
+                    "issue_codes": issue_codes,
+                    "next_safe_action": {"type": "REPAIR_REQUIRED"},
+                },
+            )
         state = self._fsm.get_task(task_id)
         if state.current_ring_no != ring_no:
             raise BizException(

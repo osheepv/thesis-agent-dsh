@@ -254,6 +254,13 @@ class SectionDraftRegistry:
             ).fetchall()
         return [self.get(task_id, str(row[0])) for row in rows]
 
+    def list_task_ids(self) -> list[str]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT DISTINCT task_id FROM t_section_draft ORDER BY task_id"
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def list_approvals(self, task_id: str, section_draft_id: str) -> list[dict[str, str]]:
         self.get(task_id, section_draft_id)
         with self._lock:

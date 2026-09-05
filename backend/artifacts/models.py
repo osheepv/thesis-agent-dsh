@@ -63,6 +63,8 @@ class ContextManifest:
     job_id: str = ""
     cost_budget: float = 0.0
     cost_used: float = 0.0
+    canon_hash: str = ""
+    contract_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -83,6 +85,8 @@ class ContextManifest:
             job_id=str(value.get("job_id", "")),
             cost_budget=float(value.get("cost_budget", 0) or 0),
             cost_used=float(value.get("cost_used", 0) or 0),
+            canon_hash=str(value.get("canon_hash", "")),
+            contract_hash=str(value.get("contract_hash", "")),
         )
 
 

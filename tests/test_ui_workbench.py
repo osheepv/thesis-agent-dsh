@@ -65,6 +65,14 @@ def test_ui_uses_deep_thesis_brand():
     assert "论文写作 Agent" not in html
 
 
+def test_outline_result_exposes_accessible_section_contract_summary():
+    source = APP_JS_PATH.read_text(encoding="utf-8")
+    assert 'class="section-contract-summary"' in source
+    assert "<summary>查看 " in source
+    assert "section_contract" in source
+    assert "contract_hash" in source
+
+
 def test_project_memory_academic_foundation_controls_are_wired():
     html = UI_PATH.read_text(encoding="utf-8")
     memory = MEMORY_JS_PATH.read_text(encoding="utf-8")

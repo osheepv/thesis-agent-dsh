@@ -882,8 +882,19 @@ function renderRingResult(ringNo, data) {
     // 大纲卡（章节树）
     const chapters = (data && data.chapters) || [];
     const levels = chapters.filter(c => c.level === 1);
+    const contracted = chapters.filter(c => c.section_contract);
+    const contractDetails = contracted.length
+      ? `<details class="section-contract-summary"><summary>查看 ${contracted.length} 个分节写作合同</summary><ul>${contracted.map(ch => {
+          const contract = ch.section_contract || {};
+          const claims = (contract.allowed_claim_keys || []).join('、') || '仅结构性说明';
+          const evidenceCount = (contract.required_evidence_ids || []).length;
+          const resultRule = contract.requires_verified_results ? '必须使用已核验结果' : '无强制结果';
+          return `<li><strong>${escapeHtml2(ch.number || '')} ${escapeHtml2(ch.title || '')}</strong><span>目标：${escapeHtml2(contract.purpose || '')}</span><span>允许论断：${escapeHtml2(claims)} · 必需证据 ${evidenceCount} 条 · ${escapeHtml2(resultRule)}</span></li>`;
+        }).join('')}</ul><p>合同集 Hash：${escapeHtml2((data.contract_hash || '').slice(0, 12))}</p></details>`
+      : '<p class="wb-card-meta">当前大纲没有可写作的叶子节点合同。</p>';
     appendAIMsg(`<p><strong>环5 大纲完成</strong>，共 <strong>${levels.length}</strong> 章：</p>` +
-      levels.map(ch => `<p style="margin:5px 0;font-size:13px;"><i data-lucide="file-text" class="icon-xs" style="vertical-align:-2px"></i> ${escapeHtml2(ch.number || '')} ${escapeHtml2(ch.title)}</p>`).join(''),
+      levels.map(ch => `<p style="margin:5px 0;font-size:13px;"><i data-lucide="file-text" class="icon-xs" style="vertical-align:-2px"></i> ${escapeHtml2(ch.number || '')} ${escapeHtml2(ch.title)}</p>`).join('') +
+      contractDetails,
       `${name} · 已完成`);
   } else if (ringNo === 6) {
     // 撰写卡

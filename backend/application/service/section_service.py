@@ -9,6 +9,12 @@ from typing import Any, Dict, List
 from common.aicoding.dto.result import Result
 from common.aicoding.enums.degree import Degree
 from common.aicoding.exception.error_code import ErrorCode
+from common.academic_foundation import (
+    EvidenceState,
+    SectionContract,
+    section_contract_set_hash,
+    unique_strings,
+)
 from thesis_docx.cross_reference import normalize_target_id
 
 from artifacts import ArtifactKind, ArtifactStatus, ContextManifest
@@ -25,6 +31,116 @@ from writing import (
 class SectionServiceMixin:
     """Section generation, review, revision and assembly."""
 
+    @staticmethod
+    def _outline_leaf_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        clean = [item for item in nodes if isinstance(item, dict)]
+        leaves: list[dict[str, Any]] = []
+        for index, node in enumerate(clean):
+            level = int(node.get("level", 1) or 1)
+            next_level = (
+                int(clean[index + 1].get("level", 1) or 1)
+                if index + 1 < len(clean)
+                else level
+            )
+            if next_level <= level:
+                leaves.append(node)
+        return leaves
+
+    def _embed_section_contracts(
+        self, task_id: str, nodes: list[dict[str, Any]]
+    ) -> tuple[str, str]:
+        foundation = self.get_academic_foundation(task_id).data
+        canon_hash = str(foundation.get("canon_hash", ""))
+        rows_by_section: dict[str, list[dict[str, Any]]] = {}
+        for row in foundation.get("evidence_table", []) or []:
+            if isinstance(row, dict):
+                rows_by_section.setdefault(str(row.get("section_id", "")), []).append(row)
+        input_artifact_ids = unique_strings(
+            item.get("artifact_id", "")
+            for item in foundation.get("artifact_refs", []) or []
+            if isinstance(item, dict)
+            and str(item.get("kind", "")) != ArtifactKind.RESULT_LEDGER.value
+        )
+        forbidden_claims = unique_strings(foundation.get("forbidden_claims", []))
+        contracts: list[SectionContract] = []
+        seen_section_ids: set[str] = set()
+        for node in self._outline_leaf_nodes(nodes):
+            section_id = str(node.get("number", "")).strip()
+            title = str(node.get("title", "")).strip()
+            if not section_id or not title:
+                raise SectionDraftRegistryError("大纲叶子节点必须包含 number 和 title")
+            if section_id in seen_section_ids:
+                raise SectionDraftRegistryError(f"大纲叶子节点编号重复: {section_id}")
+            seen_section_ids.add(section_id)
+            rows = rows_by_section.get(section_id, [])
+            requires_results = any(
+                str(row.get("claim_type", "")) == ClaimType.NUMERIC.value
+                for row in rows
+            )
+            points = unique_strings(node.get("points", []))
+            purpose = "；".join(points) or f"完成“{title}”的结构性论述"
+            validation_checks = [
+                "SECTION_ID_MATCH",
+                "ALLOWED_CLAIMS_ONLY",
+                "FORBIDDEN_CLAIMS_EXCLUDED",
+                "REQUIRED_EVIDENCE_USED",
+                "CONTEXT_IDS_ONLY",
+                "CANON_HASH_RECORDED",
+            ]
+            if requires_results:
+                validation_checks.append("VERIFIED_RESULT_REQUIRED")
+            contract = SectionContract(
+                section_id=section_id,
+                title=title,
+                purpose=purpose,
+                canon_hash=canon_hash,
+                input_artifact_ids=input_artifact_ids,
+                allowed_claim_keys=unique_strings(
+                    row.get("claim_key", "") for row in rows
+                ),
+                forbidden_claims=forbidden_claims,
+                evidence_requirements=unique_strings(
+                    requirement
+                    for row in rows
+                    for requirement in (row.get("evidence_requirements", []) or [])
+                ),
+                required_evidence_ids=unique_strings(
+                    evidence_id
+                    for row in rows
+                    for evidence_id in (row.get("supporting_evidence_ids", []) or [])
+                ),
+                # 结果账本是批准大纲的下游，不能反向固化其 ID 形成依赖环。
+                required_result_ids=(),
+                requires_verified_results=requires_results,
+                validation_checks=tuple(validation_checks),
+            )
+            node["section_contract"] = contract.to_dict()
+            contracts.append(contract)
+        if not contracts:
+            raise SectionDraftRegistryError("大纲至少需要一个可写作的叶子节点")
+        return canon_hash, section_contract_set_hash(contracts)
+
+    def _section_contract(self, outline, section_id: str) -> SectionContract:
+        nodes = [
+            item for item in outline.payload.get("chapters", [])
+            if isinstance(item, dict)
+        ]
+        for node in self._outline_leaf_nodes(nodes):
+            if str(node.get("number", "")).strip() != section_id:
+                continue
+            try:
+                contract = SectionContract.from_dict(node.get("section_contract"))
+            except ValueError as exc:
+                raise SectionDraftRegistryError(
+                    f"分节合同无效，请回退环5重新生成大纲: {exc}"
+                ) from exc
+            if contract.section_id != section_id:
+                raise SectionDraftRegistryError("分节合同与大纲节点不一致")
+            return contract
+        raise SectionDraftRegistryError(
+            f"大纲分节 {section_id} 缺少合同，请回退环5重新生成大纲"
+        )
+
     def generate_section_draft(
         self, task_id: str, value: Dict[str, Any]
     ) -> Result[Dict[str, Any]]:
@@ -39,6 +155,14 @@ class SectionServiceMixin:
         )
         if outline is None:
             raise SectionDraftRegistryError("缺少有效批准大纲")
+        contract = self._section_contract(outline, section_id)
+        foundation = self.get_academic_foundation(task_id).data
+        runtime_canon_hash = str(foundation.get("canon_hash", ""))
+        foundation_by_claim_id = {
+            str(row.get("claim_id", "")): row
+            for row in (foundation.get("evidence_table", []) or [])
+            if isinstance(row, dict) and str(row.get("claim_id", ""))
+        }
         argument_map = self._active_argument_map(task_id)
         protocol = self._active_research_protocol(task_id)
         result_ledger = self._artifacts.get_active(
@@ -57,7 +181,35 @@ class SectionServiceMixin:
         evidence_details: dict[str, dict[str, Any]] = {}
         if argument_map is not None:
             audit_rows = self._evidence.audit(task_id, argument_map.artifact_id)["claims"]
-            claim_rows = [row for row in audit_rows if row["section_id"] == section_id]
+            for row in audit_rows:
+                if row["section_id"] != section_id:
+                    continue
+                projected = foundation_by_claim_id.get(str(row.get("claim_id", "")), {})
+                source_key = str(row.get("source_key", ""))
+                claim_rows.append(
+                    {
+                        **row,
+                        "claim_key": str(projected.get("claim_key", ""))
+                        or source_key.rsplit(":", 1)[-1],
+                        "epistemic_intent": str(
+                            projected.get("epistemic_intent", "ASSERTION")
+                        ),
+                        "evidence_state": str(
+                            projected.get("evidence_state", row.get("status", "UNSUPPORTED"))
+                        ),
+                        "verification_strength": str(
+                            projected.get("verification_strength", "UNVERIFIED")
+                        ),
+                        "risk_level": str(projected.get("risk_level", "HIGH")),
+                        "supporting_evidence_ids": list(
+                            projected.get(
+                                "supporting_evidence_ids",
+                                row.get("supporting_evidence_ids", []),
+                            )
+                            or []
+                        ),
+                    }
+                )
 
         requested_result_ids = tuple(
             dict.fromkeys(str(item) for item in (value.get("result_ids", ()) or ()) if str(item))
@@ -76,11 +228,45 @@ class SectionServiceMixin:
             )
 
         blockers: list[str] = []
+        for artifact_id in contract.input_artifact_ids:
+            try:
+                input_artifact = self._artifacts.get(artifact_id)
+            except Exception:  # noqa: BLE001
+                blockers.append(f"合同输入产物不存在: {artifact_id}")
+                continue
+            if (
+                input_artifact.task_id != task_id
+                or input_artifact.status != ArtifactStatus.APPROVED
+            ):
+                blockers.append(f"合同输入产物已失效: {artifact_id}")
+
+        allowed_claim_keys = set(contract.allowed_claim_keys)
+        current_claim_keys = {
+            str(claim.get("claim_key", "")) for claim in claim_rows
+            if str(claim.get("claim_key", ""))
+        }
+        extra_claim_keys = sorted(current_claim_keys - allowed_claim_keys)
+        missing_claim_keys = sorted(allowed_claim_keys - current_claim_keys)
+        if extra_claim_keys:
+            blockers.append(f"当前论证图包含合同外论断: {extra_claim_keys}")
+        if missing_claim_keys:
+            blockers.append(f"合同论断在当前论证图中缺失: {missing_claim_keys}")
+        if contract.requires_verified_results and not requested_result_ids:
+            blockers.append("本节合同要求至少一个经用户核验的结果")
+        missing_required_results = sorted(
+            set(contract.required_result_ids) - set(requested_result_ids)
+        )
+        if missing_required_results:
+            blockers.append(f"本节缺少合同指定结果: {missing_required_results}")
+
         for claim in claim_rows:
             supporting = list(claim.get("supporting_evidence_ids", []) or [])
-            if claim["status"] == "DISPUTED":
+            evidence_state = str(claim.get("evidence_state", "UNSUPPORTED"))
+            if evidence_state == EvidenceState.DISPUTED.value:
                 blockers.append(f"论断 {claim['claim_id']} 存在未解决反证")
-            elif claim["status"] == "UNSUPPORTED" and not (
+            elif evidence_state == EvidenceState.INVALID_SOURCE.value:
+                blockers.append(f"论断 {claim['claim_id']} 使用了失效来源")
+            elif evidence_state == EvidenceState.UNSUPPORTED.value and not (
                 claim["claim_type"] == ClaimType.NUMERIC.value and requested_result_ids
             ):
                 blockers.append(f"论断 {claim['claim_id']} 缺少批准证据")
@@ -97,6 +283,11 @@ class SectionServiceMixin:
                     "page_end": excerpt.page_end,
                     "section": excerpt.section,
                 }
+        missing_required_evidence = sorted(
+            set(contract.required_evidence_ids) - set(evidence_details)
+        )
+        if missing_required_evidence:
+            blockers.append(f"本节缺少合同指定证据: {missing_required_evidence}")
         if blockers:
             raise SectionDraftRegistryError("；".join(blockers))
 
@@ -106,6 +297,8 @@ class SectionServiceMixin:
             "title": str(value.get("title", "")).strip() or catalog[section_id],
             "paper_title": (rec.ring1 or {}).get("chosen", rec.title),
             "outline_node": catalog[section_id],
+            "section_contract": contract.to_dict(),
+            "canon_hash": runtime_canon_hash,
             "claims": claim_rows,
             "evidence": list(evidence_details.values()),
             "results": [allowed_results[result_id] for result_id in requested_result_ids],
@@ -118,10 +311,23 @@ class SectionServiceMixin:
         }
         generated = self._section_generator.generate(context)
         expected_claim_ids = {str(claim["claim_id"]) for claim in claim_rows}
-        covered_claim_ids = set(generated.covered_claim_ids)
+        covered_claim_ids = {
+            str(claim_id) for claim_id in generated.covered_claim_ids if str(claim_id)
+        }
         allowed_evidence_ids = set(evidence_details)
-        used_evidence_ids = set(generated.used_evidence_ids)
-        used_result_ids = set(generated.used_result_ids)
+        marked_evidence_ids = set(
+            re.findall(r"\bEVD-[A-Z0-9]+\b", generated.content)
+        )
+        marked_result_ids = set(
+            re.findall(r"\bRES-[A-Z0-9]+\b", generated.content)
+        )
+        used_evidence_ids = {
+            str(evidence_id) for evidence_id in generated.used_evidence_ids
+            if str(evidence_id)
+        } | marked_evidence_ids
+        used_result_ids = {
+            str(result_id) for result_id in generated.used_result_ids if str(result_id)
+        } | marked_result_ids
         gate_issues: list[str] = []
         actual_words = len(re.sub(r"[\s#*`-]+", "", generated.content))
         if generated.generation_source == "mock":
@@ -134,21 +340,43 @@ class SectionServiceMixin:
             gate_issues.append(
                 f"未覆盖论断: {sorted(expected_claim_ids - covered_claim_ids)}"
             )
+        if not covered_claim_ids.issubset(expected_claim_ids):
+            gate_issues.append(
+                f"声明了合同外论断: {sorted(covered_claim_ids - expected_claim_ids)}"
+            )
         if not used_evidence_ids.issubset(allowed_evidence_ids):
             gate_issues.append(
                 f"使用了上下文外证据: {sorted(used_evidence_ids - allowed_evidence_ids)}"
+            )
+        if not set(contract.required_evidence_ids).issubset(used_evidence_ids):
+            gate_issues.append(
+                "未使用合同指定证据: "
+                f"{sorted(set(contract.required_evidence_ids) - used_evidence_ids)}"
             )
         if not used_result_ids.issubset(set(requested_result_ids)):
             gate_issues.append(
                 f"使用了上下文外结果: {sorted(used_result_ids - set(requested_result_ids))}"
             )
+        if not set(contract.required_result_ids).issubset(used_result_ids):
+            gate_issues.append(
+                "未使用合同指定结果: "
+                f"{sorted(set(contract.required_result_ids) - used_result_ids)}"
+            )
+        if contract.requires_verified_results and not used_result_ids:
+            gate_issues.append("本节未实际使用经用户核验的结果")
+        forbidden_hits = [
+            claim for claim in contract.forbidden_claims
+            if claim and claim in generated.content
+        ]
+        if forbidden_hits:
+            gate_issues.append(f"正文包含禁写主张: {forbidden_hits}")
         for claim in claim_rows:
             supporting = set(claim.get("supporting_evidence_ids", []) or [])
             if supporting and not supporting.intersection(used_evidence_ids):
                 gate_issues.append(f"论断 {claim['claim_id']} 未实际引用其支持证据")
         if requested_result_ids and not set(requested_result_ids).issubset(used_result_ids):
             gate_issues.append("未使用全部指定结果记录")
-        for result_id in used_result_ids:
+        for result_id in used_result_ids.intersection(allowed_results):
             result = allowed_results[result_id]
             target = normalize_target_id(
                 str(result.get("table_or_figure_id", "")) or result_id
@@ -171,6 +399,8 @@ class SectionServiceMixin:
             output_tokens=current_job.output_tokens if current_job else 0,
             cost_budget=current_job.cost_budget if current_job else 0.0,
             cost_used=current_job.cost_used if current_job else 0.0,
+            canon_hash=runtime_canon_hash,
+            contract_hash=contract.contract_hash,
         )
         manifest_data = manifest.to_dict()
         draft = self._sections.create_version(
@@ -196,6 +426,10 @@ class SectionServiceMixin:
                 "actual_words": actual_words,
                 "target_word_count": context["target_word_count"],
                 "generation_source": generated.generation_source,
+                "canon_hash": runtime_canon_hash,
+                "contract_hash": contract.contract_hash,
+                "contract_canon_hash": contract.canon_hash,
+                "validation_checks": list(contract.validation_checks),
             },
         )
         if gate_issues:
@@ -489,6 +723,15 @@ class SectionServiceMixin:
         result_ids = sorted(
             {result_id for draft in drafts if draft for result_id in draft.result_ids}
         )
+        outline = self._artifacts.get_active(
+            task_id=task_id, stage_no=5, kind=ArtifactKind.OUTLINE
+        )
+        contract_hash = (
+            str(outline.payload.get("contract_hash", "")) if outline is not None else ""
+        )
+        canon_hash = str(
+            self.get_academic_foundation(task_id).data.get("canon_hash", "")
+        )
         result_ledger = self._artifacts.get_active(
             task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
         )
@@ -521,6 +764,8 @@ class SectionServiceMixin:
             "used_refs": evidence_ids,
             "used_result_ids": result_ids,
             "section_draft_ids": [draft.section_draft_id for draft in drafts if draft],
+            "canon_hash": canon_hash,
+            "contract_hash": contract_hash,
             "compliant": True,
         }
         self._store.put(rec)
@@ -545,9 +790,7 @@ class SectionServiceMixin:
         if outline is None:
             return {}
         nodes = [item for item in outline.payload.get("chapters", []) if isinstance(item, dict)]
-        sections = [item for item in nodes if int(item.get("level", 1) or 1) >= 2]
-        if not sections:
-            sections = nodes
+        sections = self._outline_leaf_nodes(nodes)
         return {
             str(item.get("number", "")).strip(): str(item.get("title", "")).strip()
             for item in sections

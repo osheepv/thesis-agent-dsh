@@ -941,8 +941,8 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
             }
             outline_sections = {
                 str(item.get("number", ""))
-                for item in chapters
-                if isinstance(item, dict) and str(item.get("number", ""))
+                for item in self._outline_leaf_nodes(chapters)
+                if str(item.get("number", ""))
             }
             missing_sections = sorted(required_sections - outline_sections)
             if missing_sections:
@@ -951,13 +951,21 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
                     msg="环5大纲未覆盖论证图中的全部章节位置",
                     detail={"missing_section_ids": missing_sections},
                 )
+        canon_hash, contract_hash = self._embed_section_contracts(task_id, chapters)
+        outline["canon_hash"] = canon_hash
+        outline["contract_hash"] = contract_hash
         outline_text = self._outline_to_text(chapters)
         rec.ring5 = {"outline": outline_text, "chapters": outline.get("chapters", []),
-                     "theme": outline.get("theme", chosen), "compliant": True}
+                     "theme": outline.get("theme", chosen), "compliant": True,
+                     "canon_hash": canon_hash, "contract_hash": contract_hash}
         self._store.put(rec)
-        self._fsm.submit_execution(task_id, res.output, accepted=True)
+        self._fsm.submit_execution(
+            task_id, json.dumps(outline, ensure_ascii=False), accepted=True
+        )
         return Result.ok(data={"outline": outline_text, "chapters": chapters,
-                               "summary": outline.get("summary", "")}, msg="环5大纲完成")
+                               "summary": outline.get("summary", ""),
+                               "canon_hash": canon_hash,
+                               "contract_hash": contract_hash}, msg="环5大纲完成")
 
     # ------------------------------------------------------------------
     # 步骤 5：环6 撰写（UC-03 延续）
@@ -1945,6 +1953,12 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
             output_tokens=job_usage.output_tokens if job_usage else 0,
             cost_budget=job_usage.cost_budget if job_usage else 0.0,
             cost_used=job_usage.cost_used if job_usage else 0.0,
+            canon_hash=(
+                str(payload.get("canon_hash", "")) if isinstance(payload, dict) else ""
+            ),
+            contract_hash=(
+                str(payload.get("contract_hash", "")) if isinstance(payload, dict) else ""
+            ),
         )
         artifact_event = {
             "event_id": event_id,
@@ -1961,6 +1975,16 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
                     payload.get("trust_assessment", {})
                     if isinstance(payload, dict)
                     else {}
+                ),
+                "canon_hash": (
+                    str(payload.get("canon_hash", ""))
+                    if isinstance(payload, dict)
+                    else ""
+                ),
+                "contract_hash": (
+                    str(payload.get("contract_hash", ""))
+                    if isinstance(payload, dict)
+                    else ""
                 ),
             },
             "actor": "author",
@@ -2049,6 +2073,7 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
                     "content_hash": artifact.content_hash,
                     "dependency_ids": list(artifact.dependency_ids),
                     "context_manifest": artifact.context_manifest.to_dict(),
+                    "gate_report": artifact.gate_report,
                     "stale_reason": artifact.stale_reason,
                     "source_event_id": artifact.source_event_id,
                     "created_at": artifact.created_at,

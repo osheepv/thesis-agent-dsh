@@ -74,6 +74,37 @@ class _SectionGenerator:
         )
 
 
+class _NeverCalledSectionGenerator:
+    def generate(self, context):
+        raise AssertionError("合同前置检查失败时不得调用模型")
+
+
+class _ContractViolatingGenerator:
+    def generate(self, context) -> SectionGeneration:
+        evidence_ids = [
+            evidence_id
+            for claim in context.get("claims", [])
+            for evidence_id in claim.get("supporting_evidence_ids", [])
+        ]
+        target = int(context.get("target_word_count", 300))
+        content = (
+            "未经核验的结论 "
+            + " ".join(f"[{evidence_id}]" for evidence_id in evidence_ids)
+            + (" 合同外正文" * (target + 1))
+        )
+        return SectionGeneration(
+            title=context.get("title", ""),
+            content=content,
+            covered_claim_ids=[
+                *[claim.get("claim_id", "") for claim in context.get("claims", [])],
+                "CLM-OUTSIDE",
+            ],
+            used_evidence_ids=evidence_ids,
+            used_result_ids=[],
+            generation_source="test-double",
+        )
+
+
 def _orchestration(monkeypatch) -> MainOrchestration:
     monkeypatch.setattr(
         "application.service.uc_main_orchestration.get_executor",
@@ -121,6 +152,37 @@ def _argument_map() -> dict:
     }
 
 
+def _approve_root_support(
+    orchestration: MainOrchestration, task_id: str, argument_map: dict
+):
+    claim = orchestration.list_claims(
+        task_id, artifact_id=argument_map["artifact_id"]
+    ).data[0]
+    source = orchestration.register_source(
+        task_id,
+        {
+            "title": "Evidence Source",
+            "doi": "10.1/evidence",
+            "verification_status": "METADATA_VERIFIED",
+        },
+    ).data
+    evidence = orchestration.add_evidence(
+        task_id,
+        {
+            "source_id": source["source_id"],
+            "quote": "Traceable evidence constraints reduced unsupported claims.",
+            "page_start": 7,
+        },
+    ).data
+    orchestration.review_evidence(task_id, evidence["evidence_id"], approved=True)
+    orchestration.link_claim_evidence(
+        task_id,
+        claim["claim_id"],
+        {"evidence_id": evidence["evidence_id"], "relation": "SUPPORTS"},
+    )
+    return claim, evidence
+
+
 def test_section_registry_versions_each_section_independently():
     registry = SectionDraftRegistry()
     first = registry.create_version(
@@ -140,6 +202,114 @@ def test_section_registry_versions_each_section_independently():
     assert other.version == 1
     assert registry.get("task", first.section_draft_id).status == SectionDraftStatus.SUPERSEDED
     assert registry.list_approvals("task", second.section_draft_id)[0]["actor"] == "author"
+
+
+def test_outline_leaf_nodes_embed_hashed_section_contracts(monkeypatch):
+    orchestration = _orchestration(monkeypatch)
+    task_id = _advance_to_ring5(orchestration)
+    argument_map = orchestration.create_argument_map(task_id, _argument_map()).data
+    orchestration.review_argument_map(task_id, argument_map["artifact_id"], approved=True)
+    _, evidence = _approve_root_support(orchestration, task_id, argument_map)
+
+    result = orchestration.run_ring5(task_id).data
+    parent = next(item for item in result["chapters"] if item["level"] == 1)
+    leaf = next(item for item in result["chapters"] if item["number"] == "1.1")
+    contract = leaf["section_contract"]
+
+    assert "section_contract" not in parent
+    assert contract["schema_version"] == "m3"
+    assert contract["allowed_claim_keys"] == ["ROOT"]
+    assert contract["required_evidence_ids"] == [evidence["evidence_id"]]
+    assert len(contract["canon_hash"]) == 64
+    assert len(contract["contract_hash"]) == 64
+    assert len(result["contract_hash"]) == 64
+
+    orchestration.confirm_ring(task_id, 5)
+    outline = next(
+        item for item in orchestration.list_artifacts(task_id).data
+        if item["kind"] == "OUTLINE"
+    )
+    assert outline["payload"]["contract_hash"] == result["contract_hash"]
+    assert outline["context_manifest"]["canon_hash"] == result["canon_hash"]
+    assert outline["context_manifest"]["contract_hash"] == result["contract_hash"]
+    assert outline["gate_report"]["canon_hash"] == result["canon_hash"]
+    assert outline["gate_report"]["contract_hash"] == result["contract_hash"]
+
+
+def test_section_contract_preflight_blocks_before_model_call(monkeypatch):
+    orchestration = _orchestration(monkeypatch)
+    task_id = _advance_to_ring5(orchestration)
+    argument_map = orchestration.create_argument_map(task_id, _argument_map()).data
+    orchestration.review_argument_map(task_id, argument_map["artifact_id"], approved=True)
+    orchestration.run_ring5(task_id)
+    orchestration.confirm_ring(task_id, 5)
+    orchestration._section_generator = _NeverCalledSectionGenerator()  # noqa: SLF001
+
+    with pytest.raises(Exception, match="缺少批准证据"):
+        orchestration.generate_section_draft(task_id, {"section_id": "1.1"})
+
+
+def test_numeric_section_contract_requires_verified_result_before_model(monkeypatch):
+    orchestration = _orchestration(monkeypatch)
+    task_id = _advance_to_ring5(orchestration)
+    payload = _argument_map()
+    payload["claims"][0]["claim_type"] = "NUMERIC"
+    argument_map = orchestration.create_argument_map(task_id, payload).data
+    orchestration.review_argument_map(task_id, argument_map["artifact_id"], approved=True)
+    outline = orchestration.run_ring5(task_id).data
+    numeric_contract = next(
+        item["section_contract"]
+        for item in outline["chapters"]
+        if item["number"] == "1.1"
+    )
+    assert numeric_contract["requires_verified_results"] is True
+    orchestration.confirm_ring(task_id, 5)
+    orchestration._section_generator = _NeverCalledSectionGenerator()  # noqa: SLF001
+
+    with pytest.raises(Exception, match="至少一个经用户核验的结果"):
+        orchestration.generate_section_draft(task_id, {"section_id": "1.1"})
+
+
+def test_section_contract_rejects_outside_claims_and_records_hashes(monkeypatch):
+    orchestration = _orchestration(monkeypatch)
+    task_id = _advance_to_ring5(orchestration)
+    memory = orchestration.create_project_memory(
+        task_id,
+        {
+            "forbidden_claims": ["未经核验的结论"],
+            "version_note": "M3 contract",
+        },
+    ).data
+    orchestration.review_project_memory(task_id, memory["artifact_id"], approved=True)
+    argument_map = orchestration.create_argument_map(task_id, _argument_map()).data
+    orchestration.review_argument_map(task_id, argument_map["artifact_id"], approved=True)
+    _approve_root_support(orchestration, task_id, argument_map)
+    outline_result = orchestration.run_ring5(task_id).data
+    orchestration.confirm_ring(task_id, 5)
+    orchestration._section_generator = _ContractViolatingGenerator()  # noqa: SLF001
+
+    generated = orchestration.generate_section_draft(
+        task_id, {"section_id": "1.1"}
+    )
+
+    assert generated.is_ok is False
+    assert generated.data["status"] == "AUTO_REJECTED"
+    issues = generated.data["gate_report"]["issues"]
+    assert any("合同外论断" in issue for issue in issues)
+    assert any("禁写主张" in issue for issue in issues)
+    assert generated.data["context_manifest"]["contract_hash"]
+    assert generated.data["context_manifest"]["canon_hash"]
+    assert (
+        generated.data["gate_report"]["contract_hash"]
+        == generated.data["context_manifest"]["contract_hash"]
+    )
+    leaf = next(
+        item for item in outline_result["chapters"] if item["number"] == "1.1"
+    )
+    assert (
+        generated.data["context_manifest"]["contract_hash"]
+        == leaf["section_contract"]["contract_hash"]
+    )
 
 
 def test_section_generation_requires_supported_claims_and_assembles(monkeypatch):

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import pytest
+
 from artifacts import ArtifactKind, ArtifactRegistry
 from application.service.uc_main_orchestration import MainOrchestration
+from common.academic_foundation import SectionContract, section_contract_set_hash
 from common.aicoding.enums import Degree
 from evidence import (
     ClaimType,
@@ -12,6 +15,32 @@ from evidence import (
     SourceVerificationStatus,
 )
 from research import ResearchExecutionRegistry
+
+
+def test_section_contract_hash_round_trip_and_tamper_detection():
+    contract = SectionContract(
+        section_id="2.1",
+        title="证据分析",
+        purpose="基于批准证据回答研究问题",
+        canon_hash="a" * 64,
+        input_artifact_ids=("ART-1", "ART-2"),
+        allowed_claim_keys=("ROOT",),
+        forbidden_claims=("未经核验的结论",),
+        evidence_requirements=("原文页码",),
+        required_evidence_ids=("EVD-1",),
+        validation_checks=("ALLOWED_CLAIMS_ONLY",),
+    )
+    payload = contract.to_dict()
+
+    assert SectionContract.from_dict(payload) == contract
+    assert len(section_contract_set_hash([contract])) == 64
+    payload["purpose"] = "被篡改"
+    with pytest.raises(ValueError, match="contract_hash"):
+        SectionContract.from_dict(payload)
+    unknown = contract.to_dict()
+    unknown["evidence_backed"] = True
+    with pytest.raises(ValueError, match="未知字段"):
+        SectionContract.from_dict(unknown)
 
 
 def _orchestration() -> MainOrchestration:

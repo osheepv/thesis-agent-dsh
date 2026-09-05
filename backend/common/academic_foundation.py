@@ -90,6 +90,135 @@ class EvidenceTableRow:
 
 
 @dataclass(frozen=True)
+class SectionContract:
+    """嵌入批准大纲叶子节点的不可变分节写作合同。"""
+
+    section_id: str
+    title: str
+    purpose: str
+    canon_hash: str
+    input_artifact_ids: tuple[str, ...] = ()
+    allowed_claim_keys: tuple[str, ...] = ()
+    forbidden_claims: tuple[str, ...] = ()
+    evidence_requirements: tuple[str, ...] = ()
+    required_evidence_ids: tuple[str, ...] = ()
+    required_result_ids: tuple[str, ...] = ()
+    requires_verified_results: bool = False
+    validation_checks: tuple[str, ...] = ()
+    schema_version: str = "m3"
+
+    def __post_init__(self) -> None:
+        if not self.section_id.strip():
+            raise ValueError("SectionContract section_id 不能为空")
+        if not self.title.strip():
+            raise ValueError("SectionContract title 不能为空")
+        if not self.purpose.strip():
+            raise ValueError("SectionContract purpose 不能为空")
+        if len(self.canon_hash) != 64 or any(
+            char not in "0123456789abcdef" for char in self.canon_hash.lower()
+        ):
+            raise ValueError("SectionContract canon_hash 非法")
+
+    def _body(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "section_id": self.section_id,
+            "title": self.title,
+            "purpose": self.purpose,
+            "canon_hash": self.canon_hash,
+            "input_artifact_ids": list(self.input_artifact_ids),
+            "allowed_claim_keys": list(self.allowed_claim_keys),
+            "forbidden_claims": list(self.forbidden_claims),
+            "evidence_requirements": list(self.evidence_requirements),
+            "required_evidence_ids": list(self.required_evidence_ids),
+            "required_result_ids": list(self.required_result_ids),
+            "requires_verified_results": self.requires_verified_results,
+            "validation_checks": list(self.validation_checks),
+        }
+
+    @property
+    def contract_hash(self) -> str:
+        encoded = json.dumps(
+            self._body(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._body(), "contract_hash": self.contract_hash}
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any] | None) -> "SectionContract":
+        if not isinstance(value, dict):
+            raise ValueError("SectionContract 必须是对象")
+        list_fields = {
+            "input_artifact_ids",
+            "allowed_claim_keys",
+            "forbidden_claims",
+            "evidence_requirements",
+            "required_evidence_ids",
+            "required_result_ids",
+            "validation_checks",
+        }
+        allowed_fields = {
+            "schema_version",
+            "section_id",
+            "title",
+            "purpose",
+            "canon_hash",
+            "contract_hash",
+            "requires_verified_results",
+            *list_fields,
+        }
+        unknown_fields = sorted(set(value) - allowed_fields)
+        if unknown_fields:
+            raise ValueError(f"SectionContract 包含未知字段: {unknown_fields}")
+        malformed_lists = sorted(
+            field_name
+            for field_name in list_fields
+            if field_name in value
+            and not isinstance(value[field_name], (list, tuple))
+        )
+        if malformed_lists:
+            raise ValueError(f"SectionContract 列表字段类型非法: {malformed_lists}")
+        if not isinstance(value.get("requires_verified_results", False), bool):
+            raise ValueError("SectionContract requires_verified_results 必须是布尔值")
+        contract = cls(
+            schema_version=str(value.get("schema_version", "")),
+            section_id=str(value.get("section_id", "")),
+            title=str(value.get("title", "")),
+            purpose=str(value.get("purpose", "")),
+            canon_hash=str(value.get("canon_hash", "")).lower(),
+            input_artifact_ids=unique_strings(value.get("input_artifact_ids")),
+            allowed_claim_keys=unique_strings(value.get("allowed_claim_keys")),
+            forbidden_claims=unique_strings(value.get("forbidden_claims")),
+            evidence_requirements=unique_strings(value.get("evidence_requirements")),
+            required_evidence_ids=unique_strings(value.get("required_evidence_ids")),
+            required_result_ids=unique_strings(value.get("required_result_ids")),
+            requires_verified_results=bool(value.get("requires_verified_results", False)),
+            validation_checks=unique_strings(value.get("validation_checks")),
+        )
+        if contract.schema_version != "m3":
+            raise ValueError("SectionContract schema_version 不受支持")
+        if str(value.get("contract_hash", "")).lower() != contract.contract_hash:
+            raise ValueError("SectionContract contract_hash 不匹配")
+        return contract
+
+
+def section_contract_set_hash(contracts: Iterable[SectionContract]) -> str:
+    items = sorted(
+        (
+            {"section_id": contract.section_id, "contract_hash": contract.contract_hash}
+            for contract in contracts
+        ),
+        key=lambda item: item["section_id"],
+    )
+    encoded = json.dumps(
+        items, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True)
 class ResearchCanonSnapshot:
     task_id: str
     schema_version: str = "m2"

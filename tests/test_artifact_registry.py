@@ -63,12 +63,16 @@ def test_context_manifest_and_dependency_are_persisted(tmp_path):
             model="test-model",
             input_artifact_ids=(brief.artifact_id,),
             token_budget=8000,
+            canon_hash="a" * 64,
+            contract_hash="b" * 64,
         ),
     )
     restored = registry.get(proposal.artifact_id)
     assert restored.dependency_ids == (brief.artifact_id,)
     assert restored.context_manifest.prompt_version == "1.0.0"
     assert restored.context_manifest.input_artifact_ids == (brief.artifact_id,)
+    assert restored.context_manifest.canon_hash == "a" * 64
+    assert restored.context_manifest.contract_hash == "b" * 64
 
 
 def test_rejected_revision_keeps_previous_version_active(tmp_path):

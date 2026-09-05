@@ -14,6 +14,7 @@ def test_healthz():
     assert r.status_code == 200
     body = r.json()
     assert body["code"] == 0
+    assert body["data"]["service"] == "deep-thesis"
     assert body["data"]["status"] == "UP"
 
 

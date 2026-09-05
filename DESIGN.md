@@ -1,6 +1,6 @@
 ---
 version: alpha
-name: thesis-agent-dsh
+name: Deep Thesis
 description: 学位论文全流程智能写作工作台的界面设计规范
 colors:
   claude: "#D77757"

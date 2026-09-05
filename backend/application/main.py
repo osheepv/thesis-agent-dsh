@@ -116,8 +116,8 @@ def build_app(
             job_worker.stop()
 
     app = FastAPI(
-        title="thesis-agent-dsh",
-        description="基于 DSH 的学位论文全流程写作 Agent（一期最小可运行闭环）",
+        title="Deep Thesis",
+        description="学位论文全流程智能体工作台",
         version="0.1.0",
         lifespan=lifespan,
     )

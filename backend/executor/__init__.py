@@ -8,7 +8,7 @@
 - :mod:`executor.ring6_chapter`：环6 分章撰写执行体。
 - ring2/3/4/7/8/9/10 为预留目录（skeleton），其中 2/4/8/10 标注 HITL 网关（本期仅留接口）。
 
-真实 DSH（LLM/检索）为二期接入点，本期各环执行体使用确定性 Mock 生成器保证闭环可运行。
+真实 LLM/检索通过模型提供商适配层接入，测试环境使用确定性 Mock 生成器保证闭环可运行。
 """
 from .base import EXECUTOR_REGISTRY, ExecContext, ExecResult, RingExecutor, get_executor, register_executor
 

@@ -1,7 +1,7 @@
 -- LEGACY TARGET SCHEMA：仅保留为早期PostgreSQL设计参考，不是当前运行时迁移源。
 -- 当前唯一FSM映射为 fsm/state/orm.py；在建立Alembic基线前请勿直接用于生产库。
 -- ============================================================
--- thesis-agent-dsh  一期 PostgreSQL 原生 DDL
+-- Deep Thesis  一期 PostgreSQL 原生 DDL
 -- 数据库: PostgreSQL 16；字符集 utf8mb4 由 PG 以 UTF8 承载。
 -- 约束: 使用 GENERATED ALWAYS AS IDENTITY / BOOLEAN / CREATE INDEX /
 --       tsvector 生成列 + GIN 索引；严格禁用 MySQL 语法

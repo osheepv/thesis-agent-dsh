@@ -16,7 +16,7 @@ async def healthz() -> Result[dict]:
 
     return Result.ok(
         data={
-            "service": "thesis-agent-dsh",
+            "service": "deep-thesis",
             "status": "UP",
             "ts": datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z"),
         }

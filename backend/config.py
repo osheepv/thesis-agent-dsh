@@ -15,7 +15,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="THESIS_", env_file=".env", extra="ignore")
 
-    app_name: str = "thesis-agent-dsh"
+    app_name: str = "Deep Thesis"
     app_env: str = "dev"
     app_host: str = "0.0.0.0"
     app_port: int = 8000

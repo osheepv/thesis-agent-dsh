@@ -10,8 +10,8 @@
     issues    发现的问题列表
     evidence  证据/来源（如引用来源）
 
-DSH 二期接入点：本模块与各执行体仅依赖下发的 :class:`ExecContext`，
-真实 DSH（LLM/检索）调用作为二期扩展点在注释中标注，本期使用确定性 Mock 生成器保证闭环可运行。
+模型提供商接入点：本模块与各执行体仅依赖下发的 :class:`ExecContext`，
+真实 LLM/检索调用通过适配层接入，测试环境使用确定性 Mock 生成器保证闭环可运行。
 """
 from __future__ import annotations
 

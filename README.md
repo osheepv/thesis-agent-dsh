@@ -1,10 +1,12 @@
-# thesis-agent-dsh
+# Deep Thesis
 
-[![CI](https://github.com/osheepv/thesis-agent-dsh/actions/workflows/main.yml/badge.svg)](https://github.com/osheepv/thesis-agent-dsh/actions/workflows/main.yml)
+[![CI](https://github.com/osheepv/deep-thesis/actions/workflows/main.yml/badge.svg)](https://github.com/osheepv/deep-thesis/actions/workflows/main.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Discussions](https://img.shields.io/badge/GitHub-Discussions-6f42c1)](https://github.com/osheepv/thesis-agent-dsh/discussions)
+[![Discussions](https://img.shields.io/badge/GitHub-Discussions-6f42c1)](https://github.com/osheepv/deep-thesis/discussions)
 
 学位论文全流程智能写作工作台的工程化原型：FastAPI 后端、十阶段状态机、文献与知识库基础、docx 管线和桌面式 Web UI。
+
+> 名称与依赖说明：产品统一命名为 **Deep Thesis**。项目不依赖 DeepSeek-Harness；当前通过 OpenAI 兼容接口直接接入 DeepSeek，后续模型提供商能力将继续通过适配层演进。
 
 > 准确定位：项目已经具备可信的十阶段控制流，但还不是可稳定交付完整本/硕/博论文的成品。当前重点是把整批生成改造成可编辑、可版本化、逐条绑定证据的分节写作系统。产品边界和建设路线见 [产品架构蓝图](docs/产品架构蓝图.md)，界面规范见 [DESIGN.md](DESIGN.md)。
 
@@ -83,8 +85,8 @@
 
 这个项目现已公开，希望听到真实用户、研究者和开发者对“智能体如何协助论文写作全流程”的不同看法。
 
-- 发现缺陷、交互问题或学术安全风险，请提交 [Issue](https://github.com/osheepv/thesis-agent-dsh/issues)。
-- 产品方向、工作流设计、Agent协作、知识库与引用规范等开放问题，欢迎在 [Discussions](https://github.com/osheepv/thesis-agent-dsh/discussions) 中交流。
+- 发现缺陷、交互问题或学术安全风险，请提交 [Issue](https://github.com/osheepv/deep-thesis/issues)。
+- 产品方向、工作流设计、Agent协作、知识库与引用规范等开放问题，欢迎在 [Discussions](https://github.com/osheepv/deep-thesis/discussions) 中交流。
 - 提交建议时，请尽量说明使用场景、期望行为和当前问题；请勿上传未公开论文、个人信息、API密钥或受版权保护的全文材料。
 
 所有反馈都会作为产品迭代参考，但本项目不会代替作者、导师或学校完成学术真实性、研究伦理和最终质量审查。
@@ -153,7 +155,7 @@ python -m http.server 8787
 
 ## 运行测试
 
-当前回归基线：**360 项 pytest 全部通过**（2026-09-04），另有 **31/31 条离线学术质量规则 case 通过**。M2 定向测试 45 项全部通过。
+当前回归基线：**361 项 pytest 全部通过**（2026-09-05），另有 **31/31 条离线学术质量规则 case 通过**。品牌改名定向测试 34 项全部通过。
 
 基线演进按公共 Git 历史说明：H4-001R 为 278 项；H4-002 自动草稿完成并修复幽灵草稿/提交墓碑竞态后为 315 项；H4-003 评测契约进入 pytest 后为 327 项；环3 Agent Loop 首版为 337 项；正式编排接线、检索词扩展恢复与 fail-closed 契约补齐后为 352 项；本地视觉依赖契约进入后为 353 项；NAT-001 M1 学术边界与停止规则契约进入后为 364 项。数字以实际运行 `python -m pytest tests -q` 的结果为准。
 

@@ -1,2 +1,2 @@
 # -*- coding: utf-8 -*-
-"""thesis-agent-dsh backend 包根。"""
+"""Deep Thesis backend 包根。"""

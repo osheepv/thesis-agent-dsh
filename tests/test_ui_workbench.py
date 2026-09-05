@@ -58,6 +58,13 @@ def test_ui_has_no_duplicate_static_ids():
     assert duplicates == []
 
 
+def test_ui_uses_deep_thesis_brand():
+    html = UI_PATH.read_text(encoding="utf-8")
+    assert "<title>Deep Thesis — 论文全流程智能体</title>" in html
+    assert "thesis-agent-dsh" not in html
+    assert "论文写作 Agent" not in html
+
+
 def test_project_memory_academic_foundation_controls_are_wired():
     html = UI_PATH.read_text(encoding="utf-8")
     memory = MEMORY_JS_PATH.read_text(encoding="utf-8")

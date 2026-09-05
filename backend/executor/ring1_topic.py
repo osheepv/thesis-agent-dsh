@@ -85,7 +85,7 @@ _STRATEGY: dict[Degree, dict[str, int | str]] = {
     },
 }
 
-#: 默认创新方向词库（Mock 占位，DSH 接入后由 LLM 替换）。
+#: 默认创新方向词库（Mock 占位，真实运行时由 LLM 替换）。
 _INNOVATION_THEMES: list[str] = [
     "基于多模态数据融合",
     "面向真实场景约束",

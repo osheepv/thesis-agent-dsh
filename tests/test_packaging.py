@@ -12,6 +12,8 @@ def test_pyproject_discovers_packages_and_bundles_runtime_resources():
     config = tomllib.loads((BACKEND / "pyproject.toml").read_text(encoding="utf-8"))
     setuptools = config["tool"]["setuptools"]
 
+    assert config["project"]["name"] == "deep-thesis"
+    assert "DSH" not in config["project"]["description"]
     assert "application*" in setuptools["packages"]["find"]["include"]
     assert "common*" in setuptools["packages"]["find"]["include"]
     assert setuptools["package-data"]["prompts"] == ["*.md"]

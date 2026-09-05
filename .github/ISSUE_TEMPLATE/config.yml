@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: 产品方向与开放讨论
-    url: https://github.com/osheepv/thesis-agent-dsh/discussions
+    url: https://github.com/osheepv/deep-thesis/discussions
     about: 不确定是否属于缺陷时，请先在Discussions交流。
   - name: 私下报告安全漏洞
-    url: https://github.com/osheepv/thesis-agent-dsh/security/advisories/new
+    url: https://github.com/osheepv/deep-thesis/security/advisories/new
     about: 请勿公开可能包含敏感信息的安全漏洞。

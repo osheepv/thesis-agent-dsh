@@ -29,7 +29,7 @@ logger = logging.getLogger("thesis.lit")
 _TIMEOUT = 15.0
 
 #: CrossRef polite pool 标识（官方建议加 mailto 提高额度）
-MAILTO = "thesis-agent-dsh@example.com"
+MAILTO = "deep-thesis@example.com"
 
 #: 中文常见字符判断（粗略，用于识别中文题名）
 _CJK_RE = re.compile(r"[一-鿿]")

@@ -530,7 +530,7 @@ def test_resume_summary_exposes_no_body_draft_payload_or_secret(monkeypatch):
         "task_id", "title", "current_ring_no", "current_ring", "phase_state",
         "complete_percent", "last_approved_artifact", "pending_approvals",
         "active_jobs", "recoverable_jobs", "autosaved_drafts",
-        "consistency_status", "consistency_issues", "next_safe_action",
+        "consistency_status", "consistency_issues", "stop_reason_code", "blocking_count", "next_safe_action",
         "capabilities",
     }
     for job in [*resume["active_jobs"], *resume["recoverable_jobs"]]:

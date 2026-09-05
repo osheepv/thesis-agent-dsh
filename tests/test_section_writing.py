@@ -568,3 +568,105 @@ def test_section_writing_endpoints_are_available(monkeypatch):
     ).json()
     assert reviewed["data"]["status"] == "APPROVED"
     assert reviewed["data"]["approvals"][0]["decision"] == "APPROVE"
+
+
+def test_project_memory_revision_invalidates_outline_and_section_draft(monkeypatch):
+    orchestration = _orchestration(monkeypatch)
+    task_id = _advance_to_ring5(orchestration)
+    memory = orchestration.create_project_memory(
+        task_id,
+        {"scope_boundaries": ["仅讨论可复核的论文写作流程"], "version_note": "v1"},
+    ).data
+    orchestration.review_project_memory(task_id, memory["artifact_id"], approved=True)
+    argument_map = orchestration.create_argument_map(task_id, _argument_map()).data
+    orchestration.review_argument_map(task_id, argument_map["artifact_id"], approved=True)
+    _approve_root_support(orchestration, task_id, argument_map)
+    orchestration.run_ring5(task_id)
+    orchestration.confirm_ring(task_id, 5)
+    section = orchestration.generate_section_draft(task_id, {"section_id": "1.1"}).data
+    orchestration.review_section_draft(task_id, section["section_draft_id"], approved=True)
+    outline = next(
+        item for item in orchestration.list_artifacts(task_id).data
+        if item["kind"] == "OUTLINE"
+    )
+
+    revised = orchestration.create_project_memory(
+        task_id,
+        {"scope_boundaries": ["仅讨论可复核且可重复的论文写作流程"], "version_note": "v2"},
+    ).data
+    orchestration.review_project_memory(task_id, revised["artifact_id"], approved=True)
+
+    stale_outline = next(
+        item for item in orchestration.list_artifacts(task_id).data
+        if item["artifact_id"] == outline["artifact_id"]
+    )
+    assert memory["artifact_id"] in outline["dependency_ids"]
+    assert stale_outline["status"] == "STALE"
+    stale_section = next(
+        item for item in orchestration.list_section_drafts(task_id).data
+        if item["section_draft_id"] == section["section_draft_id"]
+    )
+    assert stale_section["status"] == "STALE"
+
+
+def test_ring7_reaudits_disputed_evidence_before_model(monkeypatch):
+    orchestration = _orchestration(monkeypatch)
+    task_id = _advance_to_ring5(orchestration)
+    memory = orchestration.create_project_memory(
+        task_id,
+        {"scope_boundaries": ["仅讨论可复核的论文写作流程"]},
+    ).data
+    orchestration.review_project_memory(task_id, memory["artifact_id"], approved=True)
+    argument_map = orchestration.create_argument_map(task_id, _argument_map()).data
+    orchestration.review_argument_map(task_id, argument_map["artifact_id"], approved=True)
+    claim, _evidence = _approve_root_support(orchestration, task_id, argument_map)
+    orchestration.run_ring5(task_id)
+    orchestration.confirm_ring(task_id, 5)
+    generated = orchestration.generate_all_section_drafts(task_id)
+    assert generated.is_ok
+    orchestration.review_all_section_drafts(task_id, approved=True)
+    orchestration.assemble_section_drafts(task_id)
+    orchestration.confirm_ring(task_id, 6)
+
+    source = orchestration.register_source(
+        task_id,
+        {
+            "title": "Contradicting Evidence",
+            "doi": "10.1/contradiction",
+            "verification_status": "METADATA_VERIFIED",
+        },
+    ).data
+    contradiction = orchestration.add_evidence(
+        task_id,
+        {
+            "source_id": source["source_id"],
+            "quote": "A contradictory finding requiring author review.",
+            "page_start": 9,
+        },
+    ).data
+    orchestration.review_evidence(task_id, contradiction["evidence_id"], approved=True)
+    orchestration.link_claim_evidence(
+        task_id,
+        claim["claim_id"],
+        {"evidence_id": contradiction["evidence_id"], "relation": "CONTRADICTS"},
+    )
+
+    called = {"value": False}
+
+    class _NeverCalledRing7:
+        def execute(self, _ctx):
+            called["value"] = True
+            raise AssertionError("环7复审阻断时不得调用模型")
+
+    monkeypatch.setattr(
+        "application.service.uc_main_orchestration.get_executor",
+        lambda ring_no: _NeverCalledRing7() if int(ring_no) == 7 else _Executor(int(ring_no)),
+    )
+    with pytest.raises(Exception, match="环7润色前复审"):
+        orchestration.run_ring7(task_id)
+    assert called["value"] is False
+    assert orchestration.progress(task_id).data["phase_state"] == "FALLBACK"
+    resume = orchestration.get_resume_summary(task_id).data
+    assert resume["stop_reason_code"] == "STAGE_RECOVERY_REQUIRED"
+    assert resume["blocking_count"] >= 1
+    assert resume["next_safe_action"]["type"] == "RECOVER_STAGE"

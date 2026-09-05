@@ -412,13 +412,18 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
             ),
             None,
         )
+        consistency_issues = list(progress.get("artifact_projection_issues", []) or [])
         if consistency_status != "CONSISTENT":
+            reason_code = "ARTIFACT_PROJECTION_PENDING"
+            blocking_count = max(1, len(consistency_issues))
             action = {
                 "type": "REPAIR_REQUIRED",
                 "label": "修复产物投影不一致后再继续",
                 "ring_no": ring_no,
             }
         elif active_jobs:
+            reason_code = "ACTIVE_JOB_IN_PROGRESS"
+            blocking_count = len(active_jobs)
             action = {
                 "type": "MONITOR_JOB",
                 "label": "继续查看正在运行的后台作业",
@@ -427,18 +432,24 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
             }
         elif progress.get("phase_state") == PhaseState.WAITING_APPROVAL.value:
             if progress.get("author_decision_ready") is False:
+                reason_code = "AUTHOR_DECISION_REQUIRED"
+                blocking_count = 1
                 action = {
                     "type": "COMPLETE_AUTHOR_DECISION",
                     "label": str(progress.get("author_decision_blocker", "")) or "完成作者决定",
                     "ring_no": ring_no,
                 }
             else:
+                reason_code = "AUTHOR_APPROVAL_REQUIRED"
+                blocking_count = max(1, len(pending_approvals))
                 action = {
                     "type": "CONFIRM_RING",
                     "label": f"审阅并确认环{ring_no}产物",
                     "ring_no": ring_no,
                 }
         elif resumable_draft is not None:
+            reason_code = "DRAFT_RESUME_AVAILABLE"
+            blocking_count = 0
             action = {
                 "type": "RESUME_DRAFT",
                 "label": "继续编辑未提交草稿",
@@ -448,24 +459,29 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
                 "object_id": resumable_draft.object_id,
             }
         elif progress.get("phase_state") == PhaseState.FALLBACK.value:
+            reason_code = "STAGE_RECOVERY_REQUIRED"
+            blocking_count = max(1, len(recoverable_jobs))
             action = {
                 "type": "RECOVER_STAGE",
                 "label": f"修复环{ring_no}阻断项后重试",
                 "ring_no": ring_no,
             }
         elif int(progress.get("complete_percent", 0) or 0) >= 100:
+            reason_code = "DELIVERY_REVIEW_REQUIRED"
+            blocking_count = 0
             action = {
                 "type": "REVIEW_DELIVERY",
                 "label": "查看最终交付文件与清单",
                 "ring_no": 10,
             }
         else:
+            reason_code = "READY_TO_EXECUTE"
+            blocking_count = 0
             action = {
                 "type": "EXECUTE_RING",
                 "label": f"继续执行环{ring_no}",
                 "ring_no": ring_no,
             }
-
         return Result.ok(data={
             "task_id": rec.task_id,
             "title": rec.title,
@@ -490,7 +506,9 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
             # 只返回草稿元数据，绝不返回 content_json、正文片段或表单全文。
             "autosaved_drafts": autosaved_drafts,
             "consistency_status": consistency_status,
-            "consistency_issues": list(progress.get("artifact_projection_issues", []) or []),
+            "consistency_issues": consistency_issues,
+            "stop_reason_code": reason_code,
+            "blocking_count": blocking_count,
             "next_safe_action": action,
             "capabilities": {
                 "workspace_restore": True,
@@ -1114,6 +1132,32 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
     def run_ring7(self, task_id: str) -> Result[Dict[str, Any]]:
         """执行环7润色：对环6 初稿做表达润色 + 术语统一，只改表达不改事实。"""
         rec = self._require_current_ring(task_id, 7)
+        contract_audit = self.audit_section_contracts(task_id)
+        if not contract_audit.get("can_polish", False):
+            recovery = {
+                "type": "RECOVER_STAGE",
+                "label": "修复环6分节证据/合同阻断后重试",
+                "ring_no": 6,
+            }
+            failure = {
+                "reason_code": "SECTION_CONTRACT_REAUDIT_FAILED",
+                "blocking_count": int(contract_audit.get("blocking_count", 0) or 0),
+                "next_safe_action": recovery,
+                "audit": {
+                    "mode": contract_audit.get("mode", "contract"),
+                    "blocking_reasons": list(contract_audit.get("blocking_reasons", []) or []),
+                    "canon_hash": str(contract_audit.get("canon_hash", "")),
+                    "contract_hash": str(contract_audit.get("contract_hash", "")),
+                },
+            }
+            self._fsm.submit_execution(
+                task_id, json.dumps(failure, ensure_ascii=False), accepted=False
+            )
+            raise BizException(
+                ErrorCode.FSM_ACCEPTANCE_REJECTED,
+                msg="环7润色前复审未通过，请先修复环6分节阻断项",
+                detail={"fallbackTo": 6, **failure},
+            )
         chosen = (rec.ring1 or {}).get("chosen", rec.title)
         draft = (rec.ring6 or {}).get("chapters", [])
         # ring6 产物可能是 chapters 列表，序列化为 JSON 供环7 解析
@@ -1185,11 +1229,19 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
                 msg="环7润色质量验收失败：" + "；".join(quality_issues),
                 detail={"fallbackTo": 6, "issues": quality_issues},
             )
-        rec.ring7 = {"chapters": polished, "content": full_content,
+        rec.ring7 = {"chapters": polished,
+                     "content": full_content,
                      "total_words": actual_words,
                      "used_refs": quality_payload["used_refs"],
                      "used_result_ids": quality_payload["used_result_ids"],
                      "generation_source": str((res.evidence or {}).get("source", "")),
+                     "canon_hash": str(contract_audit.get("canon_hash", "")),
+                     "contract_hash": str(contract_audit.get("contract_hash", "")),
+                     "contract_audit": {
+                         "mode": contract_audit.get("mode", "legacy"),
+                         "blocking_count": int(contract_audit.get("blocking_count", 0) or 0),
+                         "audited_section_ids": list(contract_audit.get("audited_section_ids", []) or []),
+                     },
                      "compliant": True}
         self._store.put(rec)
         self._fsm.submit_execution(task_id, res.output, accepted=True)
@@ -1909,9 +1961,10 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
         event_id = f"EVT-{uuid.uuid4().hex[:20].upper()}"
         dependency_ids: tuple[str, ...] = ()
         if ring_no == 5:
+            project_memory = self._active_project_memory(task_id)
             protocol = self._active_research_protocol(task_id)
             argument_map = self._active_argument_map(task_id)
-            if protocol is not None or argument_map is not None:
+            if project_memory is not None or protocol is not None or argument_map is not None:
                 ring4 = self._artifacts.get_active(
                     task_id=task_id,
                     stage_no=4,
@@ -1921,6 +1974,7 @@ class MainOrchestration(EvidenceServiceMixin, ArtifactHelpersMixin, ResearchServ
                     raise ResearchRegistryError("环5产物缺少有效的环4依赖")
                 dependency_ids = tuple(
                     [ring4.artifact_id]
+                    + ([project_memory.artifact_id] if project_memory is not None else [])
                     + ([protocol.artifact_id] if protocol is not None else [])
                     + ([argument_map.artifact_id] if argument_map is not None else [])
                 )

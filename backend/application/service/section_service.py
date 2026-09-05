@@ -821,4 +821,144 @@ class SectionServiceMixin:
                     )
                     break
 
+    def audit_section_contracts(self, task_id: str) -> Dict[str, Any]:
+        """在全文润色前重跑分节合同与当前证据/结果状态审计。
+
+        该审计只返回稳定的 ID、状态和阻断原因，不返回证据原文或结果值。
+        没有采用分节写作路径的旧环6稿件保持兼容，由环8继续承担旧链路校验。
+        """
+        self._require(task_id)
+        drafts = self._sections.list_task(task_id)
+        if not drafts:
+            return {
+                "mode": "legacy",
+                "can_polish": True,
+                "blocking_reasons": [],
+                "blocking_count": 0,
+                "section_count": 0,
+                "audited_section_ids": [],
+            }
+
+        self._refresh_section_staleness(task_id)
+        foundation = self.get_academic_foundation(task_id).data
+        current_canon_hash = str(foundation.get("canon_hash", ""))
+        outline = self._artifacts.get_active(
+            task_id=task_id, stage_no=5, kind=ArtifactKind.OUTLINE
+        )
+        blockers: list[str] = []
+        if outline is None:
+            blockers.append("缺少有效批准大纲")
+            return {
+                "mode": "contract",
+                "can_polish": False,
+                "blocking_reasons": blockers,
+                "blocking_count": len(blockers),
+                "section_count": len(drafts),
+                "audited_section_ids": [],
+                "canon_hash": current_canon_hash,
+                "contract_hash": "",
+            }
+
+        leaves = self._outline_leaf_nodes(
+            [item for item in outline.payload.get("chapters", []) if isinstance(item, dict)]
+        )
+        contracts: dict[str, SectionContract] = {}
+        for node in leaves:
+            section_id = str(node.get("number", "")).strip()
+            if not section_id:
+                continue
+            try:
+                contracts[section_id] = SectionContract.from_dict(
+                    node.get("section_contract")
+                )
+            except ValueError as exc:
+                blockers.append(f"分节 {section_id} 合同无效: {exc}")
+
+        declared_contract_hash = str(outline.payload.get("contract_hash", ""))
+        computed_contract_hash = section_contract_set_hash(contracts.values())
+        if not contracts:
+            blockers.append("批准大纲缺少分节合同")
+        elif declared_contract_hash != computed_contract_hash:
+            blockers.append("批准大纲合同集 Hash 不匹配")
+
+        rows_by_key = {
+            str(row.get("claim_key", "")): row
+            for row in (foundation.get("evidence_table", []) or [])
+            if isinstance(row, dict) and str(row.get("claim_key", ""))
+        }
+        result_ledger = self._artifacts.get_active(
+            task_id=task_id, stage_no=6, kind=ArtifactKind.RESULT_LEDGER
+        )
+        verified_result_ids = {
+            str(item.get("result_id", ""))
+            for item in (result_ledger.payload.get("results", []) if result_ledger else [])
+            if isinstance(item, dict)
+            and bool(item.get("verified_by_user"))
+            and str(item.get("result_id", ""))
+        }
+        active_by_section = {
+            draft.section_id: draft
+            for draft in self._sections.list_task(task_id)
+            if draft.status == SectionDraftStatus.APPROVED
+        }
+        audited_section_ids: list[str] = []
+        for section_id, contract in contracts.items():
+            draft = active_by_section.get(section_id)
+            if draft is None:
+                blockers.append(f"分节 {section_id} 缺少批准草稿")
+                continue
+            audited_section_ids.append(section_id)
+            manifest = draft.context_manifest if isinstance(draft.context_manifest, dict) else {}
+            if str(manifest.get("contract_hash", "")) != contract.contract_hash:
+                blockers.append(f"分节 {section_id} 合同版本已变化")
+            if not draft.evidence_ids and contract.required_evidence_ids:
+                blockers.append(f"分节 {section_id} 缺少合同证据")
+            if not set(contract.required_evidence_ids).issubset(set(draft.evidence_ids)):
+                blockers.append(f"分节 {section_id} 未覆盖合同指定证据")
+            if contract.requires_verified_results:
+                if result_ledger is None or not draft.result_ids:
+                    blockers.append(f"分节 {section_id} 缺少经用户核验的结果")
+                elif not set(draft.result_ids).issubset(verified_result_ids):
+                    blockers.append(f"分节 {section_id} 使用了未核验结果")
+            elif not set(draft.result_ids).issubset(verified_result_ids):
+                blockers.append(f"分节 {section_id} 使用了未核验结果")
+
+            allowed_claims = set(contract.allowed_claim_keys)
+            for claim_key in allowed_claims:
+                row = rows_by_key.get(claim_key)
+                if row is None:
+                    blockers.append(f"分节 {section_id} 的论断 {claim_key} 已不存在")
+                    continue
+                evidence_state = str(row.get("evidence_state", EvidenceState.UNSUPPORTED.value))
+                if evidence_state in {
+                    EvidenceState.DISPUTED.value,
+                    EvidenceState.INVALID_SOURCE.value,
+                }:
+                    blockers.append(f"分节 {section_id} 的论断 {claim_key} 证据状态为 {evidence_state}")
+                elif (
+                    evidence_state == EvidenceState.UNSUPPORTED.value
+                    and not contract.requires_verified_results
+                ):
+                    blockers.append(f"分节 {section_id} 的论断 {claim_key} 缺少批准证据")
+
+            for artifact_id in contract.input_artifact_ids:
+                try:
+                    artifact = self._artifacts.get(artifact_id)
+                except Exception:  # noqa: BLE001
+                    blockers.append(f"分节 {section_id} 合同输入产物不存在")
+                    continue
+                if artifact.task_id != task_id or artifact.status != ArtifactStatus.APPROVED:
+                    blockers.append(f"分节 {section_id} 合同输入产物已失效")
+
+        return {
+            "mode": "contract",
+            "can_polish": not blockers,
+            "blocking_reasons": list(dict.fromkeys(blockers)),
+            "blocking_count": len(dict.fromkeys(blockers)),
+            "section_count": len(contracts),
+            "audited_section_ids": audited_section_ids,
+            "canon_hash": current_canon_hash,
+            "contract_hash": declared_contract_hash,
+        }
+
 
